@@ -169,6 +169,87 @@ int __bbs_mutex_destroy(bbs_mutex_t *t, const char *filename, int lineno, const 
 	return res;
 }
 
+static inline void mutex_deadlock_check(bbs_mutex_t *t, const char *filename, int lineno, const char *func, const char *name, int c, time_t *start, time_t now, time_t diff, time_t elapsed)
+{
+	if (diff < elapsed) {
+		/* When we started, the mutex wasn't available, so t->info.lastlocked must
+		 * have been at least as older as start. If it suddenly happens that
+		 * t->info.lastlocked is newer than start, that means that the mutex was released
+		 * and acquired by some other thread (not us, unfortunately).
+		 * In this case, the lock is making progress, so it's probably not a deadlock.
+		 * Reset the start time and keep retrying. */
+		lock_debug("Spent %ld seconds so far waiting for mutex %s (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
+			diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		*start = now;
+	} else if (c == 1 && t->info.owners == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
+		/* We limit this check to if there is only 1 owner of the lock.
+		 * This is because the offender could grab the lock first,
+		 * then somebody else could grab it and unlock it.
+		 * The lock structure has lock info from the second caller, which no longer holds the lock,
+		 * while the first owner is the real culprit.
+		 * Without storing a linear amount of information (data for each owner),
+		 * it's hard to be more accurate here. Define ENABLE_LOCK_LOGFILE to debug these kinds of issues more accurately. */
+		pthread_mutex_lock(&t->intlock); /* Repeat check with lock held for consistency, we may have read partially changed variables before */
+		if (t->info.owners == 1 && t->info.lwp == bbs_gettid()) {
+			lock_error("Recursive attempt to lock %s, definite deadlock! (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
+				name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		}
+		pthread_mutex_unlock(&t->intlock);
+	} else if (elapsed == 10) {
+		/* Preliminary warning if we think we've encountered a deadlock. */
+		pthread_mutex_lock(&t->intlock);
+		lock_notice("Spent %ld seconds so far waiting for mutex %s, possible deadlock? (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
+			diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		pthread_mutex_unlock(&t->intlock);
+#ifndef STRICT_LOCKING
+		/* We always log a backtrace when we think a deadlock has occured, for debugging purposes.
+		 * lock_notice already does this with STRICT_LOCKING, so we only need to do this explicitly here
+		 * if that wasn't defined. */
+		bbs_log_backtrace();
+#endif
+	} else if (elapsed == 300) {
+		/* Okay, this is ridiculous. It should never take 5 minutes to acquire a lock.
+		 * In theory, it could, but there shouldn't be anything that actually does in the BBS. */
+		pthread_mutex_lock(&t->intlock);
+		lock_warning("Spent %ld seconds so far waiting for mutex %s, probable deadlock? (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
+			diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		pthread_mutex_unlock(&t->intlock);
+	}
+}
+
+/*! \brief Same as mutex_deadlock_check, but adapted for rwlock */
+static inline void rwlock_deadlock_check(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name, int c, time_t *start, time_t now, time_t diff, time_t elapsed, const char *optype)
+{
+	if (diff < elapsed) {
+		lock_debug("Spent %ld seconds so far waiting to %s %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+			diff, optype, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		*start = now;
+	} else if (c == 1 && t->info.owners == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
+		pthread_mutex_lock(&t->intlock); /* Repeat check with lock held for consistency, we may have read partially changed variables before */
+		if (t->info.owners == 1 && t->info.lwp == bbs_gettid()) {
+			lock_error("Recursive attempt to %s %s, definite deadlock! (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+				optype, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		}
+		pthread_mutex_unlock(&t->intlock);
+	} else if (elapsed == 30) { /* Use a higher threshold for rwlocks than mutexes, since there could be multiple readers */
+		/* Preliminary warning if we think we've encountered a deadlock. */
+		pthread_mutex_lock(&t->intlock);
+		lock_notice("Spent %ld seconds so far waiting to %s %s, possible deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+			diff, optype, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		pthread_mutex_unlock(&t->intlock);
+#ifndef STRICT_LOCKING
+		bbs_log_backtrace();
+#endif
+	} else if (elapsed == 300) {
+		/* Okay, this is ridiculous. It should never take 5 minutes to acquire a lock.
+		 * In theory, it could, but there shouldn't be anything that actually does in the BBS. */
+		pthread_mutex_lock(&t->intlock);
+		lock_warning("Spent %ld seconds so far waiting to %s %s, probable deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+			diff, optype, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		pthread_mutex_unlock(&t->intlock);
+	}
+}
+
 int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const char *func, const char *name)
 {
 	int res;
@@ -199,42 +280,7 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 			elapsed = now - start; /* Amount of time we've been waiting for this lock */
 			diff = now - t->info.lastlocked; /* Amount of time this lock has been held */
 #pragma GCC diagnostic pop
-			if (diff < elapsed) {
-				/* When we started, the mutex wasn't available, so t->info.lastlocked must
-				 * have been at least as older as start. If it suddenly happens that
-				 * t->info.lastlocked is newer than start, that means that the mutex was released
-				 * and acquired by some other thread (not us, unfortunately).
-				 * In this case, the lock is making progress, so it's probably not a deadlock.
-				 * Reset the start time and keep retrying. */
-				lock_debug("Spent %ld seconds so far waiting for mutex %s (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
-					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-				start = now;
-			} else if (c == 1 && t->info.owners == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
-				/* We limit this check to if there is only 1 owner of the lock.
-				 * This is because the offender could grab the lock first,
-				 * then somebody else could grab it and unlock it.
-				 * The lock structure has lock info from the second caller, which no longer holds the lock,
-				 * while the first owner is the real culprit.
-				 * Without storing a linear amount of information (data for each owner),
-				 * it's hard to be more accurate here. Define ENABLE_LOCK_LOGFILE to debug these kinds of issues more accurately. */
-				lock_error("Recursive attempt to lock %s, definite deadlock! (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
-					name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-			} else if (elapsed == 10) {
-				/* Preliminary warning if we think we've encountered a deadlock. */
-				lock_notice("Spent %ld seconds so far waiting for mutex %s, possible deadlock? (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
-					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-#ifndef STRICT_LOCKING
-				/* We always log a backtrace when we think a deadlock has occured, for debugging purposes.
-				 * lock_notice already does this with STRICT_LOCKING, so we only need to do this explicitly here
-				 * if that wasn't defined. */
-				bbs_log_backtrace();
-#endif
-			} else if (elapsed == 300) {
-				/* Okay, this is ridiculous. It should never take 5 minutes to acquire a lock.
-				 * In theory, it could, but there shouldn't be anything that actually does in the BBS. */
-				lock_warning("Spent %ld seconds so far waiting for mutex %s, probable deadlock? (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
-					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-			}
+			mutex_deadlock_check(t, filename, lineno, func, name, c, &start, now, diff, elapsed);
 		}
 		usleep(1000);
 		res = pthread_mutex_trylock(&t->mutex);
@@ -278,11 +324,13 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 	if (unlikely(res)) {
 		lock_warning("Failed to obtain mutex %s: %s\n", name, strerror(res));
 	} else {
+		pthread_mutex_lock(&t->intlock);
 		t->info.lastlocked = time(NULL);
 		if (unlikely(++t->info.owners != 1)) {
 			lock_error("Mutex %s locked more than once?\n", name);
 		}
 		STORE_CALLER_INFO();
+		pthread_mutex_unlock(&t->intlock);
 	}
 
 	return res;
@@ -313,11 +361,13 @@ int __bbs_mutex_trylock(bbs_mutex_t *t, const char *filename, int lineno, const 
 	}
 #endif /* USE_ROBUST_MUTEXES */
 	if (!res) {
+		pthread_mutex_lock(&t->intlock);
 		t->info.lastlocked = time(NULL);
 		if (unlikely(++t->info.owners != 1)) {
 			lock_error("Mutex %s locked more than once?\n", name);
 		}
 		STORE_CALLER_INFO();
+		pthread_mutex_unlock(&t->intlock);
 	}
 
 	return res;
@@ -428,26 +478,7 @@ int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 			elapsed = now - start;
 			diff = now - t->info.lastlocked;
 #pragma GCC diagnostic pop
-			if (diff < elapsed) {
-				lock_debug("Spent %ld seconds so far waiting to rdlock %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
-					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-				start = now;
-			} else if (c == 1 && t->info.owners == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
-				lock_error("Recursive attempt to rdlock %s, definite deadlock! (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
-					name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-			} else if (elapsed == 30) { /* Use a higher threshold for rwlocks than mutexes, since there could be multiple readers */
-				/* Preliminary warning if we think we've encountered a deadlock. */
-				lock_notice("Spent %ld seconds so far waiting to rdlock %s, possible deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
-					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-#ifndef STRICT_LOCKING
-				bbs_log_backtrace();
-#endif
-			} else if (elapsed == 300) {
-				/* Okay, this is ridiculous. It should never take 5 minutes to acquire a lock.
-				 * In theory, it could, but there shouldn't be anything that actually does in the BBS. */
-				lock_warning("Spent %ld seconds so far waiting to rdlock %s, probable deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
-					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-			}
+			rwlock_deadlock_check(t, filename, lineno, func, name, c, &start, now, diff, elapsed, "rdlock");
 		}
 		usleep(1000);
 		res = pthread_rwlock_tryrdlock(&t->lock);
@@ -500,26 +531,7 @@ int __bbs_rwlock_wrlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 			elapsed = now - start;
 			diff = now - t->info.lastlocked;
 #pragma GCC diagnostic pop
-			if (diff < elapsed) {
-				lock_debug("Spent %ld seconds so far waiting to wrlock %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
-					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-				start = now;
-			} else if (c == 1 && t->info.owners == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
-				lock_error("Recursive attempt to wrlock %s, definite deadlock! (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
-					name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-			} else if (elapsed == 30) { /* Use a higher threshold for rwlocks than mutexes, since there could be multiple readers */
-				/* Preliminary warning if we think we've encountered a deadlock. */
-				lock_notice("Spent %ld seconds so far waiting to wrlock %s, possible deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
-					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-#ifndef STRICT_LOCKING
-				bbs_log_backtrace();
-#endif
-			} else if (elapsed == 300) {
-				/* Okay, this is ridiculous. It should never take 5 minutes to acquire a lock.
-				 * In theory, it could, but there shouldn't be anything that actually does in the BBS. */
-				lock_warning("Spent %ld seconds so far waiting to wrlock %s, probable deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
-					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
-			}
+			rwlock_deadlock_check(t, filename, lineno, func, name, c, &start, now, diff, elapsed, "wrlock");
 		}
 		usleep(1000);
 		res = pthread_rwlock_trywrlock(&t->lock);
@@ -531,12 +543,15 @@ int __bbs_rwlock_wrlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 	if (unlikely(res)) {
 		lock_warning("Failed to obtain wrlock %s: %s\n", name, strerror(res));
 	} else {
-		/* If wrlock succeeded, we don't need to lock the internal mutex, since there can't be any readers right now */
+		/* We still need to lock intlock, even though we already exclusively hold the real lock,
+		 * since other call paths that may modify these variables may only have the internal lock. */
+		pthread_mutex_lock(&t->intlock);
 		t->info.lastlocked = time(NULL);
 		if (++t->info.owners != 1) {
 			lock_error("Lock %s locked more than once?\n", name);
 		}
 		STORE_CALLER_INFO();
+		pthread_mutex_unlock(&t->intlock);
 	}
 
 	return res;
@@ -580,10 +595,11 @@ int __bbs_rwlock_trywrlock(bbs_rwlock_t *t, const char *filename, int lineno, co
 	res = pthread_rwlock_trywrlock(&t->lock);
 	lock_log(res);
 	if (!res) {
-		/* If wrlock succeeded, we don't need to lock the internal mutex, since there can't be any readers right now */
+		pthread_mutex_lock(&t->intlock);
 		t->info.lastlocked = time(NULL);
 		t->info.owners++;
 		STORE_CALLER_INFO();
+		pthread_mutex_unlock(&t->intlock);
 	}
 
 	return res;
@@ -601,8 +617,6 @@ int __bbs_rwlock_unlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 		lock_error("Attempt to unlock unheld lock %s\n", name);
 	}
 
-	/* Technically, if we had a wrlock, we don't need to use the internal mutex,
-	 * but we don't keep track of that. */
 	pthread_mutex_lock(&t->intlock);
 	if (unlikely(--t->info.owners < 0)) {
 		lock_error("Lock %s unlocked more times than it was locked\n", name);

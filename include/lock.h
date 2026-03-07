@@ -32,6 +32,7 @@ struct bbs_lock_info {
 
 struct bbs_mutex {
 	pthread_mutex_t mutex;
+	pthread_mutex_t intlock;	/*!< Internal mutex for rwlock */
 	struct bbs_lock_info info;
 };
 
