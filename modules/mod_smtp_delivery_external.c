@@ -1656,6 +1656,10 @@ static void *queue_handler(void *unused)
 		 * we want this time. */
 		last_periodic_queue_run = time(NULL);
 
+		if (unloading) {
+			break; /* If we got interrupted by unload_module, it may be time to exit now */
+		}
+
 		/* Don't use usleep, as the SIGURG signal doesn't succeed in interrupting it */
 		if (bbs_safe_sleep_interrupt(SEC_MS((int) queue_interval))) {
 			bbs_debug(5, "Safe sleep returned\n");
