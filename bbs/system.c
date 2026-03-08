@@ -385,10 +385,10 @@ static void my_close_range(int start, int end)
 }
 #endif
 
-static void cleanup_fds(int maxfd, int fdin, int fdout, int exclude)
+static void cleanup_fds(int maxfd, int fdin, int fdout, int exclude[2])
 {
 	int minfd = 0;
-	int exempt = 0;
+	size_t exempt = 0;
 	int fds[4];
 
 	/* Don't close these file descriptors */
@@ -398,19 +398,22 @@ static void cleanup_fds(int maxfd, int fdin, int fdout, int exclude)
 	if (fdout >= 0 && fdout != fdin) { /* These are often the same, if so, no need to include twice */
 		fds[exempt++] = fdout;
 	}
-	if (exclude >= 0) {
-		fds[exempt++] = exclude;
+	if (exclude[0] >= 0) {
+		fds[exempt++] = exclude[0];
+	}
+	if (exclude[1] >= 0) {
+		fds[exempt++] = exclude[1];
 	}
 
 	/* Sort the file descriptors */
-	qsort(fds, (size_t) exempt, sizeof(int), intsort);
+	qsort(fds, exempt, sizeof(int), intsort);
 
 #ifdef DEBUG_CHILD
 	/* Leave STDIN/STDOUT/STDERR open for debugging messages */
 	minfd = STDERR_FILENO + 1;
 #endif
 
-	child_debug(5, "Cleaning up file descriptors [%d, %d], %d exempt: %d, %d, %d\n", minfd, maxfd, exempt, fdin, fdout, exclude);
+	child_debug(5, "Cleaning up file descriptors [%d, %d], %lu exempt: %d, %d, %d, %d\n", minfd, maxfd, exempt, fdin, fdout, exclude[0], exclude[1]);
 
 	/* Close all open file descriptors, so the child doesn't inherit any of them, except for node->slavefd
 	 * And yes, we close STDIN/STDOUT/STDERR as well since these refer to the sysop console, if there even is one.
@@ -427,13 +430,17 @@ static void cleanup_fds(int maxfd, int fdin, int fdout, int exclude)
 			if (exempt > 2) {
 				close_range(minfd, fds[2] - 1, 0);
 				minfd = fds[2] + 1;
+				if (exempt > 3) {
+					close_range(minfd, fds[3] - 1, 0);
+					minfd = fds[3] + 1;
+				}
 			}
 		}
 	}
 	close_range(minfd, maxfd, 0);
 }
 
-static int exec_pre(int fdin, int fdout, int exclude)
+static int exec_pre(int fdin, int fdout, int exclude[2])
 {
 	struct rlimit rl;
 
@@ -768,12 +775,13 @@ static ssize_t full_read(int fd, char *restrict buf, size_t len)
 
 void bbs_child_exec_prep(int fdin, int fdout)
 {
+	int exclude[2] = { -1, -1 };
 	/* Do a subset of important things that we do in __bbs_execvpe */
 	signal(SIGWINCH, SIG_DFL);
 	signal(SIGTERM, SIG_DFL);
 	signal(SIGINT, SIG_DFL);
 	signal(SIGPIPE, SIG_DFL);
-	exec_pre(fdin, fdout, -1);
+	exec_pre(fdin, fdout, exclude);
 }
 
 /*!
@@ -928,7 +936,11 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 		}
 		return -1;
 	} else if (pid == 0) { /* Child */
-		if (!e->isolated) {
+		int exclude[2] = { -1, -1 };
+		if (e->isolated) {
+			/* If CLONE_CLEAR_SIGHAND was provided to clone, then the signal handlers didn't carry over, we're good. */
+			exclude[0] = procpipe[0]; /* If we still need procpipe, don't close that */
+		} else {
 			/* Immediately install a dummy signal handler for SIGWINCH.
 			 * Until we call exec, the child retains the parent's signal handlers.
 			 * However, if we have a node, we immediately call bbs_node_update_winsize
@@ -954,14 +966,15 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 			signal(SIGTERM, SIG_DFL);
 			signal(SIGINT, SIG_DFL);
 			signal(SIGPIPE, SIG_DFL);
-		} /* else, if CLONE_CLEAR_SIGHAND was provided to clone, then the signal handlers didn't carry over, we're good. */
+		}
 
 		if (fdout == -1) {
 			bbs_std_close(pfd[0]); /* Close read end of pipe */
+			exclude[1] = pfd[0]; /* Don't close this file descriptor again in close_range or valgrind will complain */
 			fd = pfd[1]; /* Use write end of pipe */
 			fdout = fd;
 		}
-		exec_pre(fdin, fdout, e->isolated ? procpipe[0] : -1); /* If we still need procpipe, don't close that */
+		exec_pre(fdin, fdout, exclude);
 		if (node && usenode) {
 			/* Set controlling terminal, or otherwise shells don't fully work properly. */
 			if (set_controlling_term(STDIN_FILENO)) { /* we dup2'd this to the slavefd. This is NOT the parent's STDIN. */
