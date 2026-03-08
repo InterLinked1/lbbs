@@ -78,9 +78,14 @@ void z_client_free(struct z_data *z)
 	free(z);
 }
 
+ssize_t zlib_write(struct z_data *z, int line, const char *buf, size_t len)
+{
+	return zlib_write_cb(z, line, buf, len, NULL, NULL);
+}
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-qual"
-ssize_t zlib_write(struct z_data *z, int line, const char *buf, size_t len)
+ssize_t zlib_write_cb(struct z_data *z, int line, const char *buf, size_t len, ssize_t (*write_cb)(void *cbdata, const char *buf, size_t len), void *cbdata)
 {
 	char output[BUFSIZ];
 
@@ -102,7 +107,11 @@ ssize_t zlib_write(struct z_data *z, int line, const char *buf, size_t len)
 		}
 		comp_len = sizeof(output) - z->compressor->avail_out;
 		bbs_debug(10, "Deflated to %lu bytes at line %d\n", comp_len, line);
-		wres = write(z->fd, output, comp_len);
+		if (write_cb) {
+			wres = write_cb(cbdata, buf, len);
+		} else {
+			wres = write(z->fd, output, comp_len);
+		}
 		if (wres <= 0) {
 			bbs_error("write returned %ld at line %d\n", wres, line);
 			return -1;
@@ -115,13 +124,22 @@ ssize_t zlib_write(struct z_data *z, int line, const char *buf, size_t len)
 
 ssize_t zlib_read(struct z_data *z, int line, char *buf, size_t len)
 {
+	return zlib_read_cb(z, line, buf, len, NULL, NULL);
+}
+
+ssize_t zlib_read_cb(struct z_data *z, int line, char *buf, size_t len, ssize_t (*read_cb)(void *cbdata, char *buf, size_t len), void *cbdata)
+{
 	char input[BUFSIZ / 10]; /* Hopefully the compression doesn't reduce the size by more than 90%... */
 	char output[BUFSIZ];
 	int zres;
 	ssize_t rres;
 	size_t bytes = 0;
 
-	rres = read(z->fd, input, sizeof(input));
+	if (read_cb) {
+		rres = read_cb(cbdata, input, sizeof(input));
+	} else {
+		rres = read(z->fd, input, sizeof(input));
+	}
 	if (rres <= 0) {
 		bbs_error("read returned %ld at line %d\n", rres, line);
 		return -1;
@@ -204,7 +222,18 @@ int test_z_client_expect_eventually(struct z_data *z, int ms, const char *restri
 	return test_z_client_expect_eventually_buf(z, ms, s, line, buf, sizeof(buf));
 }
 
+int test_z_client_expect_eventually_readcb(struct z_data *z, int ms, const char *restrict s, int line, ssize_t (*read_cb)(void *cbdata, char *buf, size_t len), void *cbdata)
+{
+	char buf[4096];
+	return test_z_client_expect_eventually_buf_readcb(z, ms, s, line, buf, sizeof(buf), read_cb, cbdata);
+}
+
 int test_z_client_expect_eventually_buf(struct z_data *z, int ms, const char *restrict s, int line, char *restrict buf, size_t len)
+{
+	return test_z_client_expect_eventually_buf_readcb(z, ms, s, line, buf, len, NULL, NULL);
+}
+
+int test_z_client_expect_eventually_buf_readcb(struct z_data *z, int ms, const char *restrict s, int line, char *restrict buf, size_t len, ssize_t (*read_cb)(void *cbdata, char *buf, size_t len), void *cbdata)
 {
 	struct pollfd pfd;
 
@@ -223,7 +252,7 @@ int test_z_client_expect_eventually_buf(struct z_data *z, int ms, const char *re
 		}
 		if (res > 0 && pfd.revents) {
 			ssize_t bytes;
-			bytes = zlib_read(z, line, buf, len - 1);
+			bytes = zlib_read_cb(z, line, buf, len - 1, read_cb, cbdata);
 			if (bytes <= 0) {
 				return -1;
 			}

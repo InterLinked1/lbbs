@@ -22,16 +22,24 @@ void z_client_free(struct z_data *z);
 #define ZLIB_CLIENT_SHUTDOWN(z) if (z) { z_client_free(z); z = NULL; }
 
 ssize_t zlib_write(struct z_data *z, int line, const char *buf, size_t len);
+ssize_t zlib_write_cb(struct z_data *z, int line, const char *buf, size_t len, ssize_t (*write_cb)(void *cbdata, const char *buf, size_t len), void *cbdata);
 
 ssize_t zlib_read(struct z_data *z, int line, char *buf, size_t len);
+ssize_t zlib_read_cb(struct z_data *z, int line, char *buf, size_t len, ssize_t (*read_cb)(void *cbdata, char *buf, size_t len), void *cbdata);
 
 int test_z_client_expect(struct z_data *z, int ms, const char *s, int line);
 int test_z_client_expect_buf(struct z_data *z, int ms, const char *s, int line, char *buf, size_t len);
+
 int test_z_client_expect_eventually(struct z_data *z, int ms, const char *s, int line);
+int test_z_client_expect_eventually_readcb(struct z_data *z, int ms, const char *restrict s, int line, ssize_t (*read_cb)(void *cbdata, char *buf, size_t len), void *cbdata);
+
 int test_z_client_expect_eventually_buf(struct z_data *z, int ms, const char *s, int line, char *buf, size_t len);
+int test_z_client_expect_eventually_buf_readcb(struct z_data *z, int ms, const char *restrict s, int line, char *restrict buf, size_t len, ssize_t (*read_cb)(void *cbdata, char *buf, size_t len), void *cbdata);
 
 #define ZLIB_CLIENT_EXPECT(z, s) if (test_z_client_expect(z, SEC_MS(5), s, __LINE__)) { goto cleanup; }
 #define ZLIB_CLIENT_EXPECT_BUF(z, s, buf) if (test_z_client_expect_buf(z, SEC_MS(5), s, __LINE__, buf, sizeof(buf))) { goto cleanup; }
 #define ZLIB_CLIENT_EXPECT_EVENTUALLY(z, s) if (test_z_client_expect_eventually(z, SEC_MS(5), s, __LINE__)) { goto cleanup; }
+#define ZLIB_CLIENT_EXPECT_EVENTUALLY_READCB(cb, cbdata, z, s) if (test_z_client_expect_eventually_readcb(z, SEC_MS(5), s, __LINE__, cb, cbdata)) { goto cleanup; }
 
 #define ZLIB_SWRITE(z, s) if (zlib_write(z, __LINE__, s, STRLEN(s)) < 0) { goto cleanup; }
+#define ZLIB_SWRITE_CB(cb, cbdata, z, s) if (zlib_write_cb(z, __LINE__, s, STRLEN(s), cb, cbdata) < 0) { goto cleanup; }

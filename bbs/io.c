@@ -367,6 +367,26 @@ readnow:
 	 * We need to do this before we exit, since this thread isn't joined immediately. */
 	bbs_debug(4, "%s I/O thread exiting\n", t->name);
 	t->funcs->io_finalize(tran->data);
+
+	if (tran->outer_rfd != tran->outer_wfd) {
+		/* There is an added complication for layered I/O connections, where we also need to close the outer read file descriptor, since we don't need to read from the network side anymore.
+		 *
+		 * For example, if we are running compression on top of TLS, then we leak a file descriptor if we don't close z->orig_fd in io_compress (this is what test_imap_compress_tls tests)
+		 *
+		 * However, if we always do that, that will mess up sessions that only use compression without TLS (test_imap_compress tests that),
+		 * since in that case, z->orig_rfd is the node's actual file descriptor, which gets closed in node_cleanup.
+		 *
+		 * We need to handle both cases, because if there are no I/O transformations, node.c needs to close its own file descriptor,
+		 * but if we are running on top of another I/O module, then we are responsible for closing it.
+		 *
+		 * We can detect that if, when we set up a transformation, rfd != wfd. This indicates this is a nested transformation,
+		 * since if we were the first transformation on top of the node socket, rfd == wfd.
+		 * Just below, in bbs_io_transform_setup, before calling t->funcs->setup, we save the original rfd and set tran->outer_rfd to it,
+		 * so we have access to it via that variable now and can close it. */
+		bbs_debug(5, "Closing file descriptor %d since this is a nested transformation\n", tran->outer_rfd);
+		close(tran->outer_rfd); /* Nothing more that we are going to read from a lower I/O layer since we already closed write to the application side */
+	}
+
 	return NULL;
 }
 
