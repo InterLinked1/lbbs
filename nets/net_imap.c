@@ -808,6 +808,10 @@ static void imap_mbox_watcher(struct mailbox_event *event)
 
 	switch (event->type) {
 		case EVENT_MESSAGE_APPEND:
+			/* We ignore this event as far as sending untagged EXISTS, and just use EVENT_INTERNAL_MESSAGE_APPEND_MULTIPLE
+			 * to send a single update at the end of a batch operation. */
+			break;
+		case EVENT_INTERNAL_MESSAGE_APPEND_MULTIPLE: /* Pseudo event used for batch updates */
 		case EVENT_MESSAGE_NEW:
 			send_untagged_exists(event->node, event->mbox, event->maildir);
 			break;
@@ -2044,6 +2048,19 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 	return handle_fetch_full(imap, s, usinguid, 1);
 }
 
+static void copy_move_append_multiupdate(struct imap_session *imap, const char *dstmaildir, unsigned int *newuids, int lengths)
+{
+	/* Batch an update for all new UIDs for the target mailbox and dispatch an EVENT_INTERNAL_MESSAGE_APPEND_MULTIPLE event.
+	 * mailbox_notify_new_or_appended_message has already been called at this point,
+	 * so we don't need to process any individual messages. */
+
+	/* We don't actually need these; in send_untagged_exists, we calculate how many messages are in the maildir. */
+	UNUSED(newuids);
+	UNUSED(lengths);
+
+	mailbox_dispatch_event_basic(EVENT_INTERNAL_MESSAGE_APPEND_MULTIPLE, imap->node, imap->mbox, dstmaildir);
+}
+
 static int handle_copy(struct imap_session *imap, const char *sequences, const char *newbox, int usinguid)
 {
 	struct dirent *entry, **entries;
@@ -2114,6 +2131,9 @@ static int handle_copy(struct imap_session *imap, const char *sequences, const c
 	if (olduids || newuids) {
 		olduidstr = gen_uintlist(olduids, lengths);
 		newuidstr = gen_uintlist(newuids, lengths);
+
+		copy_move_append_multiupdate(imap, newboxdir, newuids, lengths);
+
 		free_if(olduids);
 		free_if(newuids);
 	}
@@ -2122,8 +2142,6 @@ static int handle_copy(struct imap_session *imap, const char *sequences, const c
 	} else if (!numcopies && quotaleft <= 0) {
 		imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
 	} else {
-		/* maildir_copy_msg_filename sends the untagged EXISTS for the new message in the destination mailbox.
-		 * No untagged EXISTS should be sent to the client running the command. */
 		if (IMAP_HAS_ACL(imap->acl, IMAP_ACL_READ)) {
 			imap_reply(imap, "OK [COPYUID %u %s %s] COPY completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
 		} else {
@@ -2223,14 +2241,14 @@ cleanup:
 	if (olduids || newuids) {
 		olduidstr = gen_uintlist(olduids, lengths);
 		newuidstr = gen_uintlist(newuids, lengths);
+
+		copy_move_append_multiupdate(imap, newboxdir, newuids, lengths);
+
 		free_if(olduids);
 		free_if(newuids);
 	}
 
-	/* maildir_move_msg_filename sends the untagged EXISTS for the new message in the destination mailbox.
-	 * No untagged EXISTS should be sent to the client running the command.
-	 *
-	 * The untagged EXPUNGE responses are sent at this point, and since untagged EXPUNGES can't be sent
+	/* The untagged EXPUNGE responses are sent at this point, and since untagged EXPUNGES can't be sent
 	 * while a command is not in progress, we need to flush this out BEFORE finalizing the response with an OK. */
 	if (expunged) {
 		imap->highestmodseq = maildir_indicate_expunged(EVENT_MESSAGE_EXPUNGE, imap->node, imap->mbox, imap->curdir, expunged, expungedseqs, exp_lengths, 0);
@@ -2636,7 +2654,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		 * that isn't the spirit of an "atomic" operation... */
 	}
 
-	/* We can return directly here because a isn't used when imap->client != NULL and therefore doesn't need to be freed */
+	/* We can return directly here because a uintlist isn't used when imap->client != NULL and therefore doesn't need to be freed */
 	if (imap->client) {
 		/* Send empty line to denote end of APPEND/MULTIAPPEND */
 		ssize_t res = bbs_write(imap->client->client.wfd, "\r\n", 2);
@@ -2651,6 +2669,8 @@ static int handle_append(struct imap_session *imap, char *s)
 		}
 		return 0;
 	}
+
+	copy_move_append_multiupdate(imap, appenddir, a, lengths);
 
 	if (append_response(imap, imap->acl, a, appends, uidvalidity, uidnext)) {
 		goto cleanup2;
@@ -3076,6 +3096,10 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 			/* We should also EXPUNGE here, technically, but that should be left for the user to do explicitly,
 			 * in case there are other messages present that are marked as \Deleted whose time to be expunged
 			 * has not necessarily yet come. */
+		}
+
+		if (!destclient) {
+			copy_move_append_multiupdate(imap, traversalstack.dir, a, alengths);
 		}
 
 		/* XXX If destclient, in theory if the remote server supports UIDPLUS, we could keep track of the dest UID

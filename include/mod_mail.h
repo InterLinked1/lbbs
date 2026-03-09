@@ -53,7 +53,8 @@ enum mailbox_event_type {
 	EVENT_SERVER_METADATA_CHANGE = (1 << 19),
 	EVENT_ANNOTATION_CHANGE = (1 << 20),		/*!< Message annotation changed */
 	/* Internal events (not part of any RFC, only used by the BBS) */
-	EVENT_MAILBOX_UIDVALIDITY_CHANGE = (1 << 21)	/*!< UIDVALIDITY reset */
+	EVENT_MAILBOX_UIDVALIDITY_CHANGE = (1 << 21),	/*!< UIDVALIDITY reset */
+	EVENT_INTERNAL_MESSAGE_APPEND_MULTIPLE = (1 << 22),	/*!< Cumulative update used for efficiency in lieu of APPEND */
 };
 
 /*! \brief Get the name of a mailbox event type */

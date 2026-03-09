@@ -206,6 +206,12 @@ static void log_cb(struct mailbox_event *e)
 /*! \brief Callback for all mailbox events */
 static void mbox_event_callback(struct mailbox_event *event)
 {
+	if (event->type == EVENT_INTERNAL_MESSAGE_APPEND_MULTIPLE) {
+		/* We already log everything for each individual message,
+		 * we don't care about the batch event. */
+		return;
+	}
+
 	/* Serialize logging for events, so events aren't logged partially interleaved with each other.
 	 * Obviously, this may reduce performance. */
 	bbs_mutex_lock(&loglock);

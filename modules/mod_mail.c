@@ -213,6 +213,8 @@ const char *mailbox_event_type_name(enum mailbox_event_type type)
 			return "AnnotationChange";
 		case EVENT_MAILBOX_UIDVALIDITY_CHANGE:
 			return "UIDVALIDITYChange";
+		case EVENT_INTERNAL_MESSAGE_APPEND_MULTIPLE:
+			return "InternalMessageAppendMultiple";
 		/* No default case */
 	}
 	__builtin_unreachable();
@@ -279,7 +281,7 @@ void mailbox_dispatch_event_basic(enum mailbox_event_type type, struct bbs_node 
 	mailbox_dispatch_event(&e);
 }
 
-void mailbox_notify_new_message(struct bbs_node *node, struct mailbox *mbox, const char *maildir, const char *newfile, size_t size)
+static void mailbox_notify_new_or_appended_message(struct bbs_node *node, struct mailbox *mbox, const char *maildir, const char *newfile, size_t size, enum mailbox_event_type event_type)
 {
 	struct mailbox_event e;
 	struct stat st;
@@ -308,9 +310,14 @@ void mailbox_notify_new_message(struct bbs_node *node, struct mailbox *mbox, con
 	 * for a MessageNew event, implicitly move the message from new to cur NOW, which will assign it a UID.
 	 * Otherwise, there is really no good workaround. */
 
-	mailbox_initialize_event(&e, EVENT_MESSAGE_NEW, node, mbox, maildir);
+	mailbox_initialize_event(&e, event_type, node, mbox, maildir);
 	e.msgsize = size;
 	mailbox_dispatch_event(&e);
+}
+
+void mailbox_notify_new_message(struct bbs_node *node, struct mailbox *mbox, const char *maildir, const char *newfile, size_t size)
+{
+	return mailbox_notify_new_or_appended_message(node, mbox, maildir, newfile, size, EVENT_MESSAGE_NEW);
 }
 
 void mailbox_notify_quota_exceeded(struct bbs_node *node, struct mailbox *mbox)
@@ -1710,7 +1717,7 @@ static int copy_move_untagged_exists(struct bbs_node *node, struct mailbox *mbox
 
 	safe_strncpy(maildir, newpath, sizeof(maildir));
 	maildir_extract_from_filename(maildir);
-	mailbox_notify_new_message(node, mbox, maildir, newpath, size);
+	mailbox_notify_new_or_appended_message(node, mbox, maildir, newpath, size, EVENT_MESSAGE_APPEND);
 	return 0;
 }
 
