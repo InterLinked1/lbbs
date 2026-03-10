@@ -41,7 +41,6 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
-#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pwd.h> /* use getpwnam */
 #include <limits.h> /* use PATH_MAX */

@@ -339,7 +339,7 @@ static int auth_none(ssh_session session, const char *user, void *userdata)
 		return SSH_AUTH_DENIED;
 	}
 
-	/* We're not calling bbs_authenticate or bbs_user_authenticatehere,
+	/* We're not calling bbs_authenticate or bbs_user_authenticate here,
 	 * the user still has to authenticate for real (but will do so interactively)
 	 * ... this is the "normal" way of logging in for a BBS, like with Telnet/RLogin, etc.
 	 */

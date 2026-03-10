@@ -60,7 +60,7 @@ static pthread_t uds_thread;
  * means you don't need to juggle port conflicts if you'd like the BBS to run on the well-known ports (e.g. 22, 23, etc.)
  * but you want those to be handled by the system network login services instead.
  *
- * NOTE: You are much better of proxying to the BBS's SSH module even if it's running on a different port.
+ * NOTE: You are much better off proxying to the BBS's SSH module even if it's running on a different port.
  *       For example, exec ssh localhost -p 2222
  * The UNIX socket driver will not properly pass signals and does not support window sizing. It's very primitive.
  * You are advised to avoid using this module for production usage.
