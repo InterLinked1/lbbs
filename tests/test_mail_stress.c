@@ -26,6 +26,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <pthread.h>
 #include <sys/socket.h> /* use SOMAXCONN */
 #include <netinet/in.h> /* use sockaddr_in */
@@ -124,6 +125,17 @@ cleanup:
 static int run(void)
 {
 	int i, res = -1;
+	int imapfd = -1;
+	struct timeval tv_start, tv_end;
+	long t_smtp, t_list_status, t_select, t_copy1, t_copy4, t_copy5, t_copy20, t_copy40;
+	long t2_list_status, t2_select, t2_search;
+
+#define START_TIMER() gettimeofday(&tv_start, NULL)
+#define END_TIMER(var) \
+	gettimeofday(&tv_end, NULL); \
+	var = (1000000 * tv_end.tv_sec + tv_end.tv_usec) - (1000000 * tv_start.tv_sec + tv_start.tv_usec)
+#define PRINT_TIME(var, name) \
+	fprintf(stderr, "%-25s | %5ld.%03d ms\n", name, var / 1000, (int) (var % 1000))
 
 	/* Initialization */
 	for (i = 0; i < NUM_SMTP_THREADS; i++) {
@@ -132,6 +144,7 @@ static int run(void)
 	}
 
 	/* First, send all the test messages */
+	START_TIMER();
 	for (i = 0; i < NUM_SMTP_THREADS; i++) {
 		int pres = pthread_create(&smtp_threads[i], NULL, send_thread, &smtp_index[i]);
 		if (pres) {
@@ -149,11 +162,105 @@ static int run(void)
 			smtp_threads[i] = 0;
 		}
 	}
+	END_TIMER(t_smtp);
 
 	/* Verify that the email messages were all sent properly. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", TARGET_MESSAGES);
 
+	/* If this test is being run from a console, clear the screen at this point, since the above SMTP output is lengthy.
+	 * That way, we can focus on the IMAP stuff from here on out. */
+	fprintf(stderr, TERM_CLEAR_SCROLLBACK);
+
+	/* Log in via IMAP to look at some of the messages */
+	imapfd = test_make_socket(143);
+	REQUIRE_FD(imapfd);
+	CLIENT_EXPECT(imapfd, "OK");
+
+	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
+	CLIENT_EXPECT(imapfd, "a1 OK");
+
+	/* Perform some operations that are linear with respect to the current mailbox,
+	 * things that would likely perform better with some kind of caching mechanism. */
+
+	/* First, LIST-STATUS with STATUS=SIZE. */
+	START_TIMER();
+	SWRITE(imapfd, "a2 LIST \"\" \"*\" RETURN (CHILDREN STATUS (MESSAGES RECENT UNSEEN SIZE))" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "a2 OK");
+	END_TIMER(t_list_status);
+
+	/* Select the INBOX (where all the messages are) */
+	START_TIMER();
+	SWRITE(imapfd, "a3 SELECT \"INBOX\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "a3 OK");
+	END_TIMER(t_select);
+
+	/* Copy the initial 10k messages a few times so we end up with 100k messages for IMAP load testing.
+	 * Start by copying small batches, and move up towards increasingly large batches.
+	 * It's MUCH faster to create new messages this way than using SMTP transactions. */
+	START_TIMER();
+	SWRITE(imapfd, "b1 UID COPY 1:1000 \"INBOX\"" ENDL); /* End with 11,000 */
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "b1 OK");
+	END_TIMER(t_copy1);
+
+	START_TIMER();
+	SWRITE(imapfd, "b2 UID COPY 1001:5000 \"INBOX\"" ENDL); /* End with 15,000 */
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "b2 OK");
+	END_TIMER(t_copy4);
+
+	START_TIMER();
+	SWRITE(imapfd, "b3 UID COPY 5001:10000 \"INBOX\"" ENDL); /* End with 20,000 */
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "b3 OK");
+	END_TIMER(t_copy5);
+
+	START_TIMER();
+	SWRITE(imapfd, "b4 UID COPY 1:20000 \"INBOX\"" ENDL); /* End with 40,000 */
+	CLIENT_EXPECT_EVENTUALLY_SEC(imapfd, 15, "b4 OK"); /* May need more time with high debug */
+	END_TIMER(t_copy20);
+
+	START_TIMER();
+	SWRITE(imapfd, "b5 UID COPY 1:40000 \"INBOX\"" ENDL); /* End with 80,000 */
+	CLIENT_EXPECT_EVENTUALLY_SEC(imapfd, 30, "b5 OK"); /* May need more time with high debug */
+	END_TIMER(t_copy40);
+
+	SWRITE(imapfd, "b6 UNSELECT" ENDL);
+	CLIENT_EXPECT(imapfd, "b6 OK");
+
+	/* Now that the mailbox is somewhat large (80k messages), repeat some of the initial tests. */
+	START_TIMER();
+	SWRITE(imapfd, "c1 LIST \"\" \"*\" RETURN (CHILDREN STATUS (MESSAGES RECENT UNSEEN SIZE))" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "c1 OK");
+	END_TIMER(t2_list_status);
+
+	START_TIMER();
+	SWRITE(imapfd, "c2 SELECT \"INBOX\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "c2 OK");
+	END_TIMER(t2_select);
+
+	/* Search for messages with subject containing "1337".
+	 * There should be exactly 8 (the original one from SMTP, and the 7 copies we made).
+	 * This should take a little more time, given we actually need to OPEN 80,000 messages
+	 * and parse all their headers. */
+	START_TIMER();
+	SWRITE(imapfd, "c3 SEARCH HEADER \"From\" \"1337\"" ENDL);
+	/* We can't expect exact sequence numbers, as depending on the order in which the initial messages delivered
+	 * via SMTP were processed, the last 4 digits may vary, i.e. 1ABC, 11ABC, 21ABC, 31ABC, etc.
+	 * Manually run the test, can confirm the last 4 digits, i.e. 1ABC are the same for all the results. */
+	CLIENT_EXPECT(imapfd, "* SEARCH 1"); /* This just matches the beginning (i.e. search result is non-empty and first sequence # starts with 1 */
+	END_TIMER(t2_search);
+
 	res = 0;
+
+	PRINT_TIME(t_smtp, "SMTP send 10k");
+	PRINT_TIME(t_list_status, "LIST-STATUS 10k");
+	PRINT_TIME(t_select, "SELECT 10k");
+	PRINT_TIME(t_copy1, "COPY 1k");
+	PRINT_TIME(t_copy4, "COPY 4k");
+	PRINT_TIME(t_copy5, "COPY 5k");
+	PRINT_TIME(t_copy20, "COPY 20k");
+	PRINT_TIME(t_copy40, "COPY 40k");
+	PRINT_TIME(t2_list_status, "LIST-STATUS 80k");
+	PRINT_TIME(t2_select, "SELECT 80k");
+	PRINT_TIME(t2_search, "SEARCH 80k");
 
 cleanup:
 	for (i = 0; i < NUM_SMTP_THREADS; i++) {
@@ -162,6 +269,7 @@ cleanup:
 			smtp_threads[i] = 0;
 		}
 	}
+	close_if(imapfd);
 	return res;
 }
 

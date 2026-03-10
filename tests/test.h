@@ -151,6 +151,7 @@ int test_client_drain(int fd, int ms);
 #define CLIENT_EXPECT(fd, s) if (test_client_expect(fd, SEC_MS(DEFAULT_WAIT_SEC), s, __LINE__)) { goto cleanup; }
 #define CLIENT_EXPECT_BUF(fd, s, buf) if (test_client_expect_buf(fd, SEC_MS(DEFAULT_WAIT_SEC), s, __LINE__, buf, sizeof(buf))) { goto cleanup; }
 #define CLIENT_EXPECT_EVENTUALLY(fd, s) if (test_client_expect_eventually(fd, SEC_MS(DEFAULT_WAIT_SEC), s, __LINE__)) { goto cleanup; }
+#define CLIENT_EXPECT_EVENTUALLY_SEC(fd, sec, s) if (test_client_expect_eventually(fd, SEC_MS(sec), s, __LINE__)) { goto cleanup; }
 /* We really may need up to 150ms when under valgrind */
 #define CLIENT_DRAIN(fd) test_client_drain(fd, 150)
 
