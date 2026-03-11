@@ -188,7 +188,7 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 	suffix = rand1 % 2048 + rand2 % 1024;
 	snprintf(randcode, sizeof(randcode), "%s%d", randombytes, suffix);
 
-	/* Email the user the reset code. */
+	/* Email the user the reset code */
 	res = bbs_mail_fmt(0, bbs_user_email(user), NULL, NULL, "BBS Password Reset", "Greetings,\r\n\tYour password reset code for your BBS login is %s.\r\nIf you did not request this code, you should change your password immediately.\r\n", randcode);
 	if (res) {
 		goto fail;
@@ -197,6 +197,7 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 	NEG_RETURN(bbs_node_writef(node, "\n%sWe just emailed you a password reset code. Continue once you've received it.%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
 	NEG_RETURN(bbs_node_wait_key(node, SEC_MS(600))); /* Wait a bit longer, up to 10 minutes in case email is delayed */
 
+	bbs_node_echo_on(node); /* Allow user to see the reset code as he types or pastes it in */
 	bbs_get_response(node, 20, COLOR(TERM_COLOR_WHITE) "\nReset Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
 	if (strcmp(usercode, randcode)) {
 		bbs_user_destroy(user);
