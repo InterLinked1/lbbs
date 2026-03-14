@@ -15,7 +15,7 @@ jobs:
     name: Ubuntu 24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
@@ -35,7 +35,7 @@ jobs:
     name: Ubuntu 22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
@@ -55,7 +55,7 @@ jobs:
     name: Ubuntu 24.04, without optimization
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
@@ -82,7 +82,7 @@ jobs:
     name: Ubuntu 24.04, under Address Sanitizer
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
@@ -102,7 +102,7 @@ jobs:
     name: Debian 13
     container: debian:13
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           ./scripts/install_prereq.sh
@@ -132,7 +132,7 @@ jobs:
     name: Debian 12
     container: debian:12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           ./scripts/install_prereq.sh
@@ -154,7 +154,7 @@ jobs:
     name: Debian 11
     container: debian:11
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           ./scripts/install_prereq.sh
@@ -176,7 +176,7 @@ jobs:
     name: Debian 10
     container: debian:10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           sed -i 's|deb.debian.org/debian buster main|archive.debian.org/debian buster main|g' /etc/apt/sources.list
@@ -202,7 +202,7 @@ jobs:
     name: Alpine Linux
     container: alpine:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           ./scripts/install_prereq.sh
@@ -223,7 +223,7 @@ jobs:
     name: Fedora 42
     container: fedora:42
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
@@ -246,7 +246,7 @@ jobs:
     name: Fedora 40
     container: fedora:40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
@@ -269,7 +269,7 @@ jobs:
     name: Rocky Linux 9.3
     container: rockylinux:9.3
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
@@ -292,7 +292,7 @@ jobs:
     name: Rocky Linux 8.9
     container: rockylinux:8.9
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
@@ -315,7 +315,7 @@ jobs:
     name: openSUSE Tumbleweed
     container: opensuse/tumbleweed
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           INSTALL_LIBETPAN=0 ./scripts/install_prereq.sh
@@ -338,7 +338,7 @@ jobs:
     name: Arch Linux
     container: archlinux:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
@@ -360,7 +360,7 @@ jobs:
     runs-on: ubuntu-24.04
     name: FreeBSD
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install prereqs and build LBBS
         uses: vmactions/freebsd-vm@v1
         with:
