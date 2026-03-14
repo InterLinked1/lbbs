@@ -382,11 +382,22 @@ struct bbs_mime_message {
 
 struct bbs_mime_message *bbs_mime_message_parse(const char *filename)
 {
-	struct bbs_mime_message *mime = malloc(sizeof(*mime));
-	if (ALLOC_FAILURE(mime)) {
+	GMimeMessage *message;
+	struct bbs_mime_message *mime;
+
+	/* This is more likely to fail, so do it first before allocating the container */
+	message = mk_mime(filename);
+	if (!message) {
+		/* Return NULL if we failed here, since bbs_mime_make_bodystructure expects mime->message to be non-NULL */
 		return NULL;
 	}
-	mime->message = mk_mime(filename);
+
+	mime = malloc(sizeof(*mime));
+	if (ALLOC_FAILURE(mime)) {
+		g_object_unref(message);
+		return NULL;
+	}
+	mime->message = message;
 	return mime;
 }
 
