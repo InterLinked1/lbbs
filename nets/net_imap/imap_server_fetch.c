@@ -952,7 +952,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		char fullname[516];
 		int markseen, recent;
 
-		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_FILE(entry)) {
 			goto next;
 		}
 		msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);

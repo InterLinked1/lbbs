@@ -1042,7 +1042,7 @@ static int imap_expunge(struct imap_session *imap, int silent)
 		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {
-		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_FILE(entry)) {
 			goto next;
 		}
 
@@ -1186,7 +1186,7 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 				 */
 				int i = 0;
 				while (fno < files && (entry = entries[fno++])) {
-					if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+					if (!IS_MAILDIR_FILE(entry)) {
 						continue;
 					}
 					seqno++;
@@ -1222,7 +1222,7 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 	free_if(expunged);
 
 	while (fno < files && (entry = entries[fno++])) {
-		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_FILE(entry)) {
 			goto next;
 		}
 		seqno++;
@@ -2098,7 +2098,7 @@ static int handle_copy(struct imap_session *imap, const char *sequences, const c
 		unsigned int msguid;
 		struct stat st;
 
-		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_FILE(entry)) {
 			continue;
 		}
 		msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);
@@ -2194,7 +2194,7 @@ static int handle_move(struct imap_session *imap, const char *sequences, const c
 		unsigned int msguid;
 		unsigned long modseq;
 
-		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_FILE(entry)) {
 			goto cleanup;
 		}
 		++seqno;
@@ -3306,7 +3306,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			unsigned int msguid;
 			unsigned long modseq;
 
-			if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			if (!IS_MAILDIR_FILE(entry)) {
 				continue;
 			}
 			msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);
@@ -3346,7 +3346,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		int i;
 		int newflags, changes = 0;
 
-		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_FILE(entry)) {
 			continue;
 		}
 		msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);
@@ -3759,7 +3759,7 @@ static int sub_rename(const char *path, const char *prefix, const char *newprefi
 		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {
-		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_DIR(entry)) {
 			continue;
 		} else if (entry->d_type == DT_DIR) { /* We only care about directories, not files. */
 			if (!strncmp(entry->d_name, prefix, prefixlen)) {

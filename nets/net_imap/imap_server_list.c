@@ -377,7 +377,7 @@ int list_iterate(struct imap_session *imap, struct list_command *lcmd, int level
 		const char *mailboxname = entry->d_name;
 
 		/* Only care about directories, not files. */
-		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_DIR(entry)) {
 			goto cleanup;
 		}
 
@@ -465,7 +465,7 @@ int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level
 		const char *mailboxname = entry->d_name;
 
 		/* Only care about directories, not files. */
-		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_DIR(entry)) {
 			goto cleanup;
 		}
 

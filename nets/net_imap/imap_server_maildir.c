@@ -355,7 +355,7 @@ int imap_msg_to_filename(const char *directory, int seqno, unsigned int uid, cha
 			return -1;
 		}
 		while (fno < files && (entry = entries[fno++])) {
-			if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			if (!IS_MAILDIR_FILE(entry)) {
 				continue;
 			}
 			myseqno++;

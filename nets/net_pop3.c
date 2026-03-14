@@ -237,7 +237,7 @@ static int pop3_traverse(const char *path, int (*on_file)(const char *dir_name, 
 		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {
-		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_FILE(entry)) {
 			free(entry);
 			continue;
 		}

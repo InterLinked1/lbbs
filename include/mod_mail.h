@@ -20,6 +20,12 @@ struct bbs_url;
 struct bbs_tcp_client;
 struct dirent;
 
+/* This will incur a slight performance penalty, but if you as the postmaster are at all prone to opening maildir
+ * files in an editor directly to inspect them (which should be avoided!), this will ensure correctness.
+ * You can disable this if you promise NEVER, NEVER, NEVER to manually inspect maildirs without copying
+ * them elsewhere to do so. */
+#define IGNORE_SWAPFILES_IN_MAILDIRS
+
 /* RFC 3696 Section 3 (updated by erratum to 256, but doesn't hurt to use the original, longer length) */
 #define MAX_EMAIL_ADDRESS_LENGTH 320
 
@@ -497,6 +503,15 @@ void maildir_extract_from_filename(char *restrict filename);
  *       See comments at top of nets/net_imap/imap_server_maildir.c
  */
 int uidsort(const struct dirent **da, const struct dirent **db);
+
+/*! \brief Whether this is a valid maildir file. Skip if not. */
+#ifdef IGNORE_SWAPFILES_IN_MAILDIRS
+#define IS_MAILDIR_FILE(entry) (entry->d_type == DT_REG && strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..") && !bbs_str_ends_with(entry->d_name, ".swp"))
+#else
+#define IS_MAILDIR_FILE(entry) (entry->d_type == DT_REG && strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))
+#endif
+
+#define IS_MAILDIR_DIR(entry) (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))
 
 /*!
  * \brief Perform an ordered traversal (by UID) of a maildir cur directory

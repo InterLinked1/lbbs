@@ -2120,7 +2120,15 @@ int uidsort(const struct dirent **da, const struct dirent **db)
 		bbs_error("Failed to parse UID for %s / %s\n", a, b);
 		return 0;
 	} else if (unlikely(auid == buid)) {
-		bbs_error("Message UIDs are equal? (%u = %u)\n", auid, buid);
+#ifdef IGNORE_SWAPFILES_IN_MAILDIRS
+		if (bbs_str_ends_with(a, ".swp") || bbs_str_ends_with(b, ".swp")) {
+			/* Whatever function is calling scandir will exclude swap files using
+			 * IS_MAILDIR_FILE(), so even though this is a problematic comparison here,
+			 * it can safely be ignored since the caller will end up ignoring it. */
+			return 0;
+		}
+#endif
+		bbs_error("Message UIDs are equal? (%u = %u) for %s and %s\n", auid, buid, a, b);
 		return 0;
 	}
 
@@ -2143,7 +2151,7 @@ static int maildir_traverse(const char *path, int (*on_file)(const char *dir_nam
 		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {
-		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!IS_MAILDIR_FILE(entry)) {
 			continue;
 		}
 		seqno++;

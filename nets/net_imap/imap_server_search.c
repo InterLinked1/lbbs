@@ -990,9 +990,7 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {
-		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			goto next;
-		} else if (entry->d_type != DT_REG) { /* We only care about directories, not files. */
+		if (!IS_MAILDIR_FILE(entry)) {
 			goto next;
 		}
 		seqno++;
