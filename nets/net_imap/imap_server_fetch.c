@@ -266,7 +266,7 @@ static int send_filtered_headers(struct imap_session *imap, struct fetch_body_re
 	size_t headersbuflen = sizeof(headersbuf);
 	char *buf = headersbuf;
 	size_t len = headersbuflen;
-	char linebuf[1001];
+	char linebuf[1500]; /* Even though header lines should not be longer than ~1,000 chars, sometimes they are longer in the wild and we should be able to handle them */
 	char listbuf[4096];
 	int inside_match = filter ? 0 : 1;
 	size_t headerslen;
@@ -327,7 +327,7 @@ static int send_filtered_headers(struct imap_session *imap, struct fetch_body_re
 				safe_strncpy(headername + 1, linebuf, sizeof(headername) - 1);
 				tmp = strchr(headername + 1, ':');
 				if (!tmp) {
-					bbs_warning("Unexpected end of headers: %s\n", linebuf);
+					bbs_warning("Unexpected end of headers in %s: %s\n", fullname, linebuf);
 					break;
 				}
 				/* Since safe_strncpy will always null terminate,
