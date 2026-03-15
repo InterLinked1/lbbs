@@ -49,7 +49,7 @@
 
 static char root_maildir[248] = "";
 static char catchall[256] = "";
-static unsigned int maxquota = 10000000;
+static unsigned long maxquota = 10000000;
 
 struct stringlist local_domains;
 
@@ -57,8 +57,8 @@ struct stringlist local_domains;
 struct mailbox {
 	unsigned int id;					/* Mailbox ID. Corresponds with user ID. */
 	unsigned int watchers;				/* Number of watchers for this mailbox. */
-	unsigned int quota;					/* Total quota for this mailbox */
-	unsigned int quotausage;			/* Cached quota usage calculation */
+	unsigned long quota;					/* Total quota for this mailbox */
+	unsigned long quotausage;			/* Cached quota usage calculation */
 	char maildir[266];					/* User's mailbox directory, on disk. */
 	size_t maildirlen;					/* Length of maildir */
 	bbs_rwlock_t lock;					/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
@@ -804,11 +804,11 @@ void mailbox_quota_adjust_usage(struct mailbox *mbox, int bytes)
 {
 	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
 	if (mbox->quotavalid) {
-		mbox->quotausage += (unsigned int) bytes;
+		mbox->quotausage += (unsigned long) bytes;
 		if (mbox->quotausage > mailbox_quota(mbox)) {
 			/* Could also happen if we underflow below 0, since quotausage is unsigned */
 			/* Either our adjustments to the cached value went off somewhere, or we didn't check the quota somewhere. Either way, somebody screwed up. */
-			bbs_error("Mailbox quota usage (%u) exceeds quota allowed (%lu)\n", mbox->quotausage, mailbox_quota(mbox));
+			bbs_error("Mailbox quota usage (%lu) exceeds quota allowed (%lu)\n", mbox->quotausage, mailbox_quota(mbox));
 			mailbox_invalidate_quota_cache(mbox);
 		}
 	}
@@ -829,10 +829,10 @@ unsigned long mailbox_quota(struct mailbox *mbox)
 	snprintf(quotafile, sizeof(quotafile), "%s/.quota", mailbox_maildir(mbox));
 	fp = fopen(quotafile, "r");
 	if (fp && fgets(quotabuf, sizeof(quotabuf), fp)) { /* Use the default */
-		mbox->quota = (unsigned int) atoi(quotabuf);
+		mbox->quota = (unsigned long) atol(quotabuf);
 		fclose(fp);
 	} else {
-		mbox->quota = (unsigned int) maxquota;
+		mbox->quota = maxquota;
 		if (fp) {
 			fclose(fp);
 		}
@@ -857,7 +857,7 @@ unsigned long mailbox_quota_used(struct mailbox *mbox)
 		return 0;
 	}
 	quotaused = (unsigned long) tmp;
-	mbox->quotausage = (unsigned int) quotaused;
+	mbox->quotausage = quotaused;
 	mbox->quotavalid = 1; /* This can be cached until invalidated again */
 	return quotaused;
 }
@@ -874,7 +874,7 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 		if (quota > mbox->quotausage) {
 			return quota - mbox->quotausage;
 		}
-		bbs_debug(5, "No quota remaining in this mailbox (%u used, %lu available)\n", mbox->quotausage, quota);
+		bbs_debug(5, "No quota remaining in this mailbox (%lu used, %lu available)\n", mbox->quotausage, quota);
 		return 0; /* Already over quota */
 	}
 
@@ -886,7 +886,7 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 		return quota;
 	}
 	quotaused = (unsigned long) tmp;
-	mbox->quotausage = (unsigned int) quotaused;
+	mbox->quotausage = quotaused;
 	mbox->quotavalid = 1; /* This can be cached until invalidated again */
 	if (quotaused >= quota) {
 		bbs_debug(5, "No quota remaining in this mailbox (%lu used, %lu available)\n", quotaused, quota);
@@ -894,7 +894,7 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 		return 0; /* Quota already exceeded. Don't cast to unsigned or it will underflow and be huge. */
 	}
 	quota -= quotaused;
-	return (unsigned long) (quota - quotaused);
+	return (quota - quotaused);
 }
 
 #define MAX_UID 4294967295
@@ -2207,7 +2207,7 @@ static int cli_mailbox(struct bbs_cli_args *a)
 	bbs_dprintf(a->fdout, "%-20s: %9lu KB\n", "Quota Used", mailbox_quota_used(mbox) / 1024);
 	bbs_dprintf(a->fdout, "%-20s: %9lu KB\n", "Quota Remaining", mailbox_quota_remaining(mbox) / 1024);
 	bbs_dprintf(a->fdout, "%-20s: %u\n", "# Mailbox Watchers", mbox->watchers);
-	bbs_dprintf(a->fdout, "%-20s: %s\n", "Activity Pending", BBS_YN(mbox->activity));
+	bbs_dprintf(a->fdout, "%-20s: %s\n", "Activity Pending", BBS_YESNO(mbox->activity));
 	return 0;
 }
 
@@ -2221,6 +2221,7 @@ static int load_config(void)
 	struct bbs_config *cfg;
 	struct bbs_config_section *section = NULL;
 	struct bbs_keyval *keyval = NULL;
+	const char *tmp;
 
 	cfg = bbs_config_load("mod_mail.conf", 1);
 	if (!cfg) {
@@ -2232,7 +2233,12 @@ static int load_config(void)
 		return -1;
 	}
 	bbs_config_val_set_str(cfg, "general", "catchall", catchall, sizeof(catchall));
-	bbs_config_val_set_uint(cfg, "general", "quota", &maxquota);
+
+	/* Don't use bbs_config_val_set_uint, since we need to parse as long, not int */
+	tmp = bbs_config_val(cfg, "general", "quota");
+	if (!strlen_zero(tmp)) {
+		maxquota = (unsigned long) atol(tmp);
+	}
 
 	if (eaccess(root_maildir, X_OK)) { /* This is a directory, so we better have execute permissions on it */
 		bbs_error("Directory %s does not exist\n", root_maildir);
