@@ -2384,7 +2384,7 @@ static int process_append(struct imap_session *imap, const char *appenddir, cons
 		/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
 		mailbox_invalidate_quota_cache(imap->mbox);
 	} else {
-		mailbox_quota_adjust_usage(imap->mbox, (int) -size);
+		mailbox_quota_adjust_usage(imap->mbox, (int) size);
 	}
 
 	if (!strlen_zero(appenddate)) {
@@ -2531,7 +2531,7 @@ static int handle_append(struct imap_session *imap, char *s)
 				/* We have flags */
 				flags = parensep(&s);
 				if (!strlen_zero(flags)) {
-					appendflags = parse_flags_string(imap, flags);
+					appendflags = __parse_flags_string(imap, flags, appenddir);
 					/* imap->appendkeywords will also contain keywords as well */
 				}
 			}
