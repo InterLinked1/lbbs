@@ -302,10 +302,10 @@ static void reset_saved_search(struct imap_session *imap)
 }
 
 /* We traverse cur first, since messages from new are moved to cur, and we don't want to double count them */
-#define IMAP_TRAVERSAL(imap, traversal, callback, rdonly) \
+#define IMAP_TRAVERSAL_ERROR_RETURN(imap, traversal, callback, rdonly, err_ret) \
 	if (mailbox_rdlock(traversal->mbox)) { \
 		imap_reply(imap, "NO [INUSE] Mailbox busy"); \
-		return 0; \
+		return err_ret; \
 	} \
 	traversal->imap = imap; \
 	traversal->readonly = rdonly; \
@@ -326,6 +326,8 @@ static void reset_saved_search(struct imap_session *imap)
 		mailbox_get_next_uid(traversal->mbox, traversal->imap->node, traversal->dir, 0, &traversal->uidvalidity, &traversal->uidnext); \
 	} \
 	mailbox_unlock(traversal->mbox);
+
+#define IMAP_TRAVERSAL(imap, traversal, callback, rdonly) IMAP_TRAVERSAL_ERROR_RETURN(imap, traversal, callback, rdonly, 0)
 
 static void set_traversal(struct imap_session *imap, struct imap_traversal *traversal)
 {
@@ -2032,19 +2034,30 @@ unsigned int imap_msg_in_range(struct imap_session *imap, int seqno, const char 
 	return res;
 }
 
-static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
+static int sync_mailbox(struct imap_session *imap)
 {
-	bbs_assert_exists(imap->mbox);
-	if (mailbox_has_activity(imap->mbox)) {
+	if (imap->mbox && mailbox_has_activity(imap->mbox)) {
 		struct imap_traversal traversal, *traversalptr = &traversal;
 		/* There are new messages since we last checked. */
 		/* Move any new messages from new to cur so we can find them. */
 		imap_debug(4, "Doing traversal again since our view of %s is stale\n", imap->dir);
 		memset(&traversal, 0, sizeof(traversal));
 		set_traversal(imap, &traversal);
-		IMAP_TRAVERSAL(imap, traversalptr, on_select, imap->readonly);
+		IMAP_TRAVERSAL_ERROR_RETURN(imap, traversalptr, on_select, imap->readonly, 1); /* Return nonzero to signal that caller should immediately return 0, rather than continue */
 		save_traversal(imap, &traversal);
 	}
+	return 0;
+}
+
+/*! \brief Process any messages in new and move them to cur, prior to running a command, if we may need the new messages */
+#define SYNC_MESSAGES(imap) \
+	if (sync_mailbox(imap)) { \
+		return 0; \
+	}
+
+static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
+{
+	bbs_assert_exists(imap->mbox);
 	return handle_fetch_full(imap, s, usinguid, 1);
 }
 
@@ -4687,6 +4700,7 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 		res = handle_rename(imap, s);
 	} else if (!strcasecmp(command, "CHECK")) {
 		FORWARD_VIRT_MBOX(); /* Perhaps the remote server does something with CHECK... forward it just in case */
+		SYNC_MESSAGES(imap);
 		imap_reply(imap, "OK CHECK Completed"); /* Nothing we need to do now */
 	/* Selected state */
 	} else if (!strcasecmp(command, "CLOSE")) {
@@ -4720,16 +4734,20 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 		REQUIRE_SEQNO_ALLOWED();
 		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
+		SYNC_MESSAGES(imap);
 		res = handle_fetch(imap, s, 0);
 	} else if (!strcasecmp(command, "COPY")) {
 		REQUIRE_SEQNO_ALLOWED();
+		SYNC_MESSAGES(imap);
 		res = handle_copy_move(imap, s, 0, 0);
 	} else if (!strcasecmp(command, "MOVE")) {
 		REQUIRE_SEQNO_ALLOWED();
+		SYNC_MESSAGES(imap);
 		res = handle_copy_move(imap, s, 0, 1);
 	} else if (!strcasecmp(command, "STORE")) {
 		REQUIRE_ARGS(s);
 		REQUIRE_SEQNO_ALLOWED();
+		SYNC_MESSAGES(imap);
 		if (malformed_store(s)) {
 			imap_reply(imap, "BAD Invalid flag name");
 		} else {
@@ -4743,6 +4761,7 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 		REQUIRE_SEQNO_ALLOWED();
 		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
+		SYNC_MESSAGES(imap);
 		res = handle_search(imap, s, 0);
 	} else if (!strcasecmp(command, "SORT")) {
 		REQUIRE_ARGS(s);
@@ -4758,12 +4777,14 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 		 */
 		FORWARD_VIRT_MBOX_CAPABILITY(IMAP_CAPABILITY_SORT);
 		REQUIRE_SELECTED(imap);
+		SYNC_MESSAGES(imap);
 		res = handle_sort(imap, s, 0);
 	} else if (!strcasecmp(command, "THREAD")) {
 		REQUIRE_ARGS(s);
 		REQUIRE_SEQNO_ALLOWED();
 		FORWARD_VIRT_MBOX_CAPABILITY(IMAP_CAPABILITY_THREAD_ORDEREDSUBJECT | IMAP_CAPABILITY_THREAD_REFERENCES);
 		REQUIRE_SELECTED(imap);
+		SYNC_MESSAGES(imap);
 		res = handle_thread(imap, s, 0);
 	} else if (!strcasecmp(command, "UID")) {
 		REQUIRE_ARGS(s);
@@ -4772,6 +4793,7 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 		}
 		command = strsep(&s, " ");
 		REQUIRE_ARGS(command);
+		SYNC_MESSAGES(imap);
 		if (!strcasecmp(command, "FETCH")) {
 			FORWARD_VIRT_MBOX_UID();
 			res = handle_fetch(imap, s, 1);
@@ -4802,6 +4824,7 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 		}
 	} else if (!strcasecmp(command, "APPEND")) {
 		REQUIRE_ARGS(s);
+		SYNC_MESSAGES(imap);
 		res = handle_append(imap, s); /* Both local and remote */
 	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
 		return handle_idle(imap); /* No need to check for updates right after an IDLE */
