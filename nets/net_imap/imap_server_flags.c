@@ -21,6 +21,7 @@
 
 #include <string.h>
 #include <ctype.h>
+#include <libgen.h> /* use dirname */
 
 #if defined(linux) && defined(__GLIBC__)
 #include <bsd/string.h>
@@ -102,7 +103,7 @@ void parse_keyword(struct imap_session *imap, const char *s, const char *directo
 	fclose(fp);
 }
 
-int __gen_keyword_names(const char *s, char *inbuf, size_t inlen, const char *directory)
+int __gen_keyword_names(const char *msgfilename, const char *flagstr, char *inbuf, size_t inlen, const char *directory)
 {
 	FILE *fp;
 	char fbuf[32];
@@ -110,9 +111,18 @@ int __gen_keyword_names(const char *s, char *inbuf, size_t inlen, const char *di
 	char *buf = inbuf;
 	int matches = 0;
 	int left = (int) inlen;
-	const char *custom_start = s;
+	const char *custom_start = flagstr;
+	const char *tmp;
 
 	snprintf(filename, sizeof(filename), "%s/.keywords", directory);
+
+	/* If the string contains more than just keywords, skip to the start of the keywords.
+	 * Do this first to make future strchr calls and iterations more efficient. */
+	if (custom_start) {
+		while (*custom_start && !islower(*custom_start)) {
+			custom_start++;
+		}
+	}
 
 	*buf = '\0';
 	fp = fopen(filename, "r");
@@ -124,20 +134,22 @@ int __gen_keyword_names(const char *s, char *inbuf, size_t inlen, const char *di
 	}
 
 	while ((fgets(fbuf, sizeof(fbuf), fp))) {
-		if (!s || strchr(s, fbuf[0])) {
+		if (!custom_start || strchr(custom_start, fbuf[0])) { /* Either it's a keyword letter of interest or we have no filter, match */
 			matches++;
 			bbs_strterm(fbuf, '\n');
 			SAFE_FAST_COND_APPEND_NOSPACE(inbuf, inlen, buf, left, 1, " %s", fbuf + 2);
 		}
 	}
 
-	if (s) {
+	if (custom_start) {
 		int keywordslen = 0;
-		while (!strlen_zero(s)) {
-			if (islower(*s)) {
+		/* Count how many keyword letters there are (as opposed to normal flags) */
+		tmp = custom_start;
+		while (*tmp) {
+			if (islower(*tmp)) {
 				keywordslen++;
 			}
-			s++;
+			tmp++;
 		}
 
 		if (keywordslen > matches) {
@@ -146,19 +158,14 @@ int __gen_keyword_names(const char *s, char *inbuf, size_t inlen, const char *di
 			int mpos = 0;
 			rewind(fp);
 			while ((fgets(fbuf, sizeof(fbuf), fp))) {
-				if (!s || strchr(s, fbuf[0])) {
-					mappings[mpos++] = fbuf[0];
-					if (mpos >= (int) sizeof(mappings) - 1) {
-						break;
-					}
+				mappings[mpos++] = fbuf[0];
+				if (mpos >= (int) sizeof(mappings) - 1) {
+					break;
 				}
 			}
 			mappings[mpos] = '\0';
-			while (*custom_start && !islower(*custom_start)) {
-				custom_start++;
-			}
 
-			bbs_warning("File has %d custom flags (%s), but we only have mappings for %d of them (%s)?\n", keywordslen, custom_start, matches, mappings);
+			bbs_warning("'%s' has %d custom flag%s (%s), but %s only has mappings for %d of them (%s)?\n", msgfilename, keywordslen, ESS(keywordslen), custom_start, filename, matches, mappings);
 		}
 	}
 	fclose(fp);
@@ -340,7 +347,7 @@ int translate_maildir_flags(struct imap_session *imap, const char *oldmaildir, c
 	 * and abstracted away from the IMAP module (i.e. done automatically on any move or copy). */
 
 	/* Get the old keyword names themselves */
-	numkeywords = __gen_keyword_names(oldfilename, keywords, sizeof(keywords), oldmaildir); /* prepends a space before all of them, so this (usually) works out great */
+	numkeywords = __gen_keyword_names(oldfilenamefull, oldfilename, keywords, sizeof(keywords), oldmaildir); /* prepends a space before all of them, so this (usually) works out great */
 
 	if (numkeywords <= 0) {
 #ifdef EXTRA_DEBUG
@@ -376,27 +383,29 @@ int translate_maildir_flags(struct imap_session *imap, const char *oldmaildir, c
 	return maildir_msg_setflags(imap, 0, oldfilenamefull, newflagletters);
 }
 
-void generate_flag_names_full(struct imap_session *imap, const char *filename, char *bufstart, size_t bufsize, char **bufptr, int *lenptr)
+static void generate_flag_names_full_dir(struct imap_session *imap, const char *filename, const char *flagstr, char *bufstart, size_t bufsize, char **bufptr, int *lenptr, const char *keyworddir)
 {
 	char flagsbuf[256] = "";
 	int has_flags;
 	int custom_keywords;
+	const char *flagstart = flagstr;
 
 	char *buf = *bufptr;
 	size_t len = (size_t) *lenptr;
 
-	if (isdigit(*filename)) { /* We have an entire filename */
-		filename = strchr(filename, ':'); /* Skip everything before the flags, so we don't e.g. interpret ,S= as the Seen flag. */
-		if (!filename) {
-			filename = ""; /* There ain't no flags here */
+	if (isdigit(*flagstart)) { /* We have an entire filename */
+		flagstart = strchr(flagstart, ':'); /* Skip everything before the flags, so we don't e.g. interpret ,S= as the Seen flag. */
+		if (!flagstart) {
+			flagstart = ""; /* There ain't no flags here */
 		}
 	} /* else, must just have the "flags" portion of the filename to begin with */
 
-	gen_flag_names(filename, flagsbuf, sizeof(flagsbuf));
+	gen_flag_names(flagstart, flagsbuf, sizeof(flagsbuf));
 	has_flags = flagsbuf[0] ? 1 : 0;
 	SAFE_FAST_COND_APPEND(bufstart, bufsize, buf, len, 1, "FLAGS (%s", flagsbuf);
 	/* If there are any keywords (custom flags), include those as well */
-	custom_keywords = gen_keyword_names(imap, filename, flagsbuf, sizeof(flagsbuf));
+	UNUSED(imap);
+	custom_keywords = gen_keyword_names_dir(filename, flagstr, flagsbuf, sizeof(flagsbuf), keyworddir);
 	if (has_flags) {
 		SAFE_FAST_COND_APPEND_NOSPACE(bufstart, bufsize, buf, len, custom_keywords > 0, "%s", flagsbuf);
 	} else {
@@ -409,6 +418,12 @@ void generate_flag_names_full(struct imap_session *imap, const char *filename, c
 	*lenptr = (int) len;
 }
 
+void generate_flag_names_full(struct imap_session *imap, const char *filename, const char *flagstr, char *bufstart, size_t bufsize, char **bufptr, int *lenptr)
+{
+	/* By default, gen_keyword_names uses imap->dir, so pass that to gen_keyword_names_dir */
+	return generate_flag_names_full_dir(imap, filename, flagstr, bufstart, bufsize, bufptr, lenptr, imap->dir);
+}
+
 int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, const char *origname, const char *newflagletters, unsigned long *newmodseq)
 {
 	char fullfilename[524];
@@ -416,6 +431,7 @@ int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, const char
 	char *newbuf = newflags;
 	int newlen = sizeof(newflags);
 	char dirpath[256];
+	char newmaildir[256];
 	char *tmp, *filename;
 	unsigned long modseq;
 
@@ -495,7 +511,10 @@ int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, const char
 	/* If newmodseq is not NULL, then we need to send responses as needed. XXX What if it's not? */
 
 	/* Send unilateral untagged FETCH responses to everyone except this session, to notify of the new flags */
-	generate_flag_names_full(imap, newflagletters, newflags, sizeof(newflags), &newbuf, &newlen);
+	safe_strncpy(newmaildir, dirpath, sizeof(newmaildir));
+	/* We pass the new maildir at this point, as the default would be to use imap->dir, i.e. the old maildir,
+	 * but the new maildir is what will have the correct keyword mapping. */
+	generate_flag_names_full_dir(imap, fullfilename, newflagletters, newflags, sizeof(newflags), &newbuf, &newlen, dirname(newmaildir));
 	if (seqno) { /* Skip for merely translating flag mappings between maildirs */
 		char *end;
 		unsigned int uid;

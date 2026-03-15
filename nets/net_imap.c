@@ -1250,7 +1250,7 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 				bbs_error("Message file %s contains no flags?\n", entry->d_name);
 				goto next;
 			}
-			generate_flag_names_full(imap, flags, flagsbuf, sizeof(flagsbuf), &buf, &len);
+			generate_flag_names_full(imap, entry->d_name, flags, flagsbuf, sizeof(flagsbuf), &buf, &len);
 			imap_send(imap, "%u FETCH (UID %u %s) MODSEQ (%lu)", seqno, uid, flagsbuf, modseq);
 		}
 next:
@@ -1307,7 +1307,7 @@ static int select_examine_response(struct imap_session *imap, enum select_type r
 	int condstore_just_enabled = 0;
 	unsigned int lastmodseq = 0;
 	char *uidrange = NULL, *seqrange = NULL;
-	int numkeywords = gen_keyword_names(imap, NULL, keywords, sizeof(keywords)); /* prepends a space before all of them, so this works out great */
+	int numkeywords = gen_keyword_names(imap, NULL, NULL, keywords, sizeof(keywords)); /* prepends a space before all of them, so this works out great */
 
 	if (!strlen_zero(s)) {
 		if (STARTS_WITH(s, "(QRESYNC")) {
@@ -2777,7 +2777,7 @@ static int copy_append_cb(const char *dir_name, const char *filename, int seqno,
 		bbs_error("Message file %s contains no flags?\n", filename);
 		return -1;
 	}
-	generate_flag_names_full(ca->imap, flags, flagnames, sizeof(flagnames), &pos, &len);
+	generate_flag_names_full(ca->imap, fullname, flags, flagnames, sizeof(flagnames), &pos, &len);
 	/* Here's something awkward: if you were to just send flagnames as is in the APPEND command,
 	 * then something like FLAGS (\Seen) might be sent as the flag contents,
 	 * and libetpan has issues with mailbox flags that contain parentheses,
@@ -3477,13 +3477,13 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			if (keywords[0]) { /* Current keywords */
 				size_t slen = strlen(flagstr);
 				/*! \todo We should not append a space before if we're at the beginning of the buffer */
-				gen_keyword_names(imap, keywords, flagstr + slen, sizeof(flagstr) - slen); /* Append keywords (include space before) */
+				gen_keyword_names(imap, entry->d_name, keywords, flagstr + slen, sizeof(flagstr) - slen); /* Append keywords (include space before) */
 			}
 			if (!silent) { /* Send the response if not silent */
 				if (imap->createdkeyword) {
 					/* Server SHOULD send untagged response when a new keyword is created */
 					char allkeywords[256] = "";
-					gen_keyword_names(imap, NULL, allkeywords, sizeof(allkeywords)); /* prepends a space before all of them, so this works out great */
+					gen_keyword_names(imap, NULL, NULL, allkeywords, sizeof(allkeywords)); /* prepends a space before all of them, so this works out great */
 					imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, allkeywords);
 				}
 				/*! \todo This is repetitive, clean this up so we're not duplicating this log for UID/no UID, MODSEQ/no MODSEQ, silent/not silent */
@@ -3573,7 +3573,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		if (imap->numappendkeywords) {
 			size_t slen = strlen(changedflags);
 			/*! \todo We should not append a space before if we're at the beginning of the buffer */
-			gen_keyword_names(imap, imap->appendkeywords, changedflags + slen, sizeof(changedflags) - slen);
+			gen_keyword_names(imap, "", imap->appendkeywords, changedflags + slen, sizeof(changedflags) - slen);
 		}
 		mailbox_initialize_event(&e, flagop < 1 ? EVENT_FLAGS_CLEAR : EVENT_FLAGS_SET, imap->node, imap->mbox, imap->dir);
 		e.uids = aflagsset;

@@ -60,7 +60,7 @@ static int process_fetch_flags(struct imap_session *imap, const char *filename, 
 		safe_strncpy(inflags + c, flags, sizeof(inflags) - (size_t) c);
 		flags = inflags;
 	}
-	generate_flag_names_full(imap, flags, response, responselen, buf, len);
+	generate_flag_names_full(imap, filename, flags, response, responselen, buf, len);
 	return 0;
 }
 

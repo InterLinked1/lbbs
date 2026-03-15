@@ -50,7 +50,7 @@
 /* The implementation of how keywords are stored is based on how Dovecot stores keywords:
  * https://doc.dovecot.org/admin_manual/mailbox_formats/maildir/
  * We use 26 lowercase letters, to differentiate from IMAP flags (uppercase letters).
- * However, we don't a uidlist file, and we store the keywords in a separate file.
+ * However, we don't use a uidlist file, and we store the keywords in a separate file.
  * The implementation is handled fully in net_imap, since other modules don't care about keywords.
  */
 
@@ -59,9 +59,18 @@
 /*! \brief Check filename for the mapping for keyword. If one does not exist and there is room ( < 26), it will be created. */
 void parse_keyword(struct imap_session *imap, const char *s, const char *directory, int create);
 
-#define gen_keyword_names(imap, s, inbuf, inlen) __gen_keyword_names(s, inbuf, inlen, imap->dir)
+#define gen_keyword_names(imap, filename, flagstr, inbuf, inlen) __gen_keyword_names(filename, flagstr, inbuf, inlen, imap->dir)
+#define gen_keyword_names_dir(filename, flagstr, inbuf, inlen, dir) __gen_keyword_names(filename, flagstr, inbuf, inlen, dir)
 
-int __gen_keyword_names(const char *s, char *inbuf, size_t inlen, const char *directory);
+/*!
+ * \brief Generate keyword names from the letters in a maildir file
+ * \param msgfilename Filename of message file, used only for logging. NULL to simply fetch all keywords.
+ * \param flagstr String containing keyword letters (e.g. filename). NULL to simply fetch all keywords.
+ * \param[out] inbuf Keyword names
+ * \param inlen Size of inbuf
+ * \param directory The maildir containing the keywords
+ */
+int __gen_keyword_names(const char *msgfilename, const char *flagstr, char *inbuf, size_t inlen, const char *directory);
 
 #define parse_flags_string(imap, s) __parse_flags_string(imap, s, imap->dir)
 
@@ -102,8 +111,8 @@ int restrict_flags(int acl, int *flags);
  */
 int translate_maildir_flags(struct imap_session *imap, const char *oldmaildir, const char *oldfilenamefull, const char *oldfilename, const char *newmaildir, int destacl);
 
-/*! \brief base filename The file name of the message file. Please do not provide the full filepath. */
-void generate_flag_names_full(struct imap_session *imap, const char *filename, char *bufstart, size_t bufsize, char **bufptr, int *lenptr);
+/*! \brief base flagstr The file name of the message file (importantly, we want the part containing the flags). Please do not provide the full filepath. */
+void generate_flag_names_full(struct imap_session *imap, const char *filename, const char *flagstr, char *bufstart, size_t bufsize, char **bufptr, int *lenptr);
 
 int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, const char *origname, const char *newflagletters, unsigned long *newmodseq);
 
