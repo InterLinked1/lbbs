@@ -69,6 +69,7 @@ struct imap_client {
 	unsigned int has_status_size:1;
 	unsigned int has_list_status:1;
 	unsigned int has_notify:1;
+	unsigned int office365:1; /* Is it a Microsoft Office 365 server? */
 	/* Sorting */
 	char *sort;
 	char *filter;
@@ -736,6 +737,7 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client)
 	}
 
 	client->imap = imap;
+	client->office365 = strstr(hostname, "outlook") || strstr(hostname, "office365"); /* We don't store the hostname, but we do need to know later if it's Office 365 (for workarounds) */
 
 	mailimap_set_logger(imap, libetpan_log, client);
 	mailimap_set_timeout(imap, 10); /* If the IMAP server hasn't responded by now, I doubt it ever will */
@@ -2049,10 +2051,10 @@ static int select_another_mailbox_on_remote_server(struct imap_client *client)
 			 * and that might be faster, but the code to do a basic LIST would be more involved
 			 * and not worth it for this off-nominal case? This code is written to be the simplest
 			 * way possible of selecting another folder. */
-			strcpy(tmp, strstr(client->mailbox, "Deleted") ? "Sent" : "Deleted"); /* Safe */
+			strcpy(tmp, strstr(client->mailbox, "Sent") ? "Deleted" : "Sent"); /* Safe */
 		} else {
-			strcpy(otherfolder, strstr(client->mailbox, "Deleted") ? "Sent" : "Deleted"); /* Safe */
-			/* condition will be false next time we tset */
+			strcpy(otherfolder, strstr(client->mailbox, "Sent") ? "Deleted" : "Sent"); /* Safe */
+			/* condition will be false next time we test */
 		}
 		bbs_debug(3, "Attempting to select '%s'\n", otherfolder);
 		res = mailimap_select(client->imap, otherfolder);
@@ -2071,7 +2073,7 @@ static int select_another_mailbox_on_remote_server(struct imap_client *client)
 	/* It's possible the SELECT failed if we went all the way to the top of the hierarchy without finding a match.
 	 * In that case, we're probably screwed anyways, but continue. */
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("Failed to calculate closest existing (but different) SPECIAL-USE folder...");
+		bbs_warning("Failed to calculate closest existing (but different) SPECIAL-USE folder to %s\n", client->mailbox);
 		/* Don't break... continue, though since it won't be a brand new SELECT,
 		 * it probably won't have the desired effect. */
 		return -1;
@@ -2369,6 +2371,12 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 				}
 			}
 
+			/* If not Office 365, don't retry since we'll likely just get the same results again */
+			if (!client->office365) {
+				client_set_status(client->ws, "Partial FETCH failure");
+				break;
+			}
+
 			/* Reissue FETCH headers, by continuing loop and making another request. */
 
 			/* Microsoft won't show the new messages unless we select another IMAP folder and then go back to the target folder */
@@ -2389,6 +2397,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 			res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
 			if (MAILIMAP_ERROR(res)) {
 				log_mailimap_warning(client->imap, res, "FETCH failed");
+				client_set_status(client->ws, "Partial FETCH failure");
 				break; /* At least return what we already have, assuming we got something */
 			}
 			json_array_clear(arr); /* Remove all existing items from array since we have a new set to process */
