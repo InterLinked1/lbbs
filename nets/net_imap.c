@@ -2620,7 +2620,7 @@ static int handle_append(struct imap_session *imap, char *s)
 					 * the message before we receive all of it. Even though that would save bandwidth, that would
 					 * confuse our ability to parse the message properly and be certain of the client's state. */
 					imap_reply(imap, "NO [LIMIT] Message too large"); /* [TOOBIG] could also be appropriate */
-					continue; /* Don't disconnect the client, otherwise Thunderbird won't display the [NO] message. For MULTIAPPEND, repeat for all. */
+					goto cleanup; /* Don't disconnect the client, otherwise Thunderbird won't display the [NO] message. For MULTIAPPEND, repeat for all. */
 				} else {
 					imap_reply(imap, "NO [LIMIT] Message too large");
 					goto cleanup;
@@ -2630,7 +2630,7 @@ static int handle_append(struct imap_session *imap, char *s)
 					bbs_readline_discard_n(imap->node->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2));
 					bbs_debug(5, "Discarded %d bytes\n", appendsize + 2);
 					imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
-					continue;
+					goto cleanup;
 				} else {
 					imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
 					goto cleanup;
