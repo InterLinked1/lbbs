@@ -213,7 +213,7 @@ static int add_list_headers(struct mailing_list *l, FILE *fp, const char *from)
 	fprintf(fp, "Sender: <%s@%s>\r\n", l->user, rdomain); /* groups.io and Yahoo just use the reflector address; mailman does "user" <user-bounces@domain> */
 
 	/* Many RFC 2369 headers */
-	fprintf(fp, "List-Id: <%s@%s>\r\n", l->user, rdomain); /* RFC 2919; "" for groups.io and Yahoo Groups; mailman does "list name" <reflector> */
+	fprintf(fp, "List-Id: <%s.%s>\r\n", l->user, rdomain); /* RFC 2919; "" for groups.io and Yahoo Groups; mailman does "list name" <reflector> */
 	fprintf(fp, "List-Subscribe: <mailto:%s+%s@%s>\r\n", l->user, "subscribe", rdomain); /* groups.io uses +subscribe, mailman uses -request ...?subject=subscribe */
 	fprintf(fp, "List-Unsubscribe: <mailto:%s+%s@%s>\r\n", l->user, "unsubscribe", rdomain);
 	/* Skip List-Archive header, this isn't accessible to users */
