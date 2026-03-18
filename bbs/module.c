@@ -1374,8 +1374,9 @@ int bbs_module_unload(const char *name)
 #endif
 
 	stringlist_init(&unloaded);
-
 	res = unload_resource(name, 0, &unloaded);
+	stringlist_empty_destroy(&unloaded);
+
 	return res ? -1 : 0;
 }
 
