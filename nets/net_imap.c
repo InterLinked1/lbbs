@@ -136,6 +136,7 @@
 #include "include/node.h"
 #include "include/auth.h"
 #include "include/user.h"
+#include "include/kvs.h"
 #include "include/test.h"
 #include "include/notify.h"
 #include "include/oauth.h"
@@ -181,6 +182,10 @@ static unsigned int max_append_size = SIZE_MB(25);
 unsigned int maxuserproxies = 10;
 
 #define MAX_USER_PROXIES 32
+
+/* Cache and use cached folder stats in mailboxes when unchanged.
+ * This greatly improves performance for SELECT/STATUS/LIST-STATUS for large mailboxes, although it adds additional overhead for small folders with few messages. */
+#define CACHE_FOLDER_STATS
 
 /* All IMAP traversals must be ordered, so we can't use these functions or we'll get a ~random (at least incorrect) order */
 /* Sequence numbers must strictly be in order, if they aren't, all sorts of weird stuff will happened.
@@ -1119,9 +1124,135 @@ next:
 	return 0;
 }
 
+#ifdef CACHE_FOLDER_STATS
+static int imap_kvs_get_num(const char *key, size_t keylen, unsigned int *restrict intresult, unsigned long *restrict longresult)
+{
+	char buf[32];
+	size_t outlen;
+	int res = bbs_kvs_get(key, keylen, buf, sizeof(buf) - 1, &outlen);
+	if (res < 0) {
+		return -1;
+	}
+	buf[outlen] = '\0';
+	if (intresult) {
+		*intresult = (unsigned int) atoi(buf);
+	} else {
+		*longresult = (unsigned long) atol(buf);
+	}
+	return 0;
+}
+
+#define GET_CACHED_INT(keyname, var) \
+	keylen = (size_t) snprintf(keybuf, sizeof(keybuf), "%s/%s", path, keyname); \
+	if (imap_kvs_get_num(keybuf, keylen, &var, NULL)) { \
+		return -1; \
+	}
+
+#define GET_CACHED_LONG(keyname, var) \
+	keylen = (size_t) snprintf(keybuf, sizeof(keybuf), "%s/%s", path, keyname); \
+	if (imap_kvs_get_num(keybuf, keylen, NULL, &var)) { \
+		return -1; \
+	}
+
+static int imap_kvs_put_num(const char *key, size_t keylen, unsigned long num)
+{
+	char numbuf[32];
+	size_t numlen;
+	numlen = (size_t) snprintf(numbuf, sizeof(numbuf), "%lu", num);
+	return bbs_kvs_put(key, keylen, numbuf, numlen);
+}
+
+#define SET_CACHED_NUMBER(keyname, var) \
+	keylen = (size_t) snprintf(keybuf, sizeof(keybuf), "%s/%s", path, keyname); \
+	if (imap_kvs_put_num(keybuf, keylen, (unsigned long) var)) { \
+		return -1; \
+	}
+
+static int fetch_cached_mailbox_stats(const char *path, struct imap_traversal *traversal, unsigned int *restrict actual_uidnext)
+{
+	char keybuf[4096];
+	size_t keylen;
+	unsigned long modseq, actual_modseq;
+	unsigned int uidvalidity, uidnext;
+
+	/* XXX This call to mailbox_get_next_uid means that we'll end up making 2 calls to this function in a traversal */
+	mailbox_get_next_uid(traversal->mbox, traversal->imap->node, traversal->dir, 0, &uidvalidity, actual_uidnext);
+
+	actual_modseq = maildir_max_modseq(NULL, path); /* XXX __maildir_modseq doesn't currently use the mbox argument, but if it does in the future, we need to fix this */
+	if (actual_modseq <= 0) {
+		return 1;
+	}
+
+	/* Get cached MODSEQ/UIDNEXT first, so we know if all these values are up to date */
+	GET_CACHED_LONG("modseq", modseq);
+	if (modseq != actual_modseq) {
+		bbs_debug(5, "Actual MODSEQ %lu != cached MODSEQ %lu\n", actual_modseq, modseq);
+		return 1;
+	}
+	GET_CACHED_INT("uidnext", uidnext); /* Get cached MODSEQ first, so we know if all these values are up to date */
+	if (uidnext != *actual_uidnext) {
+		bbs_debug(5, "Actual UIDNEXT %u != cached UIDNEXT %u\n", *actual_uidnext, uidnext);
+		return 1;
+	}
+
+	GET_CACHED_INT("totalcur", traversal->totalcur);
+	GET_CACHED_LONG("totalsize", traversal->totalsize);
+	GET_CACHED_INT("totalunseen", traversal->totalunseen);
+	GET_CACHED_INT("firstunseen", traversal->firstunseen);
+	return 0;
+}
+
+static int cache_mailbox_stats(const char *path, struct imap_traversal *traversal, unsigned int uidnext)
+{
+	char keybuf[4096];
+	size_t keylen;
+	unsigned long modseq;
+
+	modseq = maildir_max_modseq(NULL, path); /* XXX __maildir_modseq doesn't currently use the mbox argument, but if it does in the future, we need to fix this */
+	if (modseq <= 0) {
+		return 1;
+	}
+
+	/* We only cache info for the cur dir, not the new dir.
+	 * Over time, most messages will end up in cur, only RECENT messages are ever in new. */
+	SET_CACHED_NUMBER("totalcur", traversal->totalcur);
+	SET_CACHED_NUMBER("totalsize", traversal->totalsize);
+	SET_CACHED_NUMBER("totalunseen", traversal->totalunseen);
+	SET_CACHED_NUMBER("firstunseen", traversal->firstunseen);
+	SET_CACHED_NUMBER("modseq", modseq); /* Update cached MODSEQ last, so that if cached values are read in the meantime by another reader, we know they are outdated. */
+	SET_CACHED_NUMBER("uidnext", uidnext);
+	return 0;
+}
+#endif
+
 static int imap_traverse_cur(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), struct imap_traversal *traversal)
 {
-	return maildir_ordered_traverse(path, on_file, traversal);
+	int res;
+#ifdef CACHE_FOLDER_STATS
+	unsigned int uidnext;
+
+	/* imap_traverse_cur is only called by the IMAP_TRAVERSAL macros, which are only called with on_select as the on_file callback,
+	 * i.e. this callback is only used for SELECT and STATUS (including LIST-STATUS).
+	 *
+	 * The optimization here is that iterating over all existing maildir files can be quite expensive,
+	 * so if we can cache results and reuse them, we do so. */
+	if (!fetch_cached_mailbox_stats(path, traversal, &uidnext)) {
+		bbs_debug(6, "Using cached traversal stats for %s\n", path);
+		return 0;
+	}
+
+	/* Reset any fields we may have changed */
+	traversal->totalcur = traversal->totalunseen = traversal->firstunseen = 0;
+	traversal->totalsize = 0;
+#endif
+
+	res = maildir_ordered_traverse(path, on_file, traversal);
+#ifdef CACHE_FOLDER_STATS
+	if (!res) {
+		cache_mailbox_stats(path, traversal, uidnext);
+	}
+#endif
+	return res;
 }
 
 static int imap_traverse_new(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), struct imap_traversal *traversal)
