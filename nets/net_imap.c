@@ -667,7 +667,7 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 				/* Compute how many messages exist. */
 				numrecent = bbs_dir_num_files(newdir);
 				numtotal = numrecent + bbs_dir_num_files(curdir);
-				bbs_debug(4, "Calculated %d message%s in INBOX %d currently\n", numtotal, ESS(numtotal), mailbox_id(mbox));
+				bbs_debug(4, "Calculated %d message%s in %s currently\n", numtotal, ESS(numtotal), maildir);
 				if (numrecent) {
 					len = (size_t) snprintf(buf, sizeof(buf), "* %d EXISTS\r\n* %d RECENT\r\n", numtotal, numrecent);
 				} else {
