@@ -262,7 +262,11 @@ static void adjust_send_offset(struct fetch_body_request *fbr, off_t *restrict o
 
 static int send_filtered_headers(struct imap_session *imap, struct fetch_body_request *fbr, const char *itemname, FILE **restrict fp, const char *fullname, const char *headerlist, int filter)
 {
-	char headersbuf[8192];
+	/* XXX FIXME This should probably be dynamically allocated/resized as needed.
+	 * No matter how large of a static buffer we use, it's always possible that the headers will be longer.
+	 * Downside of that would be efficiency, since that could be a lot of large allocations/deallocations
+	 * for a FETCH 1:* operation. */
+	char headersbuf[32768];
 	size_t headersbuflen = sizeof(headersbuf);
 	char *buf = headersbuf;
 	size_t len = headersbuflen;
