@@ -1619,7 +1619,6 @@ static void construct_status(struct imap_session *imap, struct imap_traversal *t
 {
 	char *pos = buf;
 	size_t left = len;
-	unsigned int appendlimit;
 
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", traversal->totalnew + traversal->totalcur);
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "RECENT"), "RECENT %d", traversal->totalnew);
@@ -1627,8 +1626,13 @@ static void construct_status(struct imap_session *imap, struct imap_traversal *t
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", traversal->uidvalidity);
 	/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", traversal->totalunseen);
-	appendlimit = MIN((unsigned int) mailbox_quota(imap->mbox), max_append_size);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %u", appendlimit);
+	if (imap->mbox) {
+		/* If idling on remote mailbox with NOTIFY enabled, imap->mbox may be NULL at the moment;
+		 * since APPENDLIMIT isn't expected to change frequently anyways, just skip it in these cases.
+		 * In general, depending on the mailbox, this may not even be the right value to use here. */
+		unsigned int appendlimit = MIN((unsigned int) mailbox_quota(imap->mbox), max_append_size);
+		SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %u", appendlimit);
+	}
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
 	/* RFC 8438 STATUS=SIZE extension */
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", traversal->totalsize);
