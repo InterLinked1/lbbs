@@ -16,6 +16,12 @@
 # [0 or more ACTION conditions].
 # ENDRULE
 
+# For very simple rules with a single condition and a single action, the single-line "QRULE" "quick rule" statement can also be used:
+# QRULE [exactly 1 condition] ACTION [exactly 1 simple action, i.e. not BREAK, RETURN, or EXIT]
+# "MATCH DIRECTION IN" is an implicit condition for quick rules.
+# The MATCH keyword is omitted, but the ACTION keyword is still required as it is used as the condition/action delimiter, e.g.
+# QRULE HEADER To CONTAINS junk@example.com ACTION MOVETO Junk
+
 # You can also use IF blocks within both condition evaluation and action execution. In conditions, use TEST/IF and in actions, use IF directly. (See examples.)
 
 # Single-line comments begin with a # anywhere on the line (everything afterwards is ignored).

@@ -410,7 +410,7 @@ int bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath, char
 	 * If diskpath is shorter than rootdir for whatever reason,
 	 * then userpath points to invalid memory, and we must not access it. */
 	if (strncmp(diskpath, rootdir, rootlen)) {
-		bbs_error("Disk path '%s' is outside of transfer root '%s'\n", diskpath, rootdir);
+		bbs_debug(1, "Disk path '%s' is outside of transfer root '%s'\n", diskpath, rootdir);
 		return -1;
 	}
 

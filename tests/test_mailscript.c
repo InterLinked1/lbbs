@@ -289,6 +289,14 @@ static int run(void)
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 4); /* Should be in Inbox */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash/new", 2); /* Shouldn't have been moved */
 
+	/* Test QRULE */
+	STANDARD_ENVELOPE_BEGIN();
+	SWRITE(clientfd, "From: " TEST_EMAIL_EXTERNAL ENDL);
+	SWRITE(clientfd, "Subject: Quick Rule Test" ENDL);
+	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "Rejecting quick rule match");
+
 	SWRITE(clientfd, "QUIT");
 	close(clientfd);
 

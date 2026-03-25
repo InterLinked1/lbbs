@@ -230,6 +230,9 @@ static int recipient_count(struct smtp_msg_process *mproc)
 			in_to = in_cc = 0;
 		}
 	}
+#ifdef EXTRA_DEBUG
+	bbs_debug(8, "Message has %d recipient%s\n", recipcount, ESS(recipcount));
+#endif
 	return recipcount;
 }
 
@@ -369,7 +372,7 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 	REQUIRE_ARG(s);/* Empty match implicitly matches anything anyways */
 
 #ifdef EXTRA_DEBUG
-	bbs_debug(7, "Evaluating condition at %s:%d: %s\n", filename, lineno, s);
+	bbs_debug(8, "Evaluating condition at %s:%d: %s\n", filename, lineno, s);
 #endif
 
 	next = strsep(&s, " ");
@@ -407,6 +410,9 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 		str_match(mproc, filename, matchtype, mproc->recipient, expr, &match);
 	} else if (!strcasecmp(next, "RECIPIENTCOUNT")) {
 		int recipcount = recipient_count(mproc);
+		if (isdigit(*s)) { /* Generate config error if user forgot the comparator in the rule */
+			mailscript_line_log(mproc, LOG_ERROR, filename, lineno, "RECIPIENTCOUNT requires a comparator prior to number\n");
+		}
 		match = numcmp(s, recipcount);
 	} else if (!strcasecmp(next, "HEADER")) {
 		int found;
@@ -643,7 +649,7 @@ cleanup:
 #undef REQUIRE_ARG
 #define REQUIRE_ARG(s) \
 	if (strlen_zero(s)) { \
-		bbs_warning("Incomplete action at %s:%d\n", filename, lineno); \
+		mailscript_line_log(mproc, LOG_WARNING, filename, lineno, "Incomplete action\n"); \
 		return 0; \
 	}
 
@@ -668,6 +674,7 @@ static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time
 			}
 			if (eaccess(newdir, R_OK)) {
 				bbs_warning("MOVETO failed at %s:%d: %s - %s\n", filename, lineno, strerror(errno), newdir);
+				mailscript_line_log(mproc, LOG_WARNING, filename, lineno, "MOVETO failed\n"); /* exclude errno from the user log message */
 				return 0;
 			}
 		}
@@ -707,7 +714,7 @@ static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time
 		REQUIRE_ARG(s);
 		bbs_varlist_append(vars, key, s);
 	} else {
-		bbs_warning("Invalid action at %s:%d: %s %s\n", filename, lineno, next, S_IF(s));
+		mailscript_line_log(mproc, LOG_ERROR, filename, lineno, "Invalid action: %s %s\n", next, S_IF(s));
 	}
 	return 0;
 }
@@ -767,7 +774,7 @@ static int run_rules(struct smtp_msg_process *mproc, int invoketype, const char 
 			if (multilinecomment > 0) {
 				multilinecomment--;
 			} else {
-				bbs_warning("No multiline comment active at %s:%d\n", rulesfile, lineno);
+				mailscript_line_log(mproc, LOG_ERROR, rulesfile, lineno, "No multiline comment active\n");
 			}
 			continue;
 		} else if (!strcasecmp(s, "COMMENT")) {
@@ -777,10 +784,42 @@ static int run_rules(struct smtp_msg_process *mproc, int invoketype, const char 
 			bbs_debug(10, "Skipping rest of multiline comment...\n");
 #endif
 			continue; /* Ignore multiline comments */
+		} else if (STARTS_WITH(s, "QRULE ")) {
+			char *action;
+			if (in_rule) {
+				mailscript_line_log(mproc, LOG_WARNING, rulesfile, lineno, "Nested rule detected?\n");
+			}
+
+			s += STRLEN("QRULE ");
+			if (mproc->direction == SMTP_MSG_DIRECTION_IN) { /* QRULE assumes the message is incoming */
+				/* "Quick rules" are only a single line, so we need to parse the condition and the action accordingly,
+				 * e.g. QRULE HEADER To CONTAINS junk@example.com ACTION MOVETO Junk
+				 * Since the condition portion can be variable length and we don't know how much the condition portion will consume,
+				 * we use "ACTION" as an explicit delimiter so we can differentiate them unambiguously. */
+				action = strstr(s, " ACTION ");
+				if (!action) {
+					mailscript_line_log(mproc, LOG_ERROR, rulesfile, lineno, "Malformed QRULE expression, missing ACTION\n");
+					continue;
+				}
+				*action = '\0';
+				action += STRLEN(" ACTION ");
+				if (strlen_zero(action)) {
+					mailscript_line_log(mproc, LOG_ERROR, rulesfile, lineno, "Malformed QRULE expression, empty ACTION\n");
+					continue;
+				}
+
+				retval = test_condition(mproc, &vars, rulesfile, lineno, retval, usermaildir, s);
+				if (retval) { /* Rule matched */
+					retval = do_action(mproc, &vars, &exectimeout, invoketype, rulesfile, lineno, action);
+				}
+			}
 		} else if (!strcasecmp(s, "RULE")) {
+			if (in_rule) {
+				mailscript_line_log(mproc, LOG_WARNING, rulesfile, lineno, "Nested rule detected?\n");
+			}
 			in_rule = 1;
 		} else if (!in_rule) {
-			bbs_warning("Ignoring directive outside of rule at %s:%d: %s\n", rulesfile, lineno, s);
+			mailscript_line_log(mproc, LOG_ERROR, rulesfile, lineno, "Ignoring directive outside of rule: %s\n", s);
 		} else if (!strcasecmp(s, "ENDRULE")) {
 			skip_rule = in_rule = 0;
 		} else if (skip_rule) {
@@ -798,7 +837,7 @@ static int run_rules(struct smtp_msg_process *mproc, int invoketype, const char 
 				}
 				if_count--;
 			} else {
-				bbs_warning("No IF block scope at %s:%d\n", rulesfile, lineno);
+				mailscript_line_log(mproc, LOG_ERROR, rulesfile, lineno, "No IF block scope\n");
 			}
 		} else if (want_endif) {
 			if (STARTS_WITH(s, "IF ")) {
@@ -834,7 +873,7 @@ static int run_rules(struct smtp_msg_process *mproc, int invoketype, const char 
 				break;
 			} else if (STARTS_WITH(s, "EXIT")) {
 				if (mproc->iteration == FILTER_MAILBOX) {
-					bbs_warning("EXIT not allowed for user mailbox rules, doing RETURN instead\n");
+					mailscript_line_log(mproc, LOG_WARNING, rulesfile, lineno, "EXIT not allowed for user mailbox rules, doing RETURN instead\n");
 				} else {
 					/* We only allow EXIT to abort global rules processing
 					 * if this is a systemwide rule. Otherwise, that would

@@ -165,3 +165,5 @@ MATCH HEADER To CONTAINS nobounce2@bbs.example.com
 MATCH HEADER Subject EQUALS Another message which won't reach the original recipient
 ACTION REJECT This is a bounce message that should go to testuser instead
 ENDRULE
+
+QRULE HEADER Subject CONTAINS Quick Rule Test ACTION REJECT Rejecting quick rule match

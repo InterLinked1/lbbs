@@ -625,18 +625,10 @@ Our recommendation is to ignore the :code:`X-Spam-Flag` header entirely. Instead
 The :code:`X-Spam-Level` header contains one asterisk for each whole positive spam score level (i.e. it is the value of the spam score (also available directly in the :code:`X-Spam-Score` header), rounded down, and empty if less than 1.0, including negative. For instance, :code:`****` denotes the message has a spam score of between 4.0 and 4.9. Since spammier messages have more :code:`*`s, you can easily use a simple substring match on this header value, for example::
 
    # This MailScript rule will outright reject any messages with a spam score of 10.0 or greater (and set a custom refusal message)
-   RULE
-   MATCH DIRECTION IN
-   MATCH HEADER X-Spam-Level CONTAINS **********
-   ACTION REJECT Message refused, appears to be spam
-   ENDRULE
+   QRULE HEADER X-Spam-Level CONTAINS ********** ACTION REJECT Message refused, appears to be spam
 
    # This MailScript rule will move any messages with a spam score of 5.0 or greater (and implicitly 9.9 or less, if the above rule is present) to the user's Junk folder
-   RULE
-   MATCH DIRECTION IN
-   MATCH HEADER X-Spam-Level CONTAINS *****
-   ACTION MOVETO Junk
-   ENDRULE
+   QRULE HEADER X-Spam-Level CONTAINS ***** ACTION MOVETO Junk
 
 You could also use a standard Sieve rule instead of a MailScript rule::
 
@@ -648,11 +640,7 @@ You could also use a standard Sieve rule instead of a MailScript rule::
 Note that :code:`X-Spam-Level` only gives you the ability to filter by intervals of 1. If you want more granular control than that, you should use the :code:`X-Spam-Score` header instead::
 
    # This MailScript rule will reject any messages with a spam score of 7.7 or greater
-   RULE
-   MATCH DIRECTION IN
-   MATCH HEADER X-Spam-Score >= 7.7
-   ACTION REJECT
-   ENDRULE
+   QRULE HEADER X-Spam-Score >= 7.7 ACTION REJECT
 
 Both Sieve and MailScript rules can also be configured globally (system-wide), in addition to per-mailbox. This is useful if you as the postmaster want to reject all mail above a certain spam level. There are two global Sieve scripts that can be configured and one global MailScript script. All of these files must be named as follows and placed in the root maildir:
 
