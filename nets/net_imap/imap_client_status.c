@@ -357,14 +357,22 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 			bbs_warning("Non-empty mailbox, but cached mailbox size was 0?\n");
 			/* Bad cache. Refetch */
 			force = 1;
+		} else if (!any_messages && mb_size) {
+			bbs_warning("Empty mailbox, but cached mailbox size was nonzero?\n");
+			/* Bad cache. Refetch (not really, but we don't set cached to 1, so we can update the cache with the right size, i.e. 0) */
+			force = 1;
 		} else {
 			cached = 1;
 		}
 	}
 	if (cached) {
 		/* Reuse */
-	} else if (!any_messages) {
-		/* If there are no messages, SIZE must be 0 */
+	} else if (!any_messages) { /* If there are no messages, SIZE must be 0 */
+		/* Needed if !any_messages && mb_size
+		 *
+		 * We could fall through to the else branch here,
+		 * but if we know the folder is empty, we know the size is 0 without asking. */
+		mb_size = 0;
 	} else {
 		/* EXAMINE it so it's read only */
 		/* XXX This will reuse imap->tag for the tag here... which isn't ideal but should be accepted.
