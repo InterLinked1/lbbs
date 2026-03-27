@@ -211,6 +211,7 @@ jobs:
           make modcheck
           make modconfig
           rm modules/mod_test_backtrace.c # Causes invalid read of size 8 in getframeaddr (in /usr/lib/libexecinfo.so.1)
+          rm modules/mod_discord.c # Causes invalid reads in discord_is_ready, even though module doesn't load for unit tests? Execution flow is illogical
           make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples

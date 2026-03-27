@@ -87,6 +87,7 @@ static int smtp_enabled = 1, smarthost_enabled = 0, smtps_enabled = 1, msa_enabl
 static int smtp_accept_enabled = 1;
 
 static int accept_relay_in = 1;
+static int trust_local_submissions = 1;
 static int require_starttls = 1;
 static int requirefromhelomatch = 0;
 static int relay_require_mail_match = 0;
@@ -1206,10 +1207,14 @@ static int handle_mail(struct smtp_session *smtp, char *s)
 		return 0;
 	}
 
-	/* fromlocal is slightly different from msa.
+#define SMTP_SENDING_NODE_IS_LOOPBACK(smtp) (trust_local_submissions && !strcmp(smtp->node->ip, "127.0.0.1"))
+
+	/* fromlocal is slightly different from MSA, it is a superset of MSA.
 	 * fromlocal indicates the message is from an MSA or originating locally (e.g. bounce messages).
-	 * fromlocal is a superset of MSA */
-	smtp->fromlocal = smtp->msa;
+	 * Usually, locally originated messages arrive through smtp_inject, which sets fromlocal to 1,
+	 * but in the case of messages using a sendmail type interface to connect to 127.0.0.1:25
+	 * (e.g. daily DMARC reports from opendmarc-reports), we also need to treat those as local. */
+	smtp->fromlocal = smtp->msa || SMTP_SENDING_NODE_IS_LOOPBACK(smtp);
 
 	REQUIRE_ARGS(s);
 	if (*s != '<') {
@@ -1333,7 +1338,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	 * and all the recipients must belong to us (we're not an open mail relay!) */
 
 	/* If the email is being sent from a local user, must be authenticated. */
-	if (smtp->fromlocal && !bbs_user_is_registered(smtp->node->user)) {
+	if (smtp->fromlocal && !bbs_user_is_registered(smtp->node->user) && !SMTP_SENDING_NODE_IS_LOOPBACK(smtp)) {
 		smtp_reply(smtp, 530, 5.7.0, "Authentication required");
 		return 0;
 	}
@@ -3554,7 +3559,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 				} else {
 					bbs_debug(3, "Current SMTP hop count is %d\n", smtp->tflags.hopcount);
 				}
-				if (smtp->tflags.hopcount >= HOP_COUNT_MAX_NORMAL_LEVEL && smtp->node && strcmp(smtp->node->ip, "127.0.0.1")) {
+				if (smtp->tflags.hopcount >= HOP_COUNT_MAX_NORMAL_LEVEL && smtp->node && !SMTP_SENDING_NODE_IS_LOOPBACK(smtp)) {
 					/* The greater the hop count, the more we slow the message down.
 					 * We only do this for non-localhost, mainly to avoid holding up the test suite. */
 					if (bbs_node_safe_sleep(smtp->node, 200 * smtp->tflags.hopcount)) {
@@ -3950,6 +3955,7 @@ static int load_config(void)
 	bbs_config_val_set_str(cfg, "general", "smtp_hostname", smtp_hostname_buf, sizeof(smtp_hostname_buf));
 	bbs_config_val_set_str(cfg, "general", "incoming_hostname", incoming_smtp_hostname_buf, sizeof(incoming_smtp_hostname_buf));
 	bbs_config_val_set_true(cfg, "general", "relayin", &accept_relay_in);
+	bbs_config_val_set_true(cfg, "general", "trust_local_submissions", &trust_local_submissions);
 	bbs_config_val_set_uint(cfg, "general", "maxsize", &max_message_size);
 	if (!bbs_config_val_set_uint(cfg, "general", "maxhops", &max_hops)) {
 		if (max_hops > MAX_HOPS) {
