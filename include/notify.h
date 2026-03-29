@@ -33,6 +33,7 @@ enum notify_delivery_type {
  * \param persistence Delivery type. If guaranteed, an email will be sent to the user if the alert cannot be delivered via an ephemeral channel.
  * \param fmt printf-style format string
  * \note This should only be used for *short* messages, i.e. a sentence or two at most. Do not include a trailing CR LF.
+ * \retval 0 on success, nonzero on failure
  */
 int bbs_alert_user(unsigned int userid, enum notify_delivery_type persistence, const char *fmt, ...) __attribute__ ((format (gnu_printf, 3, 4))) ;
 

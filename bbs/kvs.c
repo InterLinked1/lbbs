@@ -52,7 +52,9 @@ int bbs_kvs_get(const char *key, size_t keylen, char *buf, size_t len, size_t *o
 	res = BBS_SINGULAR_STRUCT_CALLBACK_EXECUTE(callbacks)->get(key, keylen, buf, len, NULL, ptr);
 	bbs_singular_callback_execute_post(&callbacks);
 
+#ifdef EXTRA_DEBUG
 	bbs_debug(6, "KVS GET(%s) => %lu bytes\n", key, *ptr);
+#endif
 	return res;
 }
 

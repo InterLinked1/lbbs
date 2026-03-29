@@ -2461,7 +2461,7 @@ static ssize_t timed_write(struct bbs_node *node, struct pollfd *pfd, int fd, co
 		}
 
 		if (!res) {
-			bbs_debug(2, "File descriptor %d did not become writable after %d ms\n", fd, ms);
+			bbs_debug(2, "File descriptor %d did not become writable after %d ms (wrote %ld/%lu bytes)\n", fd, ms, written, len);
 			break;
 		} else if (!(pfd->revents & POLLOUT)) {
 			/* Got activity but fd is not writable.

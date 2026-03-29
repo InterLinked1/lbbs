@@ -95,6 +95,11 @@ int bbs_transfer_show_all_home_dirs(void)
 
 int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const char *diskpath)
 {
+	return bbs_transfer_operation_allowed_user(node->user, operation, diskpath);
+}
+
+int bbs_transfer_operation_allowed_user(struct bbs_user *user, int operation, const char *diskpath)
+{
 	int required_priv;
 
 	bbs_assert(IN_BOUNDS(operation, 0, (int) ARRAY_LEN(privs)));
@@ -105,7 +110,7 @@ int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const c
 		/* If the operation is being done to something inside the user's home directory, it is ALWAYS allowed.
 		 * i.e. even if a user cannot normally delete files in the transfer root, users can do whatever
 		 * they like inside their home directories. */
-		len = snprintf(homedir, sizeof(homedir), "%s/home/%d", bbs_transfer_rootdir(), bbs_user_is_registered(node->user) ? node->user->id : 0);
+		len = snprintf(homedir, sizeof(homedir), "%s/home/%d", bbs_transfer_rootdir(), bbs_user_is_registered(user) ? user->id : 0);
 		if (!strncmp(diskpath, homedir, (size_t) len)) {
 			bbs_debug(6, "Operation implicitly authorized since it's in the user's home directory\n");
 			return 1;
@@ -133,9 +138,11 @@ int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const c
 	if (diskpath) {
 		bbs_debug(9, "Operation %d allowed for '%s'\n", operation, diskpath);
 	} else {
+#ifdef EXTRA_DEBUG
 		bbs_debug(9, "Operation %d allowed\n", operation);
+#endif
 	}
-	return bbs_user_priv(node->user) >= required_priv;
+	return bbs_user_priv(user) >= required_priv;
 }
 
 int transfer_get_username(const char *path, char *buf, size_t len)

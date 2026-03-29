@@ -15,6 +15,7 @@
 
 /* Forward declarations */
 struct bbs_node;
+struct bbs_user;
 
 /* These cannot be bits, since they are used as array indices */
 #define TRANSFER_ACCESS 0
@@ -50,6 +51,9 @@ int bbs_transfer_show_all_home_dirs(void);
  * \retval 1 if allowed, 0 if not allowed
  */
 int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const char *fullpath);
+
+/*! \brief Same as bbs_transfer_operation_allowed, but directly take a user (useful if node may be NULL but we have an explicit user object for permissions) */
+int bbs_transfer_operation_allowed_user(struct bbs_user *user, int operation, const char *diskpath);
 
 /*!
  * \brief Helper function for FTP/SFTP to compute username from a path substring

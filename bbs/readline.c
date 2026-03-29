@@ -145,20 +145,21 @@ static int readline_post_read(struct readline_data *restrict rldata, const char 
 }
 
 #ifdef BBS_IN_CORE
-ssize_t bbs_node_readline(struct bbs_node *node, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
+ssize_t __bbs_node_readline(const char *file, int line, const char *func, struct bbs_node *node, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
 {
 	if (bbs_node_dead(node)) {
 		return -1;
 	}
-	return bbs_readline(node->rfd, rldata, delim, timeout);
+	return __bbs_readline(file, line, func, node->rfd, rldata, delim, timeout);
 }
 
 /*! \brief Helper function to read a single line from a file descriptor, with a timeout (for any single read) */
-ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
+ssize_t __bbs_readline(const char *file, int line, const char *func, int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
 {
 	ssize_t res;
 	char *firstdelim;
 	size_t delimlen;
+	int iters = 0;
 
 	delimlen = strlen(delim);
 	firstdelim = readline_pre_read(rldata, delim, delimlen, &res);
@@ -173,17 +174,18 @@ ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *
 #endif /* INTENSIVE_EXTRA_CHECKS */
 		bbs_assert(rldata->pos + rldata->left - 1 <= rldata->buf + rldata->len); /* If we're going to corrupt the stack and crash anyways, might as well assert. */
 #endif /* EXTRA_CHECKS */
-		if (rldata->left - 1 < 2) {
-			bbs_warning("Buffer (size %lu) has been exhausted, %lu byte%s remaining\n", rldata->len, rldata->left, ESS(rldata->left)); /* The using application needs to allocate a larger buffer */
+		if (rldata->left < delimlen + 1) {
+			__bbs_log(LOG_WARNING, 0, file, line, func, "Buffer (size %lu) has been exhausted, %lu byte%s remaining\n", rldata->len, rldata->left, ESS(rldata->left)); /* The using application needs to allocate a larger buffer */
 			bbs_assert(!strstr(rldata->pos, delim));
 			return -3;
 		}
-		res = bbs_poll_read(fd, timeout, rldata->pos, (size_t) rldata->left - 1); /* Subtract 1 for NUL */
+		res = bbs_poll_read(fd, iters && rldata->posttimeout ? rldata->posttimeout : timeout, rldata->pos, (size_t) rldata->left - 1); /* Subtract 1 for NUL */
 		if (res <= 0) {
 			bbs_debug(3, "bbs_poll_read returned %ld\n", res);
 			return res - 1; /* see the doxygen notes: we should return 0 only if we read just the delimiter. */
 		}
 		rldata->pos[res] = '\0'; /* Safe. Null terminate so we can use string functions. */
+		iters++;
 
 		/* If the delimiter is longer than 1 character, and we previously
 		 * read part of the delimiter in a previous read, so firstdelim was NULL

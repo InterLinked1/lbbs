@@ -343,7 +343,7 @@ static void waitpidexit(pid_t pid, const char *filename, int *res, time_t timeou
 			case ENOENT:
 			case EPERM:
 				if (!suppresswarnings) {
-					bbs_warning("Command failed (%d - %s): %s\n", *res, strerror(*res), filename);
+					bbs_notice("Command failed (%d - %s): %s\n", *res, strerror(*res), filename);
 					break;
 				}
 				/* Fall through */
@@ -837,8 +837,8 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 		snprintf(fullpath, sizeof(fullpath), "PATH=%s", parentpath);
 	}
 
-	bbs_debug(6, "%s:%d (%s) node: %p, usenode: %d, fdin: %d, fdout: %d, filename: %s, env: %s, isolated: %s, user: %s\n",
-		file, lineno, func, node, usenode, fdin, fdout, filename, envp == myenvp ? "default" : "custom", e->isolated ? "yes" : "no",
+	__bbs_log(LOG_DEBUG, 6, file, lineno, func, "node: %p, usenode: %d, fdin: %d, fdout: %d, filename: %s, env: %s, isolated: %s, user: %s\n",
+		node, usenode, fdin, fdout, filename, envp == myenvp ? "default" : "custom", e->isolated ? "yes" : "no",
 		e->user ? bbs_username(e->user) : node && node->user ? bbs_username(node->user) : "(none)");
 	if (node && usenode && (fdin != -1 || fdout != -1)) {
 		bbs_warning("fdin/fdout should not be provided if usenode == 1 (node is preferred, fdin/fdout will be ignored)\n");
@@ -888,6 +888,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 	/* If we have flags, we need to use clone(2). Otherwise, just use fork(2) */
 	if (e->isolated) {
 		int flags = 0;
+		struct bbs_user *xferuser = e->user ? e->user : node ? node->user : NULL;
 		/* We need to do more than fork() allows */
 		flags |= SIGCHLD | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWUSER; /* fork() sets SIGCHLD implicitly. */
 		if (e->net) {
@@ -910,8 +911,14 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 
 		/* Check now, since once we close file descriptors in the child,
 		 * we cannot call this function, since it logs. */
-		public_home_dir_readable = bbs_transfer_operation_allowed(node, TRANSFER_ACCESS, NULL) && bbs_transfer_operation_allowed(node, TRANSFER_DOWNLOAD, NULL);
-		public_home_dir_writable = bbs_transfer_operation_allowed(node, TRANSFER_UPLOAD, NULL);
+		if (xferuser) {
+			/* Directly pass the user, since node could be NULL */
+			public_home_dir_readable = bbs_transfer_operation_allowed_user(xferuser, TRANSFER_ACCESS, NULL) && bbs_transfer_operation_allowed_user(xferuser, TRANSFER_DOWNLOAD, NULL);
+			public_home_dir_writable = bbs_transfer_operation_allowed_user(xferuser, TRANSFER_UPLOAD, NULL);
+		} else {
+			public_home_dir_readable = 0;
+			public_home_dir_writable = 0;
+		}
 
 		/* We use the clone syscall directly, rather than the clone(2) glibc function.
 		 * The reason for this is clone launches a function for the child,

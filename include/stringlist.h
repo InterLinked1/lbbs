@@ -160,7 +160,7 @@ int stringlist_push_tail_allocated(struct stringlist *list, char *s);
 int stringlist_push_list(struct stringlist *list, const char *s);
 
 /*!
- * \brief Move all the items from one stringlist into another
+ * \brief Move all the items from one stringlist into another. sub will be tail-appended to list
  * \param list The main list to which the items will be moved
  * \param sub The list that will have its elements moved to list
  */

@@ -249,6 +249,7 @@ void stringlist_merge(struct stringlist *list, struct stringlist *sub)
 
 	/* Move all the string items in sub to list */
 	while ((i = RWLIST_REMOVE_HEAD(sub, entry))) {
-		RWLIST_INSERT_HEAD(list, i, entry);
+		/* Tail insert, to preserve order from the original lists */
+		RWLIST_INSERT_TAIL(list, i, entry);
 	}
 }

@@ -23,7 +23,8 @@ struct readline_data {
 	/* Global data */
 	char *buf;					/*!< Beginning of buffer */
 	size_t len;					/*!< Fixed length of buffer */
-	int timeout;
+	int timeout;				/* XXX Unused? */
+	int posttimeout;			/* Timeout to apply to all poll() operations after any data has been returned during a call to bbs_readline/bbs_node_readline */
 	/* Internal pointers */
 	char *pos;					/*!< Beginning of remaining data in the buffer */
 	size_t left;				/*!< How much room is left available in the buffer for reading/appending */
@@ -93,12 +94,16 @@ char *bbs_readline_leftover_buf(struct readline_data *restrict rldata);
  *         It will be null terminated after the first input chunk, not including the delimiter.
  * \note The actual number of bytes read may be greater than the number of bytes returned. These bytes will be returned in subsequent calls to this function.
  */
-ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout);
+#define bbs_readline(fd, rldata, delim, timeout) __bbs_readline(__FILE__, __LINE__, __func__, fd, rldata, delim, timeout)
+
+ssize_t __bbs_readline(const char *file, int line, const char *func, int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout);
 
 /*!
  * \brief Same as bbs_readline, but take a node instead of a file descriptor directly
  */
-ssize_t bbs_node_readline(struct bbs_node *node, struct readline_data *restrict rldata, const char *restrict delim, int timeout);
+#define bbs_node_readline(node, rldata, delim, timeout) __bbs_node_readline(__FILE__, __LINE__, __func__, node, rldata, delim, timeout)
+
+ssize_t __bbs_node_readline(const char *file, int line, const char *func, struct bbs_node *node, struct readline_data *restrict rldata, const char *restrict delim, int timeout);
 
 /*!
  * \brief Read exactly n bytes from a file descriptor and write them to another file descriptor

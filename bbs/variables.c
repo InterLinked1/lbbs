@@ -267,7 +267,7 @@ int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char *value
 			if (value) {
 				/* Update to new value. */
 				if (strcmp(v->value, value)) {
-					bbs_debug(6, "Updating value of %s from %s to %s\n", key, v->value, value);
+					bbs_debug(6, "Updating value of %s from '%s' to '%s'\n", key, v->value, value);
 					REPLACE(v->value, value);
 				} else {
 					bbs_debug(6, "Value of %s (%s) has not changed\n", key, value);
@@ -288,7 +288,9 @@ int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char *value
 		return 0;
 	} else if (!value) {
 		RWLIST_UNLOCK(vars);
-		bbs_debug(6, "Variable %s didn't exist, ignoring since intended value was NULL\n", key);
+#ifdef EXTRA_DEBUG
+		bbs_debug(8, "Variable %s didn't exist, ignoring since intended value was NULL\n", key);
+#endif
 		return 0;
 	}
 
@@ -473,6 +475,8 @@ int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *restrict 
 			*buf = '\0'; /* Be nice and at least null terminate, in case the caller doesn't check the return value. */
 		}
 		bbs_node_unlock(node);
+	} else {
+		*buf = '\0'; /* Be nice and at least null terminate, in case the caller doesn't check the return value. */
 	}
 	RWLIST_UNLOCK(&global_vars);
 	return s ? 0 : -1;
@@ -544,11 +548,13 @@ static int substitute_vars(struct bbs_node *node, struct bbs_vars *vars, const c
 		 * Truncation shouldn't occur because we already checked for that.
 		 */
 		safe_strncpy(varname, s, (size_t) MIN((int) sizeof(varname), end - s + 1));
+#ifdef EXTRA_DEBUG
 		bbs_debug(9, "Substituting variable '%s' (using %s)\n", varname, node ? "node" : "varlist");
+#endif
 		if (vars) {
 			const char *val = bbs_var_find(vars, varname);
 			if (val) {
-				int bytes = snprintf(buf, len, "%s", val);
+				int bytes = snprintf(buf, len, "%s", S_IF(val)); /* If var value is NULL (doesn't exist), use empty string */
 				buf += bytes;
 				len -= (size_t) bytes;
 			}
