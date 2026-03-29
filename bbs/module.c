@@ -627,7 +627,10 @@ static void check_dependencies(struct autoload_module *a)
 		/* Move to beginning of list */
 		RWDLLIST_REMOVE(&autoload_modules, a, entry);
 		RWDLLIST_INSERT_HEAD(&autoload_modules, a, entry);
-	} else if (!strlen_zero(mod->info->dependencies)) {
+	}
+	/* Modules with MODFLAG_ALWAYS_PRELOAD may themselves be dependent on other modules that were not accordingly marked,
+	 * so still process dependencies as usual afterwards. */
+	if (!strlen_zero(mod->info->dependencies)) {
 		char dependencies_buf[256];
 		char *dependencies, *dependency;
 		safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));

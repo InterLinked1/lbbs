@@ -633,4 +633,7 @@ static int load_module(void)
 	REQUIRE_FULL_LOAD(res);
 }
 
-BBS_MODULE_INFO_DEPENDENT("MySQL/MariaDB User Authentication", "mod_mysql.so");
+/* Some modules resolve usernames when they load as part of config parsing,
+ * which will fail if a user auth provider isn't register, so make sure
+ * we're loaded first. */
+BBS_MODULE_INFO_FLAGS_DEPENDENT("MySQL/MariaDB User Authentication", MODFLAG_ALWAYS_PRELOAD, "mod_mysql.so");
