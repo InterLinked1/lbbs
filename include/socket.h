@@ -173,6 +173,8 @@ void tcp_listener_cleanup(void);
 
 int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *varg), void *module);
 
+#define bbs_start_tcp_listener2(port, port2, name, name2, handler) __bbs_start_tcp_listener3(port, port2, 0, name, name2, NULL, handler, BBS_MODULE_SELF)
+
 /*! \brief Same as bbs_start_tcp_listener but, like bbs_tcp_listener3, for multiple TCP listeners at once */
 #define bbs_start_tcp_listener3(port, port2, port3, name, name2, name3, handler) __bbs_start_tcp_listener3(port, port2, port3, name, name2, name3, handler, BBS_MODULE_SELF)
 

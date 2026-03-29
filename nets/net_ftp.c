@@ -940,7 +940,7 @@ static int load_module(void)
 		return -1;
 	}
 	/* If we can't start the TCP listener, decline to load */
-	return bbs_start_tcp_listener3(ftp_port, ftps_enabled ? ftps_port : 0, 0, "FTP", "FTPS", NULL, ftp_handler);
+	return bbs_start_tcp_listener2(ftp_port, ftps_enabled ? ftps_port : 0, "FTP", "FTPS", ftp_handler);
 }
 
 static int unload_module(void)

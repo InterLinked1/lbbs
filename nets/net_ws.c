@@ -1299,7 +1299,7 @@ static int load_module(void)
 		return unload_module();
 	}
 	/* Register listener(s) to accept WebSocket connections directly, e.g. from another reverse proxy (e.g. Apache HTTP server) */
-	res = bbs_start_tcp_listener3(ws_port ? ws_port : 0, wss_port ? wss_port : 0, 0, "WS", "WSS", NULL, __ws_handler);
+	res = bbs_start_tcp_listener2(ws_port ? ws_port : 0, wss_port ? wss_port : 0, "WS", "WSS", __ws_handler);
 	if (res) {
 		unload_module();
 		return -1;

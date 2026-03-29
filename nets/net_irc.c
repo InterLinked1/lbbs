@@ -4760,7 +4760,7 @@ static int load_module(void)
 		goto decline;
 	}
 
-	if (bbs_start_tcp_listener3(irc_enabled ? irc_port : 0, ircs_enabled ? ircs_port : 0, 0, "IRC", "IRCS", NULL, __irc_handler)) {
+	if (bbs_start_tcp_listener2(irc_enabled ? irc_port : 0, ircs_enabled ? ircs_port : 0, "IRC", "IRCS", __irc_handler)) {
 		bbs_alertpipe_close(ping_alertpipe);
 		goto decline;
 	}

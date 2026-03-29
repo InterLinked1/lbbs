@@ -5480,7 +5480,7 @@ static int load_module(void)
 	}
 
 	/* If we can't start the TCP listeners, decline to load */
-	if (bbs_start_tcp_listener3(imap_enabled ? imap_port : 0, imaps_enabled ? imaps_port : 0, 0, "IMAP", "IMAPS", NULL, __imap_handler)) {
+	if (bbs_start_tcp_listener2(imap_enabled ? imap_port : 0, imaps_enabled ? imaps_port : 0, "IMAP", "IMAPS", __imap_handler)) {
 		goto abort;
 	}
 

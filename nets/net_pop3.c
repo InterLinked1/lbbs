@@ -815,7 +815,7 @@ static int load_module(void)
 	}
 
 	bbs_register_tests(tests);
-	return bbs_start_tcp_listener3(pop3_enabled ? pop3_port : 0, pop3s_enabled ? pop3s_port : 0, 0, "POP3", "POP3S", NULL, __pop3_handler);
+	return bbs_start_tcp_listener2(pop3_enabled ? pop3_port : 0, pop3s_enabled ? pop3s_port : 0, "POP3", "POP3S", __pop3_handler);
 }
 
 static int unload_module(void)
