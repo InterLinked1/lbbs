@@ -3694,7 +3694,7 @@ static int process_idle(struct imap_client *client, char *s)
 	if (!STARTS_WITH(s, "* ")) {
 		/* Maybe it's a tagged response terminating the IDLE command? */
 		const char *next = bbs_strcnext(s, ' '); /* Skip the tag, assuming that's what it is */
-		if (STARTS_WITH(next, "NO ") || STARTS_WITH(next, "OK ")) { /* Done this way instead of strsep to leave original message intact */
+		if (next && (STARTS_WITH(next, "NO ") || STARTS_WITH(next, "OK "))) { /* Done this way instead of strsep to leave original message intact */
 			next += 3;
 			if (!strlen_zero(next)) {
 				/* Maybe it's an [ALERT] or something like that.
