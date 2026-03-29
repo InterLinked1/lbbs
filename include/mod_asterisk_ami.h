@@ -42,6 +42,8 @@ struct ami_event;
 /*!
  * \brief Get Caller ID information for the caller associated with an incoming softmodem call via TCP
  * \param node
+ * \param[out] chanbuf Buffer for channel name. May be empty.
+ * \param chan_len Length of chanbuf. Should be at least 80.
  * \param[out] numberbuf Buffer for Caller ID number. May be empty.
  * \param num_len Length of numberbuf. Should be at least 16.
  * \param[out] namebuf Buffer for Caller ID name. May be empty.
@@ -50,7 +52,7 @@ struct ami_event;
  * \retval -1 No Softmodem session corresponds with this TCP connection
  * \note Only the default AMI session (first session in mod_asterisk_ami.conf) is used
  */
-int bbs_ami_softmodem_get_callerid(struct bbs_node *node, char *numberbuf, size_t num_len, char *namebuf, size_t name_len);
+int bbs_ami_softmodem_get_callerid(struct bbs_node *node, char *chanbuf, size_t chan_len, char *numberbuf, size_t num_len, char *namebuf, size_t name_len);
 
 int __bbs_ami_callback_register(int (*callback)(struct ami_event *event, const char *eventname), void *mod);
 

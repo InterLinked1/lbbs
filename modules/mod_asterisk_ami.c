@@ -267,10 +267,10 @@ int bbs_ami_action_redirect(const char *session_name, const char *channel, const
 	return res;
 }
 
-int bbs_ami_softmodem_get_callerid(struct bbs_node *node, char *numberbuf, size_t num_len, char *namebuf, size_t name_len)
+int bbs_ami_softmodem_get_callerid(struct bbs_node *node, char *chanbuf, size_t chan_len, char *numberbuf, size_t num_len, char *namebuf, size_t name_len)
 {
 	int i;
-	const char *number = NULL, *name = NULL;
+	const char *channel = NULL, *number = NULL, *name = NULL;
 	struct ami_response *resp;
 
 	*numberbuf = '\0';
@@ -320,16 +320,20 @@ int bbs_ami_softmodem_get_callerid(struct bbs_node *node, char *numberbuf, size_
 		struct ami_event *e = resp->events[i];
 		const char *event = ami_keyvalue(e, "Event");
 		if (!strcmp(event, "SoftmodemSession")) {
+			channel = ami_keyvalue(e, "Channel");
 			number = ami_keyvalue(e, "CallerIDNumber");
 			name = ami_keyvalue(e, "CallerIDName");
 			break;
 		}
 	}
-	bbs_debug(5, "Softmodem caller: %s (%s)\n", S_IF(number), S_IF(name));
-	if (strlen_zero(number)) {
+	bbs_debug(5, "Softmodem caller: %s <%s> (%s)\n", S_IF(name), S_IF(number), S_IF(channel));
+	if (chanbuf && !strlen_zero(channel)) {
+		safe_strncpy(chanbuf, channel, chan_len);
+	}
+	if (numberbuf && !strlen_zero(number)) {
 		safe_strncpy(numberbuf, number, num_len);
 	}
-	if (!strlen_zero(name)) {
+	if (namebuf && !strlen_zero(name)) {
 		safe_strncpy(namebuf, name, name_len);
 	}
 	ami_resp_free(resp);
