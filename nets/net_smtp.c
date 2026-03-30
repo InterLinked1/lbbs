@@ -2543,6 +2543,25 @@ static void process_bounces(struct smtp_session *smtp, int srcfd, size_t datalen
 	}
 }
 
+static char *smtp_recipient_pop(struct smtp_session *smtp)
+{
+	char *recipient;
+	for (;;) {
+		recipient = stringlist_pop(&smtp->recipients);
+		if (!recipient) {
+			return NULL;
+		}
+		/* If we already delivered to the address, skip it */
+		if (duplicate_loop_avoidance(smtp, recipient)) {
+			continue;
+		}
+		if (*recipient != '<') {
+			bbs_warning("Malformed recipient (missing <>): %s\n", recipient);
+		}
+		return recipient;
+	}
+}
+
 /*! \brief "Stand and deliver" that email! */
 static int expand_and_deliver(struct smtp_session *smtp, const char *filename, size_t datalen)
 {
@@ -2608,14 +2627,8 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 			 * and the others will be left as is. */
 
 			/* This is a condensed version of the while loop below, with only the logic needed for sending bounces to all recipients */
-			while ((recipient = stringlist_pop(&smtp->recipients))) {
+			while ((recipient = smtp_recipient_pop(smtp))) {
 				char *user, *domain, *dup;
-
-				if (duplicate_loop_avoidance(smtp, recipient)) {
-					continue;
-				} else if (*recipient != '<') {
-					bbs_warning("Malformed recipient (missing <>): %s\n", recipient);
-				}
 
 				dup = strdup(recipient);
 				if (ALLOC_SUCCESS(dup) && !bbs_parse_email_address(dup, NULL, &user, &domain)) {
@@ -2705,20 +2718,12 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		goto finalize;
 	}
 
-	while ((recipient = stringlist_pop(&smtp->recipients))) {
+	while ((recipient = smtp_recipient_pop(smtp))) {
 		char *user, *domain;
 		char *dup;
 		int local;
 		struct smtp_delivery_handler *h;
 		int mres = 0;
-
-		if (duplicate_loop_avoidance(smtp, recipient)) {
-			continue;
-		}
-
-		if (*recipient != '<') {
-			bbs_warning("Malformed recipient (missing <>): %s\n", recipient);
-		}
 
 		dup = strdup(recipient);
 		if (ALLOC_FAILURE(dup)) {
@@ -2903,6 +2908,7 @@ int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char 
 {
 	int res;
 	struct smtp_session smtp;
+	int recipcount;
 
 	/*! \todo Refactor things so we don't have to create a dummy SMTP structure */
 	memset(&smtp, 0, sizeof(smtp));
@@ -2919,7 +2925,8 @@ int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char 
 	stringlist_init(&smtp.sentrecipients);
 	memcpy(&smtp.recipients, recipients, sizeof(smtp.recipients));
 
-	bbs_debug(5, "Injecting SMTP message MAILFROM <%s>, file: %s, size %lu\n", S_IF(mailfrom), filename, length);
+	recipcount = stringlist_size(&smtp.recipients);
+	bbs_debug(5, "Injecting SMTP message MAILFROM <%s>, file: %s, size %lu, %d recipient%s\n", S_IF(mailfrom), filename, length, recipcount, ESS(recipcount));
 
 	res = expand_and_deliver(&smtp, filename, length);
 	smtp_destroy(&smtp);
@@ -3851,7 +3858,6 @@ static void handle_client(struct smtp_session *smtp)
 			if (bbs_node_starttls(smtp->node)) {
 				break; /* Just abort */
 			}
-			smtp->node->secure = 1;
 			/* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade:
 			 * http://www.postfix.org/CVE-2011-0411.html
 			 * https://blog.apnic.net/2021/11/18/vulnerabilities-show-why-starttls-should-be-avoided-if-possible/

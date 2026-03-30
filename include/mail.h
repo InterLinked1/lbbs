@@ -48,7 +48,7 @@ int bbs_mail_message(const char *tmpfile, const char *mailfrom, struct stringlis
  * \param to Recipient. If NULL, default from mail.conf will be used. Name is optional (use name \<email> format).
  * \param from Sender. If NULL, default from mail.conf will be used. Name is optional (use name \<email> format).
  * \param replyto Optional Reply-To address.  Name is optional (use name \<email> format).
- * \param subject
+ * \param subject Optional Subject header
  * \param body
  * \retval 0 on success, -1 on failure
  */
@@ -72,7 +72,7 @@ int bbs_mail_fmt(int async, const char *to, const char *from, const char *replyt
  * \param subject Email subject
  * \param body Email body
  * \param to Recipient. If no domain portion is specified, it will be interpreted as a local BBS user.
- * \param from Sender
+ * \param from Sender, used for From and Sender headers
  * \param replyto Reply-To address. If NULL, not added.
  * \param errorsto Errors-To address. If NULL, not added.
  * \param attachments Pipe (|) separated list of full file paths of attachments to attach.

@@ -73,8 +73,12 @@ void __attribute__ ((format (gnu_printf, 9, 10))) __bbs_user_config_log(const ch
 	va_list ap;
 	size_t len;
 
-	/* Unfortunately, we don't have line number information here, but we can prefix the filename */
-	len = (size_t) snprintf(buf, sizeof(buf), "[%u]%s: ", userid, filename);
+	/* Prefix filename, and line number, if we have it */
+	if (userline) {
+		len = (size_t) snprintf(buf, sizeof(buf), "[%u]%s:%d: ", userid, filename, userline);
+	} else {
+		len = (size_t) snprintf(buf, sizeof(buf), "[%u]%s: ", userid, filename);
+	}
 
 	va_start(ap, fmt);
 	vsnprintf(buf + len, sizeof(buf) - len, fmt, ap);

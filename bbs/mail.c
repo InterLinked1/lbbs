@@ -154,7 +154,9 @@ int bbs_make_email_file(FILE *p, const char *subject, const char *body, const ch
 		fprintf(p, "Reply-To: %s" ENDL, replyto);
 	}
 	fprintf(p, "To: %s" ENDL, to);
-	fprintf(p, "Subject: %s" ENDL, subject);
+	if (!strlen_zero(subject)) {
+		fprintf(p, "Subject: %s" ENDL, subject);
+	}
 	fprintf(p, "Message-ID: <%s-%u-%d@%s>" ENDL, MESSAGE_ID_PREFIX, (unsigned int) random(), (int) getpid(), host);
 	fprintf(p, "MIME-Version: 1.0" ENDL);
 	if (!strlen_zero(attachments)) {

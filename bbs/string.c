@@ -437,6 +437,28 @@ void bbs_strreplace(char *restrict s, char find, char repl)
 	}
 }
 
+int bbs_str_fully_numeric(const char *s)
+{
+	while (*s) {
+		if (!isdigit(*s)) {
+			return 0;
+		}
+		s++;
+	}
+	return 1;
+}
+
+int bbs_str_fully_alphanumeric(const char *s)
+{
+	while (*s) {
+		if (!isalnum(*s)) {
+			return 0;
+		}
+		s++;
+	}
+	return 1;
+}
+
 int bbs_str_isprint(const char *restrict s)
 {
 	while (*s) {
