@@ -449,28 +449,18 @@ const char *bbs_node_var_get(struct bbs_node *node, const char *key)
 
 int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *restrict buf, size_t len)
 {
-	const char *s = NULL;
+	const char *v = NULL, *gv = NULL;
 
 	/* Built-in vars that aren't really true variables, but treated as such. */
 	if (!builtin_var_expand(node, key, buf, len)) {
 		return 0;
 	}
 
-	RWLIST_RDLOCK(&global_vars); /* Guarantee thread safety for globals. In case the variable is global, RDLOCK it here. We may RDLOCK again in bbs_var_find, but that's okay. */
-
-	/* Check if it's a global variable. */
-	s = bbs_var_find(&global_vars, key);
-	if (s) {
-		safe_strncpy(buf, s, len);
-		RWLIST_UNLOCK(&global_vars);
-		return 0;
-	}
-
 	if (node) {
 		bbs_node_lock(node); /* Guarantee thread safety for node variables. */
-		s = bbs_node_var_get(node, key);
-		if (s) {
-			safe_strncpy(buf, s, len);
+		v = bbs_node_var_get(node, key);
+		if (v) {
+			safe_strncpy(buf, v, len);
 		} else {
 			*buf = '\0'; /* Be nice and at least null terminate, in case the caller doesn't check the return value. */
 		}
@@ -478,8 +468,37 @@ int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *restrict 
 	} else {
 		*buf = '\0'; /* Be nice and at least null terminate, in case the caller doesn't check the return value. */
 	}
+
+/* This has a slight performance impact, since every call with a node will check both lists,
+ * but will help expose potential issues that may cause undesired application behavior. */
+#define CHECK_FOR_VARIABLE_CONFLICTS
+
+	/* Check if it's a global variable.
+	 * We do this second, since global variables are less common than node variables.
+	 * Additionally, if there were a conflict for whatever reason,
+	 * then the node variable should take precedence, so a global variable being set
+	 * erroneously/unintentionally doesn't screw up future substitutions. */
+
+	RWLIST_RDLOCK(&global_vars); /* Guarantee thread safety for globals. In case the variable is global, RDLOCK it here. We may RDLOCK again in bbs_var_find, but that's okay. */
+#ifdef CHECK_FOR_VARIABLE_CONFLICTS
+	gv = bbs_var_find(&global_vars, key);
+#else
+	if (!v) {
+		gv = bbs_var_find(&global_vars, key);
+	}
+#endif
+	if (gv) {
+		if (v) {
+			/* The node variable still takes precedence, but since there's a conflict,
+			 * and the precedence may not be clear to the user, warn about potentially
+			 * the wrong value being used. */
+			bbs_warning("Variable '%s' defined for both node %u and globally\n", key, node->id); /* If v is non-NULL, then node must also be non-NULL */
+		} else {
+			safe_strncpy(buf, gv, len);
+		}
+	}
 	RWLIST_UNLOCK(&global_vars);
-	return s ? 0 : -1;
+	return v || gv ? 0 : -1;
 }
 
 static int substitute_vars(struct bbs_node *node, struct bbs_vars *vars, const char *sub, char *restrict buf, size_t len)
