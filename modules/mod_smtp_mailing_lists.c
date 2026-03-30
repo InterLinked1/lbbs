@@ -460,7 +460,6 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 			bbs_strreplace(replaced, '@', '=');
 			snprintf(mailfrom, sizeof(mailfrom), "%s+bounce=%s@%s", l->user, replaced, S_OR(l->domain, smtp_hostname())); /* No <> */
 			smtp_inject(mailfrom, &external, msgfile, msglen); /* Deliver to the external recipient */
-			stringlist_empty_destroy(&external);
 			extcount++;
 		}
 	}
