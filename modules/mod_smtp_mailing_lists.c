@@ -37,6 +37,14 @@
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
 
+enum munge_behavior {
+	MUNGE_NONE = (1 << 0),
+	MUNGE_NECESSARY = (1 << 1),
+	MUNGE_ALL = (1 << 2),
+};
+
+static enum munge_behavior munge_from = MUNGE_NECESSARY;
+
 enum reply_behavior {
 	REPLY_LIST = (1 << 0),
 	REPLY_SENDER = (1 << 1),
@@ -322,9 +330,76 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 		} else if (STARTS_WITH(buf, "From:")) {
 			const char *from = buf + STRLEN("From:");
 			if (!strlen_zero(from)) {
+				int do_munge = 0;
 				ltrim(from);
-				fprintf(fp, "From:%s\r\n", from); /* Use the original From header */
 				safe_strncpy(from_hdr, from, sizeof(from_hdr));
+				if (!(munge_from & MUNGE_NECESSARY)) {
+					do_munge = 0; /* Don't munge under any circumstances */
+				} else if (munge_from & MUNGE_ALL) {
+					do_munge = 1; /* Always munge, whether needed or not */
+				} else {
+					/* munge_from & MUNGE_NECESSARY only, determine if we need to munge the From header for DMARC compliance */
+					const char *domainstart = strrchr(from ,'@');
+					if (!strlen_zero(domainstart)) {
+						domainstart++; /* Skip @ */
+					}
+					if (strlen_zero(domainstart)) {
+						/* If there's no domain, then munging doesn't apply */
+						do_munge = 0;
+					} else {
+						char domain[256];
+						safe_strncpy(domain, domainstart, sizeof(domain));
+						bbs_strterm(domain, '>'); /* If From address has <>, get rid of em */
+						if (mail_domain_is_local(domain)) {
+							/* If the sender's mailbox is local, we assume this host is authorized to send mail for this address,
+							 * and therefore we don't need to munge since whether we munge or not, DMARC should pass
+							 * On the off-chance this host *isn't* in SPF for this domain, then this will not work. */
+							bbs_debug(6, "Domain '%s' is local, skipping From munge\n", domain);
+							do_munge = 0;
+						} else  {
+							enum bbs_dmarc_policy p = bbs_get_dmarc_policy(domain);
+							switch (p) {
+								case BBS_DMARC_POLICY_UNSPECIFIED:
+								case BBS_DMARC_POLICY_NONE:
+									do_munge = 0;
+									break;
+								/* If a failure occured, fail safe and munge just in case */
+								case BBS_DMARC_POLICY_ERROR:
+								case BBS_DMARC_POLICY_QUARANTINE:
+								case BBS_DMARC_POLICY_REJECT:
+									do_munge = 1;
+									break;
+							}
+						}
+					}
+				}
+				if (do_munge) {
+					char munged_address[256];
+					char fromname[256];
+					char *name = NULL, *user = NULL, *host = NULL;
+					safe_strncpy(fromname, from, sizeof(fromname));
+					if (bbs_parse_email_address(fromname, &name, &user, &host)) {
+						bbs_warning("Couldn't parse email address '%s'\n", fromname);
+					}
+
+					/* Munge the address portion (excluding name) */
+					snprintf(munged_address, sizeof(munged_address), "%s%s%s", user, host ? "@" : "", S_IF(host));
+					bbs_strreplace(munged_address, '@', '=');
+					bbs_debug(5, "Munged From address '%s' -> '%s@%s'\n", from, munged_address, S_OR(l->domain, smtp_hostname()));
+					/* e.g. bob@dmarc.example.com should now be bob=dmarc.example.com@example.com */
+
+					if (name) {
+						/* If we originally had a name, include it here
+						 * If it was already quoted, retain the quotes, but we don't add them if they weren't present. */
+						fprintf(fp, "From: %s <%s@%s>\r\n", name, munged_address, S_OR(l->domain, smtp_hostname()));
+					} else {
+						fprintf(fp, "From: %s@%s\r\n", munged_address, S_OR(l->domain, smtp_hostname()));
+					}
+					/* The Reply-To header will contain the original sender address (unless configured for group reply only),
+					 * and mail clients MUST use that value instead. */
+				} else {
+					fprintf(fp, "From: %s\r\n", from); /* Use the original From header */
+				}
 			}
 		} else {
 			fprintf(fp, "%s\r\n", buf); /* Just copy it over */
@@ -724,6 +799,22 @@ static int load_config(void)
 		size_t userlen, domainlen, namelen, taglen, footerlen;
 		char *data;
 		if (!strcmp(reflector, "general")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+			const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
+				if (!strcmp(key, "munge_from")) {
+					if (!strcmp(value, "none")) {
+						munge_from = MUNGE_NONE;
+					} else if (!strcmp(value, "necessary")) {
+						munge_from = MUNGE_NECESSARY;
+					} else if (!strcmp(value, "all")) {
+						munge_from = MUNGE_NECESSARY | MUNGE_ALL;
+					} else {
+						bbs_warning("Invalid 'munge_from' setting '%s'\n", value);
+					}
+				} else {
+					bbs_warning("Unknown setting '%s'\n", key);
+				}
+			}
 			continue;
 		}
 		while ((keyval = bbs_config_section_walk(section, keyval))) {

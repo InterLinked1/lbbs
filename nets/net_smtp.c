@@ -561,6 +561,32 @@ int smtp_unregister_partial_lookup(int (*callback)(const char *domain, enum dns_
 	return bbs_singular_callback_unregister(&partial_lookup, callback);
 }
 
+/* Callback in mod_smtp_filter_dmarc, so we don't need to add a dependency on libopendmarc elsewhere
+ * Note that since mod_smtp_filter_dmarc depends on net_smtp, we know that no dmarc_lookup callback will still be registered when we unload. */
+BBS_SINGULAR_CALLBACK_DECLARE(dmarc_lookup, enum bbs_dmarc_policy, const char *domain);
+
+int __smtp_register_dmarc_lookup(enum bbs_dmarc_policy (*callback)(const char *domain), void *mod)
+{
+	return bbs_singular_callback_register(&dmarc_lookup, callback, mod);
+}
+
+int smtp_unregister_dmarc_lookup(enum bbs_dmarc_policy (*callback)(const char *domain))
+{
+	return bbs_singular_callback_unregister(&dmarc_lookup, callback);
+}
+
+enum bbs_dmarc_policy bbs_get_dmarc_policy(const char *domain)
+{
+	enum bbs_dmarc_policy p;
+	if (bbs_singular_callback_execute_pre(&dmarc_lookup)) {
+		bbs_error("No DMARC policy handler is currently registered\n");
+		return BBS_DMARC_POLICY_ERROR;
+	}
+	p = BBS_SINGULAR_CALLBACK_EXECUTE(dmarc_lookup)(domain);
+	bbs_singular_callback_execute_post(&dmarc_lookup);
+	return p;
+}
+
 /*! \brief Forward-confirmed reverse DNS (FCrDNS) check */
 static int fcrdns_check(struct smtp_session *smtp)
 {

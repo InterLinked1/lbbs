@@ -142,6 +142,108 @@ static const char *policy_name(int p)
 
 static OPENDMARC_LIB_T lib;
 
+static enum bbs_dmarc_policy get_dmarc_policy(const char *domain)
+{
+	OPENDMARC_STATUS_T status;
+	DMARC_POLICY_T *pctx;
+	char dmarc_domain[256] = "";
+	int p, res = BBS_DMARC_POLICY_ERROR;
+	int used_sp = 0;
+
+	/* libopendmarc only provides the opendmarc_policy_connect_init API, which requires the connecting IP
+	 * as the first argument, but we just want to get the DMARC policy for a domain; we don't have an active transaction/connection.
+	 * Since we're just going to extract the policy and return, we just provide a dummy value here.
+	 *
+	 * If the DKIM domain doesn't have a record, this falls back to the organizational domain as needed. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+	pctx = opendmarc_policy_connect_init((unsigned char*) "192.0.2.0", 0);
+	if (!pctx) {
+		bbs_error("Failed to allocate DMARC policy context\n");
+		return BBS_DMARC_POLICY_ERROR;
+	}
+
+	/* Fetch the actual DMARC record from DNS
+	 * If the DKIM domain doesn't have a record, this falls back to the organizational domain as needed. */
+	status = opendmarc_policy_query_dmarc(pctx, (unsigned char*) domain);
+	switch (status) {
+		case DMARC_PARSE_OKAY:
+			break;
+		case DMARC_DNS_ERROR_NO_RECORD:
+			bbs_debug(5, "No DMARC record found for domain %s\n", domain);
+			break;
+		case DMARC_DNS_ERROR_TMPERR:
+			bbs_warning("Temporary DNS failure\n");
+			break;
+		case DMARC_DNS_ERROR_NXDOMAIN:
+			bbs_warning("No DNS records for %s\n", domain);
+			break;
+		/* These should never happen */
+		case DMARC_PARSE_ERROR_EMPTY:
+		case DMARC_PARSE_ERROR_NO_DOMAIN:
+		case DMARC_PARSE_ERROR_NULL_CTX:
+			bbs_warning("Unexpected status %d\n", status);
+			goto cleanup;
+	}
+
+	/* Figure out which domain was used */
+	if (opendmarc_policy_fetch_utilized_domain(pctx, (unsigned char*) dmarc_domain, sizeof(dmarc_domain)) != DMARC_PARSE_OKAY) {
+		bbs_warning("Failed to get DMARC domain\n");
+		goto cleanup;
+	}
+#pragma GCC diagnostic pop
+
+	/* We just want to get the actual policy enforced by the sender, not the current alignment as we know it to be.
+	 * This is used by mod_smtp_mailing_lists, which needs to determine if the "From" header needs to be munged for DMARC compliance.
+	 * At this point, we don't have an issue, but as soon as it gets remailed elsewhere, the recipient's server may reject it otherwise.
+	 *
+	 * If the domain matches the utilized domain, then we use the 'p=' value in the DNS record.
+	 * Otherwise, the utilized domain is a subdomain, and we use the 'sp=' value in the DNS record. */
+	if (!strcmp(domain, dmarc_domain)) {
+		/* Same domain, use p= */
+		if (opendmarc_policy_fetch_p(pctx, &p) != DMARC_PARSE_OKAY) {
+			bbs_warning("Failed to parse DMARC p\n");
+			goto cleanup;
+		}
+	} else if (bbs_str_ends_with(domain, dmarc_domain)) {
+		/* Subdomain, use sp= */
+		if (opendmarc_policy_fetch_sp(pctx, &p) != DMARC_PARSE_OKAY) {
+			bbs_warning("Failed to parse DMARC sp\n");
+			goto cleanup;
+		}
+		used_sp = 1;
+	} else {
+		bbs_warning("Wanted DMARC policy for '%s', but got DMARC record for '%s'?\n", domain, dmarc_domain);
+		goto cleanup;
+	}
+
+	/* We got p or sp as appropriate, now check the actual policy that would be applied */
+	switch (p) {
+		case DMARC_RECORD_P_UNSPECIFIED:
+			res = BBS_DMARC_POLICY_UNSPECIFIED;
+			bbs_debug(6, "Effective DMARC policy for %s: %s=%s\n", domain, used_sp ? "sp" : "p", "unspecified");
+			break;
+		case DMARC_RECORD_P_NONE:
+			res = BBS_DMARC_POLICY_NONE;
+			bbs_debug(6, "Effective DMARC policy for %s: %s=%s\n", domain, used_sp ? "sp" : "p", "none");
+			break;
+		case DMARC_RECORD_P_QUARANTINE:
+			res = BBS_DMARC_POLICY_QUARANTINE;
+			bbs_debug(6, "Effective DMARC policy for %s: %s=%s\n", domain, used_sp ? "sp" : "p", "quarantine");
+			break;
+		case DMARC_RECORD_P_REJECT:
+			res = BBS_DMARC_POLICY_REJECT;
+			bbs_debug(6, "Effective DMARC policy for %s: %s=%s\n", domain, used_sp ? "sp" : "p", "reject");
+			break;
+		default:
+			bbs_warning("Unhandled %s value %d\n", used_sp ? "sp" : "p", p);
+	}
+
+cleanup:
+	opendmarc_policy_connect_shutdown(pctx);
+	return res;
+}
+
 static int dmarc_filter_cb(struct smtp_filter_data *f)
 {
 	int dres;
@@ -181,6 +283,7 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 		return 0;
 	}
 
+	/* Technically, this is optional since we also pass the domain to opendmarc_policy_query_dmarc */
 	opendmarc_policy_store_from_domain(pctx, (unsigned char*) domain);
 
 	if (f->spf) {
@@ -659,6 +762,7 @@ static int load_module(void)
 
 	/* Wait until SPF and DKIM/ARC have completed (priorities 1 and 2 respectively) before making any DMARC assessment.
 	 * However, we need to run before auth_filter in mod_smtp_filter. */
+	smtp_register_dmarc_lookup(get_dmarc_policy);
 	smtp_filter_register(&dmarc_filter, "DMARC", SMTP_FILTER_DMARC, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 5);
 	return 0;
 }
@@ -666,6 +770,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	smtp_filter_unregister(&dmarc_filter);
+	smtp_unregister_dmarc_lookup(get_dmarc_policy);
 	if (logfp) {
 		fclose(logfp);
 	}

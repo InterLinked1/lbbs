@@ -607,6 +607,12 @@ static int test_email_parsing(void)
 	bbs_test_assert_str_exists_equals(user, "jsmith");
 	bbs_test_assert_str_exists_equals(host, "example.com");
 
+	snprintf(buf, sizeof(buf), "\"John Smith\" <jsmith@example.com>");
+	bbs_test_assert_equals(0, bbs_parse_email_address(buf, &name, &user, &host));
+	bbs_test_assert_str_exists_equals(name, "\"John Smith\"");
+	bbs_test_assert_str_exists_equals(user, "jsmith");
+	bbs_test_assert_str_exists_equals(host, "example.com");
+
 	snprintf(buf, sizeof(buf), "<<jsmith@example.com>>");
 	bbs_test_assert_equals(-1, bbs_parse_email_address(buf, &name, &user, &host));
 

@@ -118,9 +118,9 @@ char *bbs_sasl_encode(const char *nickname, const char *username, const char *pa
 /*!
  * \brief Parse an email address identity into its components
  * \param addr Identity (which will be consumed). Can be user\@host or name <user\@host> format.
- * \param[out] name Name portion, if any. NULL if not present.
- * \param[out] user Username portion
- * \param[out] host Hostname portion
+ * \param[out] name Name portion, if any. Quotes are NOT removed if present. NULL if not present. Pointer optional if not needed.
+ * \param[out] user Username portion. Pointer optional if not needed.
+ * \param[out] host Hostname portion. Pointer optional if not needed.
  * \retval 0 on success, -1 on failure
 */
 int bbs_parse_email_address(char *addr, char **name, char **user, char **host);

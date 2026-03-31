@@ -435,6 +435,26 @@ int __smtp_register_partial_lookup(int (*callback)(const char *domain, enum dns_
 /*! \brief Unregister partial DNS lookup callback function */
 int smtp_unregister_partial_lookup(int (*callback)(const char *domain, enum dns_record_type rectype, char *buf, size_t len));
 
+enum bbs_dmarc_policy {
+	BBS_DMARC_POLICY_ERROR, /*!< An error occured trying to retrieve policy */
+	BBS_DMARC_POLICY_UNSPECIFIED, /*!< Policy was not specified */
+	BBS_DMARC_POLICY_NONE, /*!< Policy is 'none' */
+	BBS_DMARC_POLICY_QUARANTINE, /*!< Policy is 'quarantine' */
+	BBS_DMARC_POLICY_REJECT, /*!< Policy is 'reject' */
+};
+
+/*!
+ * \brief Get the effective DMARC policy for a sending domain (e.g. none, quarantine, reject)
+ * \param domain The sending domain, i.e. "From" header domain
+ * \returns DMARC policy
+ * \note This is just the policy from the DNS record, irrespective of sending IP or alignment
+ */
+enum bbs_dmarc_policy bbs_get_dmarc_policy(const char *domain);
+
+#define smtp_register_dmarc_lookup(cb) __smtp_register_dmarc_lookup(cb, BBS_MODULE_SELF)
+int __smtp_register_dmarc_lookup(enum bbs_dmarc_policy (*callback)(const char *domain), void *mod);
+int smtp_unregister_dmarc_lookup(enum bbs_dmarc_policy (*callback)(const char *domain));
+
 enum smtp_delivery_agent_type {
 	SMTP_DELIVERY_AGENT_LOCAL = (1 << 0),
 	SMTP_DELIVERY_AGENT_EXTERNAL = (1 << 1),

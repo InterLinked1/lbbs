@@ -25,6 +25,11 @@
 #include <string.h>
 #include <sys/stat.h>
 
+/* Uncomment to test with actual, real DMARC policy lookups. Normally we don't require Internet access for tests, so this is disabled by default.
+ * The tests should pass regardless, since failure to lookup DMARC policies fails safe to treating it as restrictive (quarantine/reject). */
+
+/* #define TEST_WITH_REAL_DMARC_POLICIES */
+
 static int pre(void)
 {
 	test_preload_module("mod_mail.so");
@@ -33,6 +38,10 @@ static int pre(void)
 	test_load_module("mod_smtp_delivery_local.so");
 	test_load_module("mod_smtp_mailing_lists.so");
 	test_load_module("net_imap.so");
+#ifdef TEST_WITH_REAL_DMARC_POLICIES
+	test_preload_module("mod_curl.so"); /* mod_smtp_filter_dmarc requires mod_curl */
+	test_load_module("mod_smtp_filter_dmarc.so");
+#endif
 
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");
@@ -157,13 +166,13 @@ static int run(void)
 	}
 	CLIENT_EXPECT(clientfd, "550");
 
-#define LIST_RCPT_DATA(list) \
+#define LIST_RCPT_DATA(list, fromaddr) \
 	SWRITE(clientfd, "RCPT TO:" list "\r\n"); \
 	CLIENT_EXPECT(clientfd, "250"); \
 	SWRITE(clientfd, "DATA\r\n"); \
 	CLIENT_EXPECT(clientfd, "354"); \
 	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:30 -0700" ENDL); \
-	SWRITE(clientfd, "From: " TEST_EMAIL ENDL); \
+	SWRITE(clientfd, "From: " fromaddr ENDL); \
 	SWRITE(clientfd, ENDL); \
 	SWRITE(clientfd, "Test" ENDL); \
 	SWRITE(clientfd, "." ENDL); /* EOM */
@@ -175,7 +184,7 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
 	CLIENT_EXPECT(clientfd, "250");
-	LIST_RCPT_DATA("<limitedsender>");
+	LIST_RCPT_DATA("<limitedsender>", TEST_EMAIL);
 	CLIENT_EXPECT(clientfd, "550"); /* Not authorized! */
 
 	/* Send email to multiple mailboxes via a mailing list, one of which fails at delivery time.
@@ -189,34 +198,66 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
 	CLIENT_EXPECT(clientfd, "250");
-	LIST_RCPT_DATA("<oneandtwo>");
+	LIST_RCPT_DATA("<oneandtwo>", TEST_EMAIL);
 
 	/* Delivery to mailbox 1 will succeed, but delivery to mailbox 2 should fail due to insufficient quota.
 	 * However, that is handled by a bounce and we still get a 250 at the protocol level. */
 	CLIENT_EXPECT(clientfd, "250");
 
-#define POST_TO_LIST(list) \
+#define POST_TO_LIST(list, mailfrom, fromaddr) \
 	SWRITE(clientfd, "RSET\r\n"); \
 	CLIENT_EXPECT(clientfd, "250"); \
 	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL); \
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); \
-	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n"); \
+	SWRITE(clientfd, "MAIL FROM:<" mailfrom ">\r\n"); \
 	CLIENT_EXPECT(clientfd, "250"); \
-	LIST_RCPT_DATA(list); \
+	LIST_RCPT_DATA(list, fromaddr); \
 	CLIENT_EXPECT(clientfd, "250");
 
 	/* Test reply behavior of individual lists */
-	POST_TO_LIST("<replysender>");
+	POST_TO_LIST("<replysender>", TEST_EMAIL, TEST_EMAIL);
 	SWRITE(client1, "a4 FETCH 3 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: " TEST_EMAIL);
 
-	POST_TO_LIST("<replylist>");
+	POST_TO_LIST("<replylist>", TEST_EMAIL, TEST_EMAIL);
 	SWRITE(client1, "a5 FETCH 4 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: <replylist@bbs.example.com>");
 
-	POST_TO_LIST("<replyboth>");
+	POST_TO_LIST("<replyboth>", TEST_EMAIL, TEST_EMAIL);
 	SWRITE(client1, "a6 FETCH 5 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: <replyboth@bbs.example.com>");
+
+	/* Test an external email address, which should munge the From address
+	 * If TEST_WITH_REAL_DMARC_POLICIES isn't defined, mod_smtp_filter_dmarc isn't loaded, so it should fail safe with BBS_DMARC_POLICY_ERROR and munge anyways
+	 * (Unless TEST_WITH_REAL_DMARC_POLICIES is defined, no DNS lookup is actually performed, in cases tests are being run offline) */
+	close_if(clientfd); /* Reopen so we can pretend to be an MTA instead of MSA */
+	clientfd = test_make_socket(25);
+	REQUIRE_FD(clientfd);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
+
+	POST_TO_LIST("<dmarcmungetest>", TEST_EMAIL_EXTERNAL, TEST_EMAIL_EXTERNAL);
+	SWRITE(client1, "a7 FETCH 6 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: " TEST_EMAIL_EXTERNAL);
+	SWRITE(client1, "a8 FETCH 6 (BODY.PEEK[HEADER.FIELDS (From)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "From: external=" TEST_EXTERNAL_DOMAIN "@" TEST_HOSTNAME);
+
+	
+	POST_TO_LIST("<dmarcmungetest>", TEST_EMAIL_EXTERNAL, "External Sender <" TEST_EMAIL_EXTERNAL ">");
+	SWRITE(client1, "b1 FETCH 7 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: External Sender <" TEST_EMAIL_EXTERNAL ">");
+	/* Ensure that if there was a name in the address, the munged From header still includes it
+	 * If TEST_WITH_REAL_DMARC_POLICIES is defined, we'll still munge since TEST_EMAIL_EXTERNAL uses a domain with p=reject and sp=reject */
+	SWRITE(client1, "b2 FETCH 7 (BODY.PEEK[HEADER.FIELDS (From)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "From: External Sender <external=" TEST_EXTERNAL_DOMAIN "@" TEST_HOSTNAME ">");
+
+	/* Repeat, with a quoted name */
+	POST_TO_LIST("<dmarcmungetest>", TEST_EMAIL_EXTERNAL, "\"External Sender\" <" TEST_EMAIL_EXTERNAL ">");
+	SWRITE(client1, "b3 FETCH 8 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: \"External Sender\" <" TEST_EMAIL_EXTERNAL ">");
+	SWRITE(client1, "b4 FETCH 8 (BODY.PEEK[HEADER.FIELDS (From)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "From: \"External Sender\" <external=" TEST_EXTERNAL_DOMAIN "@" TEST_HOSTNAME ">");
 
 	res = 0;
 

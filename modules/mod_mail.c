@@ -417,13 +417,14 @@ char *sieve_get_capabilities(void)
 {
 	char *caps;
 
-	/* Technically not safe to just return directly, since the module could go away while we're using it?
-	 * So duplicate it and return that. */
-
+	/* We never actually execute a callback here, but since sieve_capabilities could go away
+	 * we pre/post to ensure safety inbetween so we can safely duplicate it. */
 	if (bbs_singular_callback_execute_pre(&sieve_validate)) {
 		bbs_error("No Sieve implementation is currently registered\n");
 		return NULL;
 	}
+	/* Technically not safe to just return directly, since the module could go away while we're using it?
+	 * So duplicate it and return that. */
 	caps = strdup(sieve_capabilities);
 	bbs_singular_callback_execute_post(&sieve_validate);
 	return caps;
