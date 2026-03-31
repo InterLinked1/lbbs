@@ -157,6 +157,17 @@ static int run(void)
 	}
 	CLIENT_EXPECT(clientfd, "550");
 
+#define LIST_RCPT_DATA(list) \
+	SWRITE(clientfd, "RCPT TO:" list "\r\n"); \
+	CLIENT_EXPECT(clientfd, "250"); \
+	SWRITE(clientfd, "DATA\r\n"); \
+	CLIENT_EXPECT(clientfd, "354"); \
+	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:30 -0700" ENDL); \
+	SWRITE(clientfd, "From: " TEST_EMAIL ENDL); \
+	SWRITE(clientfd, ENDL); \
+	SWRITE(clientfd, "Test" ENDL); \
+	SWRITE(clientfd, "." ENDL); /* EOM */
+
 	/* Ensure only authorized senders can post */
 	SWRITE(clientfd, "RSET\r\n");
 	CLIENT_EXPECT(clientfd, "250");
@@ -164,15 +175,7 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
 	CLIENT_EXPECT(clientfd, "250");
-	SWRITE(clientfd, "RCPT TO:<limitedsender>\r\n");
-	CLIENT_EXPECT(clientfd, "250");
-	SWRITE(clientfd, "DATA\r\n");
-	CLIENT_EXPECT(clientfd, "354");
-	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:30 -0700" ENDL);
-	SWRITE(clientfd, "From: " TEST_EMAIL ENDL);
-	SWRITE(clientfd, ENDL);
-	SWRITE(clientfd, "Test" ENDL);
-	SWRITE(clientfd, "." ENDL); /* EOM */
+	LIST_RCPT_DATA("<limitedsender>");
 	CLIENT_EXPECT(clientfd, "550"); /* Not authorized! */
 
 	/* Send email to multiple mailboxes via a mailing list, one of which fails at delivery time.
@@ -186,19 +189,34 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
 	CLIENT_EXPECT(clientfd, "250");
-	SWRITE(clientfd, "RCPT TO:<oneandtwo>\r\n");
-	CLIENT_EXPECT(clientfd, "250");
-	SWRITE(clientfd, "DATA\r\n");
-	CLIENT_EXPECT(clientfd, "354");
-	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:30 -0700" ENDL);
-	SWRITE(clientfd, "From: " TEST_EMAIL ENDL);
-	SWRITE(clientfd, ENDL);
-	SWRITE(clientfd, "Test" ENDL);
-	SWRITE(clientfd, "." ENDL); /* EOM */
+	LIST_RCPT_DATA("<oneandtwo>");
 
 	/* Delivery to mailbox 1 will succeed, but delivery to mailbox 2 should fail due to insufficient quota.
 	 * However, that is handled by a bounce and we still get a 250 at the protocol level. */
 	CLIENT_EXPECT(clientfd, "250");
+
+#define POST_TO_LIST(list) \
+	SWRITE(clientfd, "RSET\r\n"); \
+	CLIENT_EXPECT(clientfd, "250"); \
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL); \
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); \
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n"); \
+	CLIENT_EXPECT(clientfd, "250"); \
+	LIST_RCPT_DATA(list); \
+	CLIENT_EXPECT(clientfd, "250");
+
+	/* Test reply behavior of individual lists */
+	POST_TO_LIST("<replysender>");
+	SWRITE(client1, "a4 FETCH 3 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: " TEST_EMAIL);
+
+	POST_TO_LIST("<replylist>");
+	SWRITE(client1, "a5 FETCH 4 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: <replylist@bbs.example.com>");
+
+	POST_TO_LIST("<replyboth>");
+	SWRITE(client1, "a6 FETCH 5 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: <replyboth@bbs.example.com>");
 
 	res = 0;
 

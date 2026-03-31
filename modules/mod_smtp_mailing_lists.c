@@ -225,20 +225,26 @@ static int add_list_headers(struct mailing_list *l, FILE *fp, const char *from)
 
 	/* mailman adds an Errors-To header, but this is mostly deprecated; bounces will go to the envelope address */
 
-	/* Reply-To behavior */
+	/* Reply-To behavior:
+	 *
+	 * Sender only: sender
+	 * List only: List <list@host>
+	 * List and sender: <list@host>,sender
+	 */
 	fprintf(fp, "Reply-To: ");
 	if (l->replyto & REPLY_LIST) {
-		fprintf(fp, "%s%s%s<%s@%s>\r\n", l->name ? "\"" : "", S_IF(l->name), l->name ? "\" " : "", l->user, rdomain);
+		fprintf(fp, "%s%s%s<%s@%s>", l->name ? "\"" : "", S_IF(l->name), l->name ? "\" " : "", l->user, rdomain);
 		nreply++;
 	}
 	if (l->replyto & REPLY_SENDER) {
-		fprintf(fp, "%s%s\r\n", nreply ? "," : "", from);
+		fprintf(fp, "%s%s", nreply ? "," : "", from);
 		nreply++;
 	}
 	if (!nreply) {
 		bbs_warning("No reply targets for list?\n");
 		return -1;
 	}
+	fprintf(fp, "\r\n");
 	return 0;
 }
 
@@ -316,6 +322,7 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 		} else if (STARTS_WITH(buf, "From:")) {
 			const char *from = buf + STRLEN("From:");
 			if (!strlen_zero(from)) {
+				ltrim(from);
 				fprintf(fp, "From:%s\r\n", from); /* Use the original From header */
 				safe_strncpy(from_hdr, from, sizeof(from_hdr));
 			}
@@ -709,7 +716,7 @@ static int load_config(void)
 		char namebuf[256];
 		int samesenders = 0, ptonly = 0, archive = 1;
 		size_t maxsize = 0;
-		enum reply_behavior replyto = REPLY_LIST;
+		enum reply_behavior replyto = REPLY_SENDER;
 		const char *recipients = NULL, *senders = NULL;
 		const char *user = NULL, *name = NULL, *tag = NULL, *footer = NULL;
 		char *domain;
@@ -736,12 +743,14 @@ static int load_config(void)
 			} else if (!strcmp(key, "tag")) {
 				tag = value;
 			} else if (!strcmp(key, "replyto")) {
-				if (!strcmp(key, "list")) {
+				if (!strcmp(value, "list")) {
 					replyto = REPLY_LIST;
-				} else if (!strcmp(key, "sender")) {
+				} else if (!strcmp(value, "sender")) {
 					replyto = REPLY_SENDER;
-				} else if (!strcmp(key, "both")) {
+				} else if (!strcmp(value, "both")) {
 					replyto = REPLY_LIST | REPLY_SENDER;
+				} else {
+					bbs_warning("Invalid 'replyto' setting '%s'\n", value);
 				}
 			} else {
 				bbs_warning("Unknown setting '%s'\n", key);
