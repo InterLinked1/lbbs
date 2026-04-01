@@ -712,7 +712,7 @@ static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session 
 		bbs_smtp_client_send(&smtpclient, "MAIL FROM:<>\r\n");
 	}
 	SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.2 */
-	tx->stage = "RCPT FROM";
+	tx->stage = "RCPT TO";
 	if (recipient) {
 		if (*recipient == '<') {
 			bbs_smtp_client_send(&smtpclient, "RCPT TO:%s\r\n", recipient);
