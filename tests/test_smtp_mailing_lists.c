@@ -216,16 +216,23 @@ static int run(void)
 
 	/* Test reply behavior of individual lists */
 	POST_TO_LIST("<replysender>", TEST_EMAIL, TEST_EMAIL);
-	SWRITE(client1, "a4 FETCH 3 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	SWRITE(client1, "b1 FETCH 3 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: " TEST_EMAIL);
 
 	POST_TO_LIST("<replylist>", TEST_EMAIL, TEST_EMAIL);
-	SWRITE(client1, "a5 FETCH 4 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	SWRITE(client1, "c1 FETCH 4 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: <replylist@bbs.example.com>");
 
 	POST_TO_LIST("<replyboth>", TEST_EMAIL, TEST_EMAIL);
-	SWRITE(client1, "a6 FETCH 5 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: <replyboth@bbs.example.com>");
+	SWRITE(client1, "c2 FETCH 5 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: <replyboth@bbs.example.com>," TEST_EMAIL);
+
+	/* Test that the list name comes through properly */
+	POST_TO_LIST("<replysendername>", TEST_EMAIL, TEST_EMAIL);
+	SWRITE(client1, "d1 FETCH 6 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: " TEST_EMAIL);
+
+	/* Past this point, all messages are from an external sender, only the dmarcmungetest list: */
 
 	/* Test an external email address, which should munge the From address
 	 * If TEST_WITH_REAL_DMARC_POLICIES isn't defined, mod_smtp_filter_dmarc isn't loaded, so it should fail safe with BBS_DMARC_POLICY_ERROR and munge anyways
@@ -238,25 +245,24 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 
 	POST_TO_LIST("<dmarcmungetest>", TEST_EMAIL_EXTERNAL, TEST_EMAIL_EXTERNAL);
-	SWRITE(client1, "a7 FETCH 6 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	SWRITE(client1, "e1 FETCH 7 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: " TEST_EMAIL_EXTERNAL);
-	SWRITE(client1, "a8 FETCH 6 (BODY.PEEK[HEADER.FIELDS (From)])" ENDL);
+	SWRITE(client1, "e2 FETCH 7 (BODY.PEEK[HEADER.FIELDS (From)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "From: external=" TEST_EXTERNAL_DOMAIN "@" TEST_HOSTNAME);
 
-	
 	POST_TO_LIST("<dmarcmungetest>", TEST_EMAIL_EXTERNAL, "External Sender <" TEST_EMAIL_EXTERNAL ">");
-	SWRITE(client1, "b1 FETCH 7 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	SWRITE(client1, "f1 FETCH 8 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: External Sender <" TEST_EMAIL_EXTERNAL ">");
 	/* Ensure that if there was a name in the address, the munged From header still includes it
 	 * If TEST_WITH_REAL_DMARC_POLICIES is defined, we'll still munge since TEST_EMAIL_EXTERNAL uses a domain with p=reject and sp=reject */
-	SWRITE(client1, "b2 FETCH 7 (BODY.PEEK[HEADER.FIELDS (From)])" ENDL);
+	SWRITE(client1, "f2 FETCH 8 (BODY.PEEK[HEADER.FIELDS (From)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "From: External Sender <external=" TEST_EXTERNAL_DOMAIN "@" TEST_HOSTNAME ">");
 
 	/* Repeat, with a quoted name */
 	POST_TO_LIST("<dmarcmungetest>", TEST_EMAIL_EXTERNAL, "\"External Sender\" <" TEST_EMAIL_EXTERNAL ">");
-	SWRITE(client1, "b3 FETCH 8 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
+	SWRITE(client1, "g1 FETCH 9 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: \"External Sender\" <" TEST_EMAIL_EXTERNAL ">");
-	SWRITE(client1, "b4 FETCH 8 (BODY.PEEK[HEADER.FIELDS (From)])" ENDL);
+	SWRITE(client1, "g2 FETCH 9 (BODY.PEEK[HEADER.FIELDS (From)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "From: \"External Sender\" <external=" TEST_EXTERNAL_DOMAIN "@" TEST_HOSTNAME ">");
 
 	res = 0;

@@ -72,7 +72,7 @@ int smtp_is_exempt_relay(struct smtp_session *smtp);
  * \brief Get a timestamp string appropriate for the Received header
  * \param received Received time
  * \param[out] buf
- * \param len Length of buf
+ * \param len Length of buf. Should be at least 32
  */
 void smtp_timestamp(time_t received, char *buf, size_t len);
 

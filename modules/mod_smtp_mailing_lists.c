@@ -273,6 +273,12 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 	char delivered_hdr[256];
 	char from_hdr[256] = "";
 	int skipping = 0;
+	int list_in_to = 0, list_in_cc = 0, got_to = 0, got_cc = 0;
+	char baselistaddr[256], listaddr[256];
+	const char *rdomain = S_OR(l->domain, smtp_hostname());
+
+	snprintf(baselistaddr, sizeof(baselistaddr), "%s@%s", l->user, rdomain);
+	snprintf(listaddr, sizeof(listaddr), "%s%s%s<%s@%s>", l->name ? "\"" : "", S_IF(l->name), l->name ? "\" " : "", l->user, rdomain);
 
 	snprintf(delivered_hdr, sizeof(delivered_hdr), "Delivered-To: mailing list %s@%s", l->user, S_OR(l->domain, smtp_hostname()));
 
@@ -385,13 +391,13 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 					/* Munge the address portion (excluding name) */
 					snprintf(munged_address, sizeof(munged_address), "%s%s%s", user, host ? "@" : "", S_IF(host));
 					bbs_strreplace(munged_address, '@', '=');
-					bbs_debug(5, "Munged From address '%s' -> '%s@%s'\n", from, munged_address, S_OR(l->domain, smtp_hostname()));
+					bbs_debug(5, "Munged From address '%s' -> '%s@%s'\n", from, munged_address, rdomain);
 					/* e.g. bob@dmarc.example.com should now be bob=dmarc.example.com@example.com */
 
 					if (name) {
 						/* If we originally had a name, include it here
 						 * If it was already quoted, retain the quotes, but we don't add them if they weren't present. */
-						fprintf(fp, "From: %s <%s@%s>\r\n", name, munged_address, S_OR(l->domain, smtp_hostname()));
+						fprintf(fp, "From: %s <%s@%s>\r\n", name, munged_address, rdomain);
 					} else {
 						fprintf(fp, "From: %s@%s\r\n", munged_address, S_OR(l->domain, smtp_hostname()));
 					}
@@ -401,8 +407,67 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 					fprintf(fp, "From: %s\r\n", from); /* Use the original From header */
 				}
 			}
+		} else if (STARTS_WITH(buf, "Reply-To:")) {
+			/* We add our own Reply-To header, so if the message came in with one, ignore it */
+			continue;
+		} else if (STARTS_WITH(buf, "To:")) {
+			/*
+			 * The Reply-To header is easy, as that simply follows the replyto setting.
+			 *
+			 * The To and Cc headers are a bit tricky for us.
+			 * We need to largely preserve what is already in these headers, but:
+			 * - If the list is not present in either of them, add it (so that reply all works)
+			 *
+			 * We'll try adding the list to 'To' by default, but if it's in the Cc for some reason, we'll leave that alone, doesn't matter for reply all.
+			 * If the list is in both the To and Cc headers, that should be okay, proper mail clients should discard the Cc and just keep the To (at least Mozilla does)
+			 *
+			 * For example, if a user sends an email with the list in Bcc, so it's not originally in either header, we'll add it to the To header.
+			 *
+			 * Note that addresses can appear in both To/Cc and Reply-To. If this happens, Mozilla picks the name from the To/Cc headers (but follows Reply-To for reply).
+			 *
+			 * Testing Note: If you send a message to the list in Mozilla and the Reply-To is your address in the current mailbox, with replyto=sender, "Reply" will yield no recipients,
+			 * while Reply To only includes the list - it's smart enough to prevent you from just emailing yourself when you click Reply.
+			 */
+			got_to = 1;
+			if (strstr(buf, baselistaddr)) {
+				list_in_to = 1;
+				fprintf(fp, "%s\r\n", buf);
+			} else {
+				/* We've gotten both headers and the list isn't in either. Add it to 'To' now. */
+				if (got_cc && !list_in_cc) {
+					char *hdrval = buf + STRLEN("To:");
+					ltrim(hdrval);
+					fprintf(fp, "To: %s,%s\r\n", hdrval, listaddr); /* no space between comma-separated recipients */
+				} else {
+					fprintf(fp, "%s\r\n", buf);
+				}
+			}
+		} else if (STARTS_WITH(buf, "Cc:")) {
+			got_cc = 1;
+			if (strstr(buf, baselistaddr)) {
+				list_in_cc = 1;
+				fprintf(fp, "%s\r\n", buf);
+			} else {
+				/* We've gotten both headers and the list isn't in either. Add it to 'Cc' now, since it's too late to add it to 'To' */
+				if (got_to && !list_in_to) {
+					char *hdrval = buf + STRLEN("Cc:");
+					ltrim(hdrval);
+					fprintf(fp, "Cc: %s,%s\r\n", hdrval, listaddr); /* no space between comma-separated recipients */
+				} else {
+					fprintf(fp, "%s\r\n", buf);
+				}
+			}
 		} else {
 			fprintf(fp, "%s\r\n", buf); /* Just copy it over */
+		}
+	}
+	if (!list_in_to && !list_in_cc) {
+		/* If this happens, then we only got one of the To and Cc headers or we would have put it in the second one encountered.
+		 * So, add the missing header, containing the list. */
+		if (got_to) {
+			fprintf(fp, "Cc: %s\r\n", listaddr);
+		} else {
+			fprintf(fp, "To: %s\r\n", listaddr);
 		}
 	}
 	if (s_strlen_zero(from_hdr)) {
@@ -831,6 +896,8 @@ static int load_config(void)
 				archive = S_TRUE(value);
 			} else if (!strcmp(key, "maxsize")) {
 				maxsize = (size_t) atol(value);
+			} else if (!strcmp(key, "name")) {
+				name = value;
 			} else if (!strcmp(key, "tag")) {
 				tag = value;
 			} else if (!strcmp(key, "replyto")) {
