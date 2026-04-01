@@ -1434,7 +1434,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 
 void smtp_timestamp(time_t received, char *buf, size_t len)
 {
-    struct tm smtpdate;
+	struct tm smtpdate;
 
 	/* Timestamp is something like Wed, 22 Feb 2023 03:02:22 +0300 */
 	localtime_r(&received, &smtpdate);

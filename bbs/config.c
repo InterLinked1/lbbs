@@ -410,7 +410,7 @@ static struct bbs_config *config_parse_or_write(const char *name, FILE **restric
 	const char *endl = NULL;
 	int has_line_ending = 0;
 	size_t len = 0;
-    ssize_t bytes_read;
+	ssize_t bytes_read;
 	char *key, *value;
 	int lineno = 0;
 	char fullname[PATH_MAX];

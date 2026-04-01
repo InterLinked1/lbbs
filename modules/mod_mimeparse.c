@@ -159,7 +159,7 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs, int level)
 				g_string_append_c(gs, ' ');
 			}
 			param = g_mime_param_list_get_parameter_at(params, i);
-			g_string_append_printf(gs, "\"%s\" \"%s\"", g_mime_param_get_name(param), g_mime_param_get_value(param));	
+			g_string_append_printf(gs, "\"%s\" \"%s\"", g_mime_param_get_name(param), g_mime_param_get_value(param));
 		}
 		g_string_append(gs, ") ");
 	} else {

@@ -240,7 +240,7 @@ static int run(void)
 	SWRITE(client1, "c2 FETCH 1 (FLAGS)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "* 1 FETCH (UID 1 FLAGS (\\Recent))");
 
-	SWRITE(client1, "c3 FETCH 1 (UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (Date Subject From To X-Priority Importance X-MSMail-Priority Priority)])" ENDL); 
+	SWRITE(client1, "c3 FETCH 1 (UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (Date Subject From To X-Priority Importance X-MSMail-Priority Priority)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Priority)] {119}");
 
 	/* Go ahead and mark it seen now */

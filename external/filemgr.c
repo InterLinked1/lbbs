@@ -598,7 +598,7 @@ static int filemgr(void)
 	initscr();
 	cbreak();
 	nonl();
-    noecho();
+	noecho();
 	keypad(stdscr, TRUE); /* Enable keypad for function key interpretation (escape sequences) */
 	curs_set(0); /* Disable cursor */
 	start_color(); /* Enable colors */

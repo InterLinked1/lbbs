@@ -77,7 +77,7 @@ extern int high_concurrency_mode;
 #define STORE_CALLER_INFO() \
 	safe_strncpy(t->info.filename, filename, sizeof(t->info.filename)); \
 	t->info.lineno = lineno; \
-	t->info.lwp = bbs_gettid(); 
+	t->info.lwp = bbs_gettid();
 
 #ifdef ENABLE_LOCK_LOGFILE
 FILE *locklogfp; /* This is never closed anywhere, but this is just a hack to dump lock interactions for debugging */

@@ -578,7 +578,7 @@ static int setup_namespace(pid_t pid)
 
 	snprintf(map_path, sizeof(map_path), "/proc/%d/gid_map", pid);
 	map_len = snprintf(map_buf, sizeof(map_buf), "0 %ld 1", (long) getgid());
-    if (update_map(gid_map, map_path, map_len)) {
+	if (update_map(gid_map, map_path, map_len)) {
 		return -1;
 	}
 

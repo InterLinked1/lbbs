@@ -2410,7 +2410,6 @@ static void thread_generate_list_recurse(struct dyn_str *dynstr, struct thread_m
 	/* These are all of the threads at this level. */
 	multiple = next->next || level == 0 ? 1 : 0; /* Root threads always need parentheses, otherwise add only if needed */
 	while (next) {
-		
 		if (next->id) { /* Skip messages with no ID, since they were not among the originally provided messages */
 			if (multiple) {
 				dyn_str_append(dynstr, "(", 1);
@@ -2423,7 +2422,6 @@ static void thread_generate_list_recurse(struct dyn_str *dynstr, struct thread_m
 		} else {
 			thread_generate_list_recurse(dynstr, next->children, level + 1);
 		}
-		
 		next = next->next;
 	}
 }

@@ -204,7 +204,7 @@ static int test_deletion_sequences(void)
 	clear_deleted(&pop3);
 	bbs_test_assert_equals(0, is_deleted(&pop3, 5));
 	bbs_test_assert_equals(0, is_deleted(&pop3, 1));
-	
+
 	mark_deleted(&pop3, 5);
 	bbs_test_assert_equals(1, is_deleted(&pop3, 5));
 	pop3.totalnew = 5;

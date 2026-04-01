@@ -212,7 +212,7 @@ static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restr
 	/* For example (assuming this is for a node):
 	 *
 	 *    Layer 7 (Application)                                         Layer 6 (Presentation Layer)
-	 *                                          io_log           
+	 *                                          io_log
 	 *
 	 * -----   <--- read(l->rpfd[0])  <---  write(l->rpfd[1]) <--- read(l->orig_rfd)  <-- ... other I/O transformations ...  ------------
 	 * NODE |                                                                                                               | TCP socket |

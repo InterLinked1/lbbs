@@ -652,11 +652,11 @@ static int subsystem_request(ssh_session session, ssh_channel channel, const cha
 		}
 		bbs_debug(3, "Starting SFTP session on node %d\n", cdata->node->id);
 		cdata->sftp = 1;
-        return SSH_OK;
-    }
+		return SSH_OK;
+	}
 
 	bbs_error("Unsupported subsystem: %s\n", subsystem);
-    return SSH_ERROR;
+	return SSH_ERROR;
 }
 
 /*! \note Works only for threads that are NOT detached */
@@ -1152,7 +1152,7 @@ static sftp_attributes attr_from_stat(struct stat *st)
 	attr->mtime = (uint32_t) st->st_mtime;
 	attr->flags = SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_UIDGID | SSH_FILEXFER_ATTR_PERMISSIONS | SSH_FILEXFER_ATTR_ACMODTIME;
 
-    return attr;
+	return attr;
 }
 
 static const char *sftp_get_client_message_type_name(uint8_t i)
@@ -1570,10 +1570,9 @@ static int canonicalize_nonexistent_path(const char *mypath, char *buf)
 	 * Every step of canonicalization involves reducing the length
 	 * (except for symlink resolution, which we don't need to do). */
 	while (*src) {
-		
 		*dst = '\0';
 		bbs_debug(3, "dst '%s' src '%s'\n", buf, src);
-		
+
 		/* Consecutive slashes. Only keep one. */
 		if (!strncmp(src, "//", 2)) {
 			if (!LAST_CHAR_WAS_SLASH()) {

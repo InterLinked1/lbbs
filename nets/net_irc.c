@@ -1538,7 +1538,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 {
 	char hostname[84];
 	struct irc_channel *c;
-	
+
 	enum channel_user_modes minmode = CHANNEL_USER_MODE_NONE;
 
 	/*! \todo need to respond with appropriate numerics here */

@@ -2353,7 +2353,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 		http->res->contentlength = (size_t) st->st_size;
 		offset = 0;
 	}
-	
+
 	/* Set Content Type based on MIME type, unless we already set it for multipart/byteranges */
 	if ((!ranges || rangeparts <= 1) && !mime_type(filename, mimetype, sizeof(mimetype))) {
 		http_set_header(http, "Content-Type", mimetype);

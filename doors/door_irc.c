@@ -195,7 +195,6 @@ static int __attribute__ ((nonnull (1, 6))) __chat_send(struct client_relay *cli
 		 * since we don't control the prefix at all towards other IRC networks. */
 		if (sender) { /* Yes, sender can be NULL */
 			snprintf(prefix, sizeof(prefix), "%s@%u", bbs_username(sender->node->user), sender->node->id);
-			
 		}
 #else
 		if (sender) {

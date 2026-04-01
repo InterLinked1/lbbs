@@ -1199,7 +1199,6 @@ int handle_fetch_full(struct imap_session *imap, char *s, int usinguid, int tagg
 				goto cleanup;
 			}
 		}
-		
 	}
 
 	/* Only parse the request once. */

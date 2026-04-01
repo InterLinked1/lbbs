@@ -92,31 +92,31 @@ static const char *ami_session;
 static void nonlocaltime(const char *tzname, char *buf, size_t len)
 {
 	char *tz;
-    time_t now;
+	time_t now;
 
 	now = time(NULL);
 
 	bbs_mutex_lock(&timelock);
 
-    tz = getenv("TZ");
-    if (tz) {
-        tz = strdup(tz);
+	tz = getenv("TZ");
+	if (tz) {
+		tz = strdup(tz);
 	}
 	/* Override TZ */
-    setenv("TZ", tzname, 1);
-    tzset();
+	setenv("TZ", tzname, 1);
+	tzset();
 
 	/* Use TZ */
-    strftime(buf, len, "%Y/%m/%d %I:%M:%S %p", localtime(&now));
+	strftime(buf, len, "%Y/%m/%d %I:%M:%S %p", localtime(&now));
 
 	/* Restore original TZ */
-    if (tz) {
-        setenv("TZ", tz, 1);
-        free(tz);
-    } else {
-        unsetenv("TZ");
+	if (tz) {
+		setenv("TZ", tz, 1);
+		free(tz);
+	} else {
+		unsetenv("TZ");
 	}
-    tzset();
+	tzset();
 
 	bbs_mutex_unlock(&timelock);
 }
@@ -789,7 +789,7 @@ static int handle_directory(struct queue_call_handle *qch)
 	C - Annitock
 	D - Area 205
 	E - Calhoun County
-	For Anniston, the operator would press "A". 
+	For Anniston, the operator would press "A".
 	Then she keys in the listing. This is done in the same manner. First 3 letters of the first word, First 3 letters of the second word.
 	Take Office Depot. You would key it in like this "OFF.DEP." A Listing in that city would appear:
 	CUR.CITY: ANNISTON, ALABAMA (AREA 205, ANNISTON-CALHOUN COUNTY)
@@ -900,9 +900,6 @@ static int handle_directory(struct queue_call_handle *qch)
 		bbs_node_buffer(qch->node);
 		if (stype & DIRECTORY_SEARCH_REV) {
 			bbs_node_writef(qch->node, stype & DIRECTORY_SEARCH_PNET ? "LSTN (NBR): " : "LSTN (NBR / ADDRESS): ");
-			if (stype & DIRECTORY_SEARCH_PNET) {
-				
-			}
 		} else {
 			bbs_node_writef(qch->node, "LSTN: ");
 		}
@@ -1398,7 +1395,7 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 		 * (with only one person typing at a time), this is unlikely to be an issue,
 		 * fat chance of anything getting clobbered since only one thread should be
 		 * writing to the socket at a time anyways. */
-		
+
 		t->rxcount++; /* Increment counter of successful receptions */
 		if (!strcmp(message, "\\n")) {
 			/* Convert textual depiction of a newline to an actual newline.

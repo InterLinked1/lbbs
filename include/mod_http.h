@@ -192,7 +192,7 @@ void http_enable_hsts(struct http_session *http, unsigned int maxage);
  * \param code Redirect response code
  * \param location Redirect URI
  * \retval 0 on success, -1 on failure
- */ 
+ */
 int http_redirect(struct http_session *http, enum http_response_code code, const char *location);
 
 /*!

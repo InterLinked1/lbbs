@@ -235,7 +235,7 @@ int getacl(struct imap_session *imap, const char *directory, const char *mailbox
 	fp = fopen(fullname, "r");
 	if (!fp) {
 		/* No ACLs, just include the default (current user's ACL???) XXXXX */
-		return 0; 
+		return 0;
 	}
 
 	memset(&dynstr, 0, sizeof(dynstr));

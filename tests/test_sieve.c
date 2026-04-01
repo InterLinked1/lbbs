@@ -218,7 +218,7 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL2 ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/2/new", 3); 
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/2/new", 3);
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 4); /* Vacation responder auto reply */
 #endif
 

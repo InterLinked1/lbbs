@@ -554,8 +554,7 @@ static void BF_swap(BF_word *x, int count)
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-static void BF_set_key(const char *key, BF_key expanded, BF_key initial,
-    unsigned char flags)
+static void BF_set_key(const char *key, BF_key expanded, BF_key initial, unsigned char flags)
 {
 	const char *ptr = key;
 	unsigned int bug, i, j;

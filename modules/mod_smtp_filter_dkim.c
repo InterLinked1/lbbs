@@ -306,7 +306,7 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 		statp == DKIM_STAT_OK ? " header.b=\"" : "",
 		statp == DKIM_STAT_OK ? substring : "",
 		statp == DKIM_STAT_OK ? "\"" : ""
-    );
+	);
 
 	DKIM_DEBUG(5, "DKIM result: %s\n", dkimresult);
 	REPLACE(f->dkim, dkimresult);

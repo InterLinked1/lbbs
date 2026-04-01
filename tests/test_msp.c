@@ -49,15 +49,15 @@ static int udp_client_test(void)
 	struct sockaddr_in saddr;
 
 	memset(&saddr, 0, sizeof(saddr));
-    saddr.sin_family = AF_INET;
-    saddr.sin_port = htons(18);              
-    saddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	saddr.sin_family = AF_INET;
+	saddr.sin_port = htons(18);
+	saddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
 	sfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sfd < 0) {
-        bbs_error("socket failed: %s\n", strerror(errno));
-        return -1;
-    }
+		bbs_error("socket failed: %s\n", strerror(errno));
+		return -1;
+	}
 
 	/* Now, test sending and receiving with the UDP version:
 	 * Since the response is coming from the same place the packet is being sent,

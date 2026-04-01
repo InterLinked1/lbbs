@@ -37,7 +37,7 @@
 #include "include/mod_mail.h"
 
 /* ManageSieve TCP port */
-#define DEFAULT_SIEVE_PORT 4190 
+#define DEFAULT_SIEVE_PORT 4190
 
 static int sieve_port = DEFAULT_SIEVE_PORT;
 

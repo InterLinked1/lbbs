@@ -985,7 +985,6 @@ static int on_select(const char *dir_name, const char *filename, int seqno, void
 					traversal->firstunseen = MIN(traversal->firstunseen, uid); /* Otherwise, keep the lowest numbered one. */
 				}
 			}
-			
 		}
 	}
 
@@ -2982,7 +2981,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 	int alengths = 0;
 	int allocsizes = 0;
 	size_t taglen;
-	struct imap_client *destclient; 
+	struct imap_client *destclient;
 	struct imap_traversal traversalstack;
 	const char *remotename;
 	int synchronizing, multiappend;
@@ -3349,7 +3348,7 @@ static int handle_copy_move(struct imap_session *imap, char *s, int usinguid, in
 	 * Case 1 can be handled normally.
 	 * Case 2 can be handled through forwarding.
 	 * Case 3 requires special handling to make the operation transparent, and we use handle_remote_move for that. */
-	
+
 	if (imap->client) {
 		if (strncmp(newbox, imap->folder, imap->client->virtprefixlen) || *(newbox + imap->client->virtprefixlen) != HIERARCHY_DELIMITER_CHAR) {
 			differentservers = 1;

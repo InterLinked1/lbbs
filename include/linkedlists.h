@@ -112,9 +112,9 @@ struct name {                                                   \
  * entry to \a NULL (empty list) and recreating the embedded lock.
  */
 #define RWLIST_HEAD_INIT(head) {                                    \
-        (head)->first = NULL;                                           \
-        (head)->last = NULL;                                            \
-		__bbs_rwlock_init(&(head)->lock, __FILE__, __LINE__, __func__, #head); \
+	(head)->first = NULL;                                           \
+	(head)->last = NULL;                                            \
+	__bbs_rwlock_init(&(head)->lock, __FILE__, __LINE__, __func__, #head); \
 }
 
 /*!
@@ -126,9 +126,9 @@ struct name {                                                   \
  * It does not free the structure from memory.
  */
 #define RWLIST_HEAD_DESTROY(head) {                                 \
-        (head)->first = NULL;                                           \
-        (head)->last = NULL;                                            \
-		__bbs_rwlock_destroy(&(head)->lock, __FILE__, __LINE__, __func__, #head); \
+	(head)->first = NULL;                                           \
+	(head)->last = NULL;                                            \
+	__bbs_rwlock_destroy(&(head)->lock, __FILE__, __LINE__, __func__, #head); \
 }
 
 /*!
@@ -310,13 +310,13 @@ struct {								\
  * temporarily (until the next RWLIST_INSERT_TAIL is performed).
  */
 #define RWLIST_INSERT_TAIL(head, elm, field) do {			\
-      if (!(head)->first) {						\
+	if (!(head)->first) {						\
 		(head)->first = (elm);					\
 		(head)->last = (elm);					\
-      } else {								\
+	} else {								\
 		(head)->last->field.next = (elm);			\
 		(head)->last = (elm);					\
-      }									\
+	}									\
 } while (0)
 
 /*!

@@ -1451,7 +1451,7 @@ static int authenticate(struct bbs_node *node)
 			return -1;
 		} else if (!strcasecmp(username, "New")) {
 			int res;
-			
+
 			/* User registration could vary from system to system,
 			 * for example, some systems may allow users to self-register,
 			 * others may have a process for sysops verifying new users, etc.

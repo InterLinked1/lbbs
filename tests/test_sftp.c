@@ -80,10 +80,10 @@ static ssh_session start_ssh(void)
 	}
 
 	/* Authenticate */
-    if (ssh_userauth_none(session, NULL) == SSH_AUTH_ERROR) { /* Need to do this in order to get methods */
-        bbs_error("Authentication failed: %s\n", ssh_get_error(session));
+	if (ssh_userauth_none(session, NULL) == SSH_AUTH_ERROR) { /* Need to do this in order to get methods */
+		bbs_error("Authentication failed: %s\n", ssh_get_error(session));
 		goto cleanup;
-    }
+	}
 	methods = (unsigned int) ssh_userauth_list(session, NULL);
 	if (!(methods & SSH_AUTH_METHOD_PASSWORD)) {
 		bbs_error("Password auth unavailable\n");
@@ -133,18 +133,18 @@ static int do_sftp(ssh_session session)
 
 	count = sftp_extensions_get_count(sftp);
 	bbs_debug(3, "%d extension%s supported:\n", count, ESS(count));
-    for (i = 0; i < count; i++) {
+	for (i = 0; i < count; i++) {
 		bbs_debug(3, "\t%s, version: %s\n", sftp_extensions_get_name(sftp, i), sftp_extensions_get_data(sftp, i));
-    }
+	}
 
 #define TEST_FILE_CONTENTS "This a test file, which we will upload via SFTP, download via SFTP, and then compare to ensure they match!\r\n"
 
 	/* Upload a file in the user's home directory */
 	file = sftp_open(sftp, "testfile.txt", O_WRONLY | O_CREAT, 0700);
-    if (!file) {
+	if (!file) {
 		bbs_error("Failed to open file for writing: %s\n", ssh_get_error(session));
 		goto cleanup;
-    }
+	}
 
 	len = sftp_write(file, TEST_FILE_CONTENTS, STRLEN(TEST_FILE_CONTENTS));
 	if (len != STRLEN(TEST_FILE_CONTENTS)) {
@@ -204,12 +204,12 @@ static int do_sftp(ssh_session session)
 		if (!strcmp(attr->name, "testfile.txt")) {
 			len = 1;
 		}
-        sftp_attributes_free(attr);
-    }
+		sftp_attributes_free(attr);
+	}
 	if (!sftp_dir_eof(dir)) {
 		bbs_error("Error reading directory: %s\n", ssh_get_error(session));
 		goto cleanup;
-    }
+	}
 
 	if (!len) {
 		bbs_error("Didn't find file in file listing\n");

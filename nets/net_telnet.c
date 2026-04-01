@@ -9,7 +9,7 @@
  * the GNU General Public License Version 2. See the LICENSE file
  * at the top of the source tree.
  */
- 
+
 /*! \file
  *
  * \brief Telnet and TTY/TDD network driver
