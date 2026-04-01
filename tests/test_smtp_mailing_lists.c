@@ -223,7 +223,7 @@ static int run(void)
 	SWRITE(client1, "c1 FETCH 4 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: <replylist@bbs.example.com>");
 
-	POST_TO_LIST("<replyboth>", TEST_EMAIL, TEST_EMAIL);
+	POST_TO_LIST("<ReplyBoth@Bbs.Example.Com>", TEST_EMAIL, TEST_EMAIL); /* Ensure we can post to the list, case-insensitively */
 	SWRITE(client1, "c2 FETCH 5 (BODY.PEEK[HEADER.FIELDS (Reply-To)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "Reply-To: <replyboth@bbs.example.com>," TEST_EMAIL);
 

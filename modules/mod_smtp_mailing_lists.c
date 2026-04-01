@@ -85,8 +85,8 @@ static int add_list(struct mailing_list *list)
 	struct mailing_list *l;
 
 	RWLIST_TRAVERSE(&lists, l, entry) {
-		if (!strcmp(l->user, list->user)) {
-			if (!l->domain || (list->domain && !strcmp(l->domain, list->domain))) {
+		if (!strcasecmp(l->user, list->user)) {
+			if (!l->domain || (list->domain && !strcasecmp(l->domain, list->domain))) {
 				bbs_warning("List already defined: %s%s%s\n", l->user, l->domain ? "@" : "", S_IF(l->domain));
 				return -1;
 			}
@@ -102,12 +102,13 @@ static struct mailing_list *find_list(const char *user, const char *domain)
 	struct mailing_list *l;
 
 	RWLIST_TRAVERSE(&lists, l, entry) {
-		if (!strcmp(l->user, user)) {
+		/* Mailing list addresses are not case-sensitive */
+		if (!strcasecmp(l->user, user)) {
 			if (!l->domain) { /* If l->domain is NULL, that means it's unqualified, and always matches. */
 				break;
-			} else if (domain && !strcmp(l->domain, domain)) { /* l->domain must match domain */
+			} else if (domain && !strcasecmp(l->domain, domain)) { /* l->domain must match domain */
 				break;
-			} else if (!domain && !strcmp(l->domain, smtp_hostname())) { /* Empty domain matches the primary hostname */
+			} else if (!domain && !strcasecmp(l->domain, smtp_hostname())) { /* Empty domain matches the primary hostname */
 				break;
 			}
 		}
@@ -162,7 +163,7 @@ static int exists(struct smtp_session *smtp, struct smtp_response *resp, const c
 
 	if (strlen_zero(subaddr)) { /* It's the reflector address */
 		return 1;
-	} else if (!strcmp(subaddr, "subscribe") || !strcmp(subaddr, "unsubscribe") || !strcmp(subaddr, "owner") || !strcmp(subaddr, "help") || STARTS_WITH(subaddr, "bounce")) {
+	} else if (!strcasecmp(subaddr, "subscribe") || !strcasecmp(subaddr, "unsubscribe") || !strcasecmp(subaddr, "owner") || !strcasecmp(subaddr, "help") || STARTS_WITH(subaddr, "bounce")) {
 		return 1;
 	}
 	return -1; /* List exists, but subaddress is not valid */
@@ -775,9 +776,9 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 		}
 		bbs_delete_file(tmpattach);
 		return 1;
-	} else if (!strcmp(subaddr, "subscribe") || !strcmp(subaddr, "unsubscribe")) {
+	} else if (!strcasecmp(subaddr, "subscribe") || !strcasecmp(subaddr, "unsubscribe")) {
 		return -1; /*! \todo Future expansion to support these */
-	} else if (!strcmp(subaddr, "owner") || !strcmp(subaddr, "help")) {
+	} else if (!strcasecmp(subaddr, "owner") || !strcasecmp(subaddr, "help")) {
 		/*! \todo Need to add an "owner" option for lists, and redirect such mail to that address */
 		return -1; /*! \todo Future expansion to support these */
 	} else if (STARTS_WITH(subaddr, "bounce")) {
