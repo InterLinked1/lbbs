@@ -32,14 +32,17 @@ static int pre(void)
 	/* Don't load mod_chanserv.so since we don't want to muck with any channel registrations on this server */
 	test_preload_module("net_irc.so");
 	test_preload_module("mod_mail.so");
+	test_preload_module("mod_mimeparse.so");
 	test_load_module("mod_irc_bouncer.so");
 	test_load_module("mod_smtp_delivery_local.so");
 	test_load_module("net_smtp.so");
+	test_load_module("net_imap.so");
 
 	TEST_ADD_CONFIG("transfers.conf");
 	TEST_ADD_CONFIG("net_irc.conf");
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");
+	TEST_ADD_CONFIG("net_imap.conf");
 
 	TEST_RESET_MKDIR(TEST_MAIL_DIR);
 
@@ -60,6 +63,7 @@ static int pre(void)
 static int run(void)
 {
 	int client1 = -1, client2 = -1, clientfd = -1;
+	int imapfd = -1;
 	int res = -1;
 
 	client1 = test_make_socket(6667);
@@ -183,16 +187,33 @@ static int run(void)
 	SWRITE(client2, "PRIVMSG #bouncer-test2 :This message is going to get emailed. It will get emailed to user 1 upon joining the channel, "
 		"since interactive mode is disabled. It's longer than 72 characters, so it will get wrapped as well.\r\n");
 
+	/* If there are trailing spaces in the message, they shouldn't appear in the bouncer log file / email */
+	/* Should be in log something like:
+	 * '2000-01-01 00:00:00 :testuser2!testuser2@node/2 PRIVMSG #bouncer-test2 :Test message ending in spaces<LF>' */
+	SWRITE(client2, "PRIVMSG #bouncer-test2 :Test message ending in spaces         \r\n");
+
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", -1); /* Shouldn't be any messages yet, in fact, the maildir doesn't even exist yet */
+
+	imapfd = test_make_socket(143);
+	REQUIRE_FD(imapfd);
+	CLIENT_EXPECT(imapfd, "OK");
+	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
+	CLIENT_EXPECT(imapfd, "a1 OK");
+	SWRITE(imapfd, "a2 SELECT INBOX" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "a2 OK");
 
 	TEST_DELIMIT(10, "User 1 joins #bouncer-test2, triggering email of missed message");
 	SWRITE(client1, "JOIN #bouncer-test2\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "JOIN #bouncer-test2");
 
-	usleep(100000); /* We need to wait a good bit for the message to get delivered */
+	/* Now, we should have received an email... */
+	SWRITE(imapfd, "a3 IDLE" ENDL);
+	CLIENT_EXPECT(imapfd, "+");
+	CLIENT_EXPECT(imapfd, "* 1 EXISTS");
+	SWRITE(imapfd, "DONE" ENDL);
 
-	/* Now, we should have received an email... (here, we cheat and just check the maildir, so we don't need to establish an IMAP or POP3 connection) */
-	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1); /* Should now have a message */
+	SWRITE(imapfd, "a4 FETCH 1 (BODY[])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "ending in spaces" ENDL); /* Shouldn't be any spaces between "ending in spaces" and CR LF */
 
 	SWRITE(client1, "QUIT :Hanging up\r\n");
 
@@ -270,6 +291,7 @@ static int run(void)
 cleanup:
 	close_if(client1);
 	close_if(client2);
+	close_if(imapfd);
 	return res;
 }
 

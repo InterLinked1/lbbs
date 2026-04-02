@@ -639,6 +639,8 @@ static void log_helper(struct bouncer_channel *bc, enum irc_command_callback_eve
 	char *pos = buf + TIMESTAMP_CHARS;
 	size_t left = sizeof(buf) - TIMESTAMP_CHARS;
 	struct tm logdate;
+	size_t linelen;
+	char *end;
 
 	/* Prepare the buffer to write to the logfile.
 	 * Since IRC doesn't have timestamps, we generate our own timestamp,
@@ -649,35 +651,64 @@ static void log_helper(struct bouncer_channel *bc, enum irc_command_callback_eve
 	strftime(buf, sizeof(buf), "%Y-%m-%d %T", &logdate);
 	buf[TIMESTAMP_CHARS - 1] = ' '; /* Don't bother appending a NUL after, since snprintf below will overwrite, starting there */
 
-	/* Log the message in the wire/protocol format for IRC */
+	/* Log the message in the wire/protocol format for IRC
+	 * We add the LF at the end, not here, so we reserve 1 from the length for it. */
 	switch (event) {
 		case IRCCMD_EVENT_JOIN:
 		case IRCCMD_EVENT_PART:
 		case IRCCMD_EVENT_KICK:
-			snprintf(pos, left, ":%s %s %s\n", hostmask, cmd, channel);
+			snprintf(pos, left - 1, ":%s %s %s", hostmask, cmd, channel);
 			break;
 		case IRCCMD_EVENT_QUIT:
 			if (!strlen_zero(data)) {
-				snprintf(pos, left, ":%s %s\n", hostmask, cmd); /* This is not a per-channel message in IRC, but the event is per-channel */
+				snprintf(pos, left - 1, ":%s %s", hostmask, cmd); /* This is not a per-channel message in IRC, but the event is per-channel */
 			} else {
-				snprintf(pos, left, ":%s %s :%s\n", hostmask, cmd, data); /* This is not a per-channel message in IRC, but the event is per-channel */
+				snprintf(pos, left - 1, ":%s %s :%s", hostmask, cmd, data); /* This is not a per-channel message in IRC, but the event is per-channel */
 			}
 			break;
 		case IRCCMD_EVENT_PRIVMSG:
 		case IRCCMD_EVENT_TOPIC:
-			snprintf(pos, left, ":%s %s %s :%s\n", hostmask, cmd, channel, data);
+			snprintf(pos, left - 1, ":%s %s %s :%s", hostmask, cmd, channel, data);
 			break;
 		case IRCCMD_EVENT_MODE:
 			/* Sometimes there are 2 arguments, sometimes there are 3 (the channel is in the args if needed) */
-			snprintf(pos, left, ":%s %s %s\n", hostmask, cmd, data);
+			snprintf(pos, left - 1, ":%s %s %s", hostmask, cmd, data);
 			break;
 		default:
 			/* Unhandled, don't care */
 			return;
 	}
 
+	/* Trim any trailing whitespace in the message before we write it to the log file.
+	 * Otherwise if the message includes spaces for formatting,
+	 * - the trailing spaces will take up space unnecessarily, when they'll serve no purpose later
+	 * - Because we send a format=flowed email in email_flush, it'll result in multiple messages
+	 *   being shown on the same line in an email client (which might make sense if they were
+	 *   actually part of the same message originally, but that is NOT the case here,
+	 *   because even for other relay sources which support multiline messages,
+	 *   they don't make it through net_irc as multiline, so we can't reconstruct a multiline
+	 *   message here.
+	 *
+	 * So, get rid of the spaces to save space (get it?) and also ensure the messages
+	 * display properly in the email, one per line.
+	 *
+	 * We don't use rtrim here, because we want to add the LF after, so this is more efficient. */
+	linelen = strlen(buf);
+	end = buf + linelen - 1;
+	while (isspace(*end)) {
+		end--;
+		linelen--;
+		if (!linelen) {
+			break; /* The line was just spaces! */
+		}
+	}
+	end++; /* Move forward again to the first of the trailing whitespace characters (or the end of the string, which was previously a NUL) */
+	*end++ = '\n';
+	*end = '\0'; /* Safe because the string could have only gotten shorter, and there was initially room for the terminating LF */
+	linelen++; /* For the LF */
+
 	bbs_debug(7, "Appending to bouncer log: %s", buf); /* Already ends in LF */
-	bouncer_logfile_append(bc, buf, strlen(buf));
+	bouncer_logfile_append(bc, buf, linelen);
 }
 
 static int open_bouncer_logfile(struct bouncer_channel *bc, const char *username)
