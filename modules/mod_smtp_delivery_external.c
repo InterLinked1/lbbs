@@ -764,6 +764,70 @@ static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session 
 
 cleanup:
 	free_if(saslstr);
+	if (strlen(buf) >= 4 && buf[3] == '-' && (buf[0] == '4' || buf[0] == '5')) {
+		/* If we got the beginning of a multiline response when the error was received,
+		 * keep reading so we can get the entire message, in case we send a bounce,
+		 * as we'll want to include the whole response. */
+
+		/* Temporary buf for reading full response
+		 * There's no inherent guarantee that a multiline response in its entirety would
+		 * fit in the max space allocated for one line, but it's very unlikely that it wouldn't.
+		 * We use the same size so that at the end, we can just copy it into the readline buffer that was used,
+		 * so if truncation occurs, so be it. */
+		char respbuf[SMTP_MAX_BUFSIZE] = "";
+		char *respptr = respbuf;
+		size_t respbuflen = sizeof(respbuf);
+		size_t bytesleft = respbuflen;
+		/* If we aborted due to a nonfinal response, before we quit, continue reading the rest
+		 * of the response, since we probably want the whole thing to include in our bounce message. */
+		SAFE_FAST_APPEND(respbuf, respbuflen, respptr, bytesleft, "%s", buf);
+		for (;;) {
+			char *continuation;
+			int e1, e2, e3;
+			char emsg[3];
+			ssize_t rres = bbs_readline(smtpclient.client.rfd, &smtpclient.client.rldata, "\r\n", SEC_MS(1));
+			if (rres < 0) {
+				bbs_warning("Unexpected end of response (so far: '%s')\n", respbuf);
+				break;
+			}
+			/* Skip the first four characters since this is a continuation of the response */
+			if (rres < 4) {
+				bbs_warning("Unexpected end of response: '%s' (so far: '%s')\n", buf, respbuf);
+				break;
+			}
+			continuation = buf + 3; /* That will skip e.g. "550-" or "550 " */
+			/* ... but if we have something like "550-5.1.1 text..." or "550 5.1.1 text...", then we need to skip until after the next space
+			 * We don't assume that we necessarily have an enhanced status code, this accomodates either case. */
+			while (*continuation != ' ') {
+				continuation++;
+			}
+			if (!*continuation) {
+				break;
+			}
+			continuation++; /* Skip the space, what lies afterwards is the message continuation */
+			/* This handles the case for something like 550 5.1.1 text... we need to skip the enhanced status code.
+			 * However, note that the enhanced status codes could be variable length (not always X.Y.Z, could be X.Y.ZZ, etc. )
+			 * Hence, if we see something here that looks like an enhanced status code (which can only happen for the last line),
+			 * skip it. */
+			if (buf[3] == ' ' && sscanf(continuation, "%d.%d.%d %1s", &e1, &e2, &e3, emsg) == 4) {
+				/* Skip until after the next space, again */
+				while (*continuation != ' ') {
+					continuation++;
+				}
+				continuation++; /* We know this is valid since sscanf already parsed the string */
+			}
+			SAFE_FAST_APPEND(respbuf, respbuflen, respptr, bytesleft, "%s", continuation); /* automatically adds space inbetween */
+			if (buf[3] != '-') {
+				/* Response is done */
+				bbs_debug(6, "Full multi-line response: '%s'\n", respbuf);
+				break;
+			}
+		}
+		/* Afterwards, copy the ENTIRE response back into the readline buffer.
+		 * Yes, this will clobber it since it'll screw up its bookkeeping, but we are done with it at this point.
+		 * This allows us to conveniently shove the full response into the buffer in which the response is already expected. */
+		strcpy(buf, respbuf); /* Safe, because the buffers are the same size */
+	}
 	if (res > 0) {
 		bbs_smtp_client_send(&smtpclient, "QUIT\r\n");
 	}
@@ -1399,7 +1463,7 @@ static int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf, const char
 static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 {
 	int res = -1;
-	char buf[256] = "";
+	char buf[SMTP_MAX_BUFSIZE] = ""; /* Long enough to store a full response line */
 	struct stringlist *static_routes;
 	struct smtp_tx_data tx;
 	time_t message_age;
