@@ -32,6 +32,8 @@
 ; specify the email digest period in minutes.
 ; To disable interactive digests and only do email digests, negate the digest period.
 ; 0 will disable email digests while keeping interactive digests enabled (default).
+; Note that if you have been mentioned by username, the PM email digest frequency is used,
+; as presumably these digests occur more frequently.
 ;
 ; Please note that the log file size is limited by your system administrator; therefore,
 ; if you use interactive mode, truncation may occur if you do not regularly check the channel.

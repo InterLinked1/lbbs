@@ -109,6 +109,7 @@ struct bouncer_channel {
 	time_t last_flush;				/*!< Last flush */
 	unsigned int email_frequency;	/*!< Email flush frequency (0 to disable) */
 	unsigned int interactive:1;		/*!< Interactive flushing? */
+	unsigned int user_mentioned:1;	/*!< Whether user has been mentioned in channel chat since last flush */
 	RWLIST_ENTRY(bouncer_channel) entry;
 	char *data;	/* Not quite a flexible struct member, but sufficient */
 };
@@ -439,6 +440,9 @@ static void *periodic_emailer(void *unused)
 
 			/* First, flush any PMs */
 			if (TIME_TO_FLUSH(bu->pmbc)) {
+				if (!bu->pmbc->email_frequency) {
+					continue; /* Don't flush if email is disabled */
+				}
 				if (!periodic_channel_flush(bu->pmbc, now)) {
 					bu->pmbc->last_flush = now;
 				}
@@ -446,7 +450,13 @@ static void *periodic_emailer(void *unused)
 
 			/* Now, check the channels */
 			RWLIST_TRAVERSE(&bu->channels, bc, entry) {
-				if (TIME_TO_FLUSH(bc)) {
+				if (!bc->email_frequency) {
+					continue; /* Don't flush if email is disabled */
+				}
+				/* We don't have an explicit frequency for email digests if mentioned in a channel,
+				 * we just use the PM digest frequency (which is presumably lower). */
+				if (TIME_TO_FLUSH(bc) || (bc->user_mentioned && bu->pmbc->email_frequency && (bc->last_flush < now - (60 * bu->pmbc->email_frequency)))) {
+					bc->user_mentioned = 0;
 					if (!periodic_channel_flush(bc, now)) {
 						bc->last_flush = now;
 					}
@@ -806,6 +816,15 @@ done:
 	RWLIST_UNLOCK(&bouncer_users);
 }
 
+static inline int user_mentioned(const char *username, const char *msg)
+{
+	char mention[64];
+	/* Most IRC clients will notify the user for normal channel chat if the user's username is present in a message.
+	 * It's generally customary to mention users with "username: message" syntax, so that's what we look for here, to avoid false positives. */
+	snprintf(mention, sizeof(mention), "%s:", username);
+	return strstr(msg, username) ? 1 : 0;
+}
+
 static void command_cb(const char *cb_username, enum irc_command_callback_event event, const char *cmd, const char *channel, const char *hostmask, const char *username, const char *data)
 {
 	struct bouncer_channel *bc;
@@ -851,6 +870,10 @@ static void command_cb(const char *cb_username, enum irc_command_callback_event 
 		/* The bouncer client is active for this user, but this channel is not being watched. */
 		bbs_debug(7, "Ignoring, no bouncer channel for %s:%s\n", cb_username, channel);
 	} else {
+		if (data && user_mentioned(cb_username, data)) {
+			/* If we were mentioned in the message, then flush via email ~immediately if needed */
+			bc->user_mentioned = 1;
+		}
 		/* We only log if the bouncer is actually enabled.
 		 * i.e. if the user is in the channel, we don't. */
 		if (bc->fp) {
@@ -1014,6 +1037,7 @@ static int join_leave(const char *username, const char *channel, int is_join)
 				bbs_assert(bc->fp == NULL); /* The log file should already be closed. */
 				if (bc->interactive) {
 					interactive_flush(bu, bc->channel); /* If interactive digest enabled, flush any messages for this channel now */
+					bc->user_mentioned = 0;
 				}
 
 				bbs_mutex_unlock(&bc->bu->lock);
@@ -1093,6 +1117,7 @@ static int load_config(const char *filename, unsigned int userid)
 	bbs_config_val_set_int(cfg, "general", "email_digest_freq", &email_digest_freq);
 	if (email_digest_freq <= 0) {
 		interactive = 1; /* At least one or the other needs to be enabled */
+		email_digest_freq = 0; /* Negative isn't valid for the PM digest frequency, so disable */
 	}
 
 	RWLIST_WRLOCK(&bouncer_users);
