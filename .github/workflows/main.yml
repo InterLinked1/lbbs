@@ -10,7 +10,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Stage 1: Download root fs for test suite
+  rootfs:
+    runs-on: ubuntu-24.04
+    name: Cache rootfs
+    steps:
+      - name: Restore cached file
+        uses: actions/cache@v5
+        id: cache
+        with:
+          path: rootfs.tar.gz
+          key: rootfs-v1
+      - name: Download if missing
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: wget -q https://code.phreaknet.org/bbs/rootfs.tar.gz
+  # Stage 2: Actual Builds
   ubuntu-latest:
+    needs: rootfs
     runs-on: ubuntu-24.04
     name: Ubuntu 24.04
     steps:
@@ -27,13 +43,20 @@ jobs:
           sudo make install
           sudo make samples
           sudo make tests
-      - name: Run tests
+      - name: Fetch rootfs
+        uses: actions/cache@v5
+        with:
+          path: rootfs.tar.gz
+          key: rootfs-v1
+      - name: Install rootfs
         run: |
           # rootfs needed for test_paging
-          ( cd /var/lib/lbbs && sudo wget -q https://code.phreaknet.org/bbs/rootfs.tar.gz && sudo tar -xzf rootfs.tar.gz && sudo mkdir -p /tmp/lbbs/rootfs )
+          ( cd /var/lib/lbbs && sudo tar -xzf $GITHUB_WORKSPACE/rootfs.tar.gz && sudo mkdir -p /tmp/lbbs/rootfs )
           ls -la /var/lib/lbbs/rootfs
-          sudo scripts/run_tests.sh
+      - name: Run tests
+        run: sudo scripts/run_tests.sh
   ubuntu-stable:
+    needs: rootfs
     runs-on: ubuntu-22.04
     name: Ubuntu 22.04
     steps:
@@ -50,10 +73,18 @@ jobs:
           sudo make install
           sudo make samples
           sudo make tests
-      - name: Run tests
+      - name: Fetch rootfs
+        uses: actions/cache@v5
+        with:
+          path: rootfs.tar.gz
+          key: rootfs-v1
+      - name: Install rootfs
         run: |
-          ( cd /var/lib/lbbs && sudo wget -q https://code.phreaknet.org/bbs/rootfs.tar.gz && sudo tar -xzf rootfs.tar.gz && sudo mkdir -p /tmp/lbbs/rootfs )
-          sudo IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh
+          # rootfs needed for test_paging
+          ( cd /var/lib/lbbs && sudo tar -xzf $GITHUB_WORKSPACE/rootfs.tar.gz && sudo mkdir -p /tmp/lbbs/rootfs )
+          ls -la /var/lib/lbbs/rootfs
+      - name: Run tests
+        run: sudo IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh
   without-optimization:
     runs-on: ubuntu-24.04
     name: Ubuntu 24.04, without optimization
@@ -82,6 +113,7 @@ jobs:
           sudo rm /var/log/lbbs/bbs.log
           sudo make service
   with-sanitizer:
+    needs: rootfs
     runs-on: ubuntu-24.04
     name: Ubuntu 24.04, under Address Sanitizer
     steps:
@@ -98,10 +130,18 @@ jobs:
           sudo make install
           sudo make samples
           sudo make tests
-      - name: Run tests
+      - name: Fetch rootfs
+        uses: actions/cache@v5
+        with:
+          path: rootfs.tar.gz
+          key: rootfs-v1
+      - name: Install rootfs
         run: |
-          ( cd /var/lib/lbbs && sudo wget -q https://code.phreaknet.org/bbs/rootfs.tar.gz && sudo tar -xzf rootfs.tar.gz && sudo mkdir -p /tmp/lbbs/rootfs )
-          sudo ASAN_RUN=1 scripts/run_tests.sh
+          # rootfs needed for test_paging
+          ( cd /var/lib/lbbs && sudo tar -xzf $GITHUB_WORKSPACE/rootfs.tar.gz && sudo mkdir -p /tmp/lbbs/rootfs )
+          ls -la /var/lib/lbbs/rootfs
+      - name: Run tests
+        run: sudo ASAN_RUN=1 scripts/run_tests.sh
   debian-13:
     runs-on: ubuntu-24.04
     name: Debian 13
