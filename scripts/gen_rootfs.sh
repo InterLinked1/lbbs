@@ -44,7 +44,7 @@ rm ./rootfs/.dockerenv
 # Replace username prompt, as described in system.conf
 # We use \u as a backup for the sysop manually using isoroot
 # to administer the container, since $BBS_USER is only defined within the BBS.
-sed -i 's/\\u/${BBS_USER:-\\u}/' ./rootfs/etc/bash.bashrc
+sed -i "s/\\u/${BBS_USER:-\\u}/" ./rootfs/etc/bash.bashrc
 
 # Disable the apt sandbox so we can run apt-get update using external/isoroot -n:
 # Adapted from 2nd answer here: https://stackoverflow.com/a/71096036/
