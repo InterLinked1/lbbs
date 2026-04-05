@@ -1,0 +1,30 @@
+[5551001]
+messages = alpha
+externalcmd = /usr/bin/true "${PAGENUMBER}" "${PAGESUBJECT}" "${PAGEMESSAGE}"
+irc = yes
+email = testuser@bbs.example.com
+
+[testuser] ; No email defined, to avoid loops
+messages = alpha
+irc = yes
+
+[testuseralias]
+messages = alpha
+externalcmd = /usr/bin/true "${PAGENUMBER}" "${PAGESUBJECT}" "${PAGEMESSAGE}"
+
+[5551098]
+email = testuser@bbs.example.com
+
+[5551099]
+irc = no
+
+[5551201]
+snpp = 5551202@127.0.0.1
+
+[5553001]
+messages = numeric
+externalcmd = /usr/bin/true "${PAGENUMBER}" "${PAGESUBJECT}" "${PAGEMESSAGE}"
+
+[5553002]
+messages = numeric
+externalcmd = /usr/bin/true "${PAGENUMBER}" "${PAGESUBJECT}" "${PAGEMESSAGE}"

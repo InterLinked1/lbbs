@@ -60,6 +60,7 @@
 #include "include/config.h"
 #include "include/menu.h"
 #include "include/mail.h"
+#include "include/paging.h"
 #include "include/auth.h" /* use bbs_num_auth_providers */
 #include "include/utils.h" /* use print_time_elapsed, print_days_elapsed */
 #include "include/node.h"
@@ -119,7 +120,7 @@ static bbs_mutex_t sig_lock;
 static void saveopts(int argc, char *argv[])
 {
 	int x;
-	
+
 	/* Remember original args for restart */
 	if (argc > (int) ARRAY_LEN(_argv) - 1) {
 		fprintf(stderr, "Truncating argument size to %d\n", (int) ARRAY_LEN(_argv) - 1);
@@ -1239,6 +1240,7 @@ int main(int argc, char *argv[])
 	CHECK_INIT(bbs_init_system());
 	CHECK_INIT(bbs_transfer_config_load());
 	CHECK_INIT(bbs_mail_init());
+	CHECK_INIT(bbs_paging_init());
 	CHECK_INIT(bbs_init_auth());
 	CHECK_INIT(bbs_groups_init());
 	CHECK_INIT(bbs_load_menus(0));

@@ -1,0 +1,16 @@
+; .paging - User paging configuration
+; This allows you to manage the configuration of pager numbers that have been delegated to you by the sysop.
+; Define one section per phone number to specify delivery methods. Multiple methods may be specified.
+; The irc/externalcmd methods are always executed if provided.
+; If multiple other methods are specified (snpp/email/tap), they are tried until one succeeds. As long as one succeeds,
+; success will be returned to the page sender.
+; As with normal POCSAG paging, delivery is not guaranteed.
+;
+;[3115552368] ; The first section is also the section used for pages explicitly by username by default. You can define an explicit section to handle these, e.g. [jsmith]
+; pin = 1234 ; Optional PIN to require in order to page to this device (Compatibility Warning: PINs are only supported by SNPP, not TAP/IXO or other input methods)
+; messages = alpha ; Type of messages to accept. Can be alpha for alphanumeric (the default), numeric for numeric-only paging, and none for tone-only paging
+; externalcmd = ~/pagehandler.sh "${PAGENUMBER}" "${PAGESUBJECT}" "${PAGEMESSAGE}" ; System command to run.
+; irc = yes ; Send message via IRC, if you are online. Configure at least one other method to avoid rejected messages if offline.
+; snpp = 2125556000@snpp.usamobility.net ; Redirect the page to an external SNPP destination
+; email = jsmith@example.com ; Send message to email address. The domain argument is required, even for local mailboxes.
+; tap = 2125556000@18009464644 ; Redirect the page to an external TAP/IXO destination
