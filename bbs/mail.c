@@ -166,7 +166,7 @@ int bbs_make_email_file(FILE *p, const char *subject, const char *body, const ch
 		fprintf(p, ENDL ENDL "This is a multi-part message in MIME format." ENDL ENDL);
 		fprintf(p, "--%s" ENDL, bound);
 	}
-	fprintf(p, "Content-Type: text/plain; charset=%s; format=flowed" ENDL "Content-Transfer-Encoding: 8bit" ENDL, "ISO-8859-1");
+	fprintf(p, "Content-Type: text/plain; charset=%s; format=flowed" ENDL "Content-Transfer-Encoding: 8bit" ENDL, "ISO-8859-1"); /* XXX Should we default to utf-8 instead? */
 	fprintf(p, "Content-Language: %s" ENDL, "en-US");
 	if (!strlen_zero(errorsto)) {
 		fprintf(p, "Errors-To: %s" ENDL, errorsto);

@@ -317,7 +317,7 @@ static int email_flush(struct bouncer_channel *bc, FILE *in_fp, time_t now)
 	fprintf(fp, "References: <%s-%s@%s>\r\n", "ircbouncer", bc->channel, irc_smtp_hostname());
 
 	fprintf(fp, "MIME-Version: 1.0\r\n");
-	fprintf(fp, "Content-Type: text/plain; format=flowed\r\n");
+	fprintf(fp, "Content-Type: text/plain; charset=utf-8; format=flowed\r\n");
 	fprintf(fp, "\r\n"); /* EOH */
 
 	/* It would be more efficient to just use bbs_sendfile,
