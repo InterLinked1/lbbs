@@ -399,50 +399,47 @@ static void *msp_udp_listener(void *varg)
 	return NULL;
 }
 
-static const char *ip = NULL, *interface = NULL;
-
 static int load_config(void)
 {
 	int res;
+	const char *ip = NULL, *interface = NULL;
 	struct bbs_config *cfg = bbs_config_load("net_msp.conf", 0);
 
 	if (!cfg) {
 		return 0;
 	}
 
-	/* We don't destroy the config after we return, so it's okay that we have a constant reference to it directly */
 	ip = bbs_config_val(cfg, "udp", "ip");
 	interface = bbs_config_val(cfg, "udp", "interface");
 
+	/* At least one of the ports must be enabled: */
 	res = bbs_config_val_set_port(cfg, "ports", "tcp", &msp_tcp_port) && bbs_config_val_set_port(cfg, "ports", "udp", &msp_udp_port);
+	if (!res) {
+		/* Use ip and interface before returning; even though we don't destroy the config after we return,
+		 * they could nonetheless become invalid references after config is unlocked */
+		if (msp_tcp_port) {
+			res = bbs_start_tcp_listener(msp_tcp_port, "MSP", msp_tcp_handler);
+		}
+		if (!res && msp_udp_port) {
+			/* Be extra careful about the interfaces to which we bind,
+			 * since the source IP of UDP messages can be spoofed,
+			 * and we won't be able to tell. */
+			res = bbs_make_udp_socket(&udp_socket, msp_udp_port, ip, interface);
+			if (!res) {
+				res = bbs_pthread_create(&udp_thread, NULL, msp_udp_listener, NULL);
+			}
+			if (res) {
+				bbs_stop_tcp_listener(msp_tcp_port);
+			}
+		}
+	}
 	bbs_config_unlock(cfg);
 	return res;
 }
 
 static int load_module(void)
 {
-	int res = 0;
-
-	if (load_config()) {
-		return -1;
-	}
-
-	if (msp_tcp_port) {
-		res = bbs_start_tcp_listener(msp_tcp_port, "MSP", msp_tcp_handler);
-	}
-	if (!res && msp_udp_port) {
-		/* Be extra careful about the interfaces to which we bind,
-		 * since the source IP of UDP messages can be spoofed,
-		 * and we won't be able to tell. */
-		res = bbs_make_udp_socket(&udp_socket, msp_udp_port, ip, interface);
-		if (!res) {
-			res = bbs_pthread_create(&udp_thread, NULL, msp_udp_listener, NULL);
-		}
-		if (res) {
-			bbs_stop_tcp_listener(msp_tcp_port);
-		}
-	}
-	return res;
+	return load_config() ? -1 : 0;
 }
 
 static int unload_module(void)
