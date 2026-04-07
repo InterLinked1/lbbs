@@ -25,37 +25,51 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: wget -q https://code.phreaknet.org/bbs/rootfs.tar.gz
   # Stage 2: Actual Builds
-  ubuntu-latest:
-    needs: rootfs
+  ubuntu-26:
     runs-on: ubuntu-24.04
-    name: Ubuntu 24.04
+    name: Ubuntu 26.04
+    container: ubuntu:26.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
-          sudo sed -i 's/azure\.//' /etc/apt/sources.list
-          sudo ./scripts/install_prereq.sh 1
+          ./scripts/install_prereq.sh
       - name: Build LBBS
         run: |
-          sudo make modcheck
-          sudo make -j$(nproc) || sudo make NOISY_BUILD=1
-          sudo make install
-          sudo make samples
-          sudo make tests
-      - name: Fetch rootfs
-        uses: actions/cache@v5
-        with:
-          path: rootfs.tar.gz
-          key: rootfs-v1
-      - name: Install rootfs
+          make modcheck
+          make -j$(nproc) || make NOISY_BUILD=1
+          make install
+          make samples
+          make tests
+      - name: Run basic tests
         run: |
-          # rootfs needed for test_paging
-          ( cd /var/lib/lbbs && sudo tar -xzf $GITHUB_WORKSPACE/rootfs.tar.gz && sudo mkdir -p /tmp/lbbs/rootfs )
-          ls -la /var/lib/lbbs/rootfs
-      - name: Run tests
-        run: sudo scripts/run_tests.sh
-  ubuntu-stable:
+          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          scripts/run_tests.sh test_unit
+  ubuntu-25:
+    runs-on: ubuntu-24.04
+    name: Ubuntu 25.10
+    container: ubuntu:25.10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install prereqs
+        run: |
+          ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
+          make modcheck
+          make -j$(nproc) || make NOISY_BUILD=1
+          make install
+          make samples
+          make tests
+      - name: Run basic tests
+        run: |
+          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          scripts/run_tests.sh test_unit
+  ubuntu-22:
     needs: rootfs
     runs-on: ubuntu-22.04
     name: Ubuntu 22.04
@@ -413,7 +427,7 @@ jobs:
           usesh: true
           copyback: false
           run: |
-            INSTALL_LIBETPAN=0 INSTALL_LIBDISCORD=0 ./scripts/install_prereq.sh
+            INSTALL_LIBDISCORD=0 ./scripts/install_prereq.sh
             gmake modcheck
             gmake modconfig
             gmake -j$(nproc) bbs

@@ -30,5 +30,14 @@ wget "https://patch-diff.githubusercontent.com/raw/dinhvh/libetpan/pull/447.diff
 git apply 447.diff
 
 ./autogen.sh --with-poll
-make -j$(nproc)
-make install
+
+ostype=$( uname -o )
+printf "OSTYPE: %s\n" "$ostype"
+MAKE=make
+if [ "$ostype" = "FreeBSD" ]; then
+	printf "FreeBSD detected\n"
+	MAKE=gmake
+fi
+
+$MAKE -j$(nproc)
+$MAKE install
