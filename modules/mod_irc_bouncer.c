@@ -440,10 +440,7 @@ static void *periodic_emailer(void *unused)
 
 			/* First, flush any PMs */
 			if (TIME_TO_FLUSH(bu->pmbc)) {
-				if (!bu->pmbc->email_frequency) {
-					continue; /* Don't flush if email is disabled */
-				}
-				if (!periodic_channel_flush(bu->pmbc, now)) {
+				if (bu->pmbc->email_frequency && !periodic_channel_flush(bu->pmbc, now)) { /* Don't flush if email is disabled */
 					bu->pmbc->last_flush = now;
 				}
 			}
@@ -1497,7 +1494,7 @@ static int handle_bouncer_reply(struct smtp_session *smtp, struct smtp_response 
 			}
 			if (!bouncer_send(bc->bu->user, "PRIVMSG %s :%s", bc->channel, buf)) { /* No CR LF needed */
 				lines_sent++;
-				if (ALWAYS_LOG_SENT_MESSAGES || !bc->email_frequency) {
+				if (bc->fp && (ALWAYS_LOG_SENT_MESSAGES || !bc->email_frequency)) {
 					/* Log the message we sent, so there's context in the logs later.
 					 * Messages we send to a channel aren't sent back to us. */
 					if (!generated_hostmask) {
@@ -1543,7 +1540,7 @@ static int handle_bouncer_reply(struct smtp_session *smtp, struct smtp_response 
 			}
 			if (!bouncer_send(bu->user, "PRIVMSG %s: %s", recip, msg)) {
 				lines_sent++;
-				if (ALWAYS_LOG_SENT_MESSAGES || !bu->pmbc->email_frequency) {
+				if (bu->pmbc->fp && (ALWAYS_LOG_SENT_MESSAGES || !bu->pmbc->email_frequency)) {
 					/* Log the message we sent, so there's context in the logs later.
 					 * Messages we send to a channel aren't sent back to us. */
 					if (!generated_hostmask) {
