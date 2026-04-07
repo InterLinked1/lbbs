@@ -236,6 +236,63 @@ static int recipient_count(struct smtp_msg_process *mproc)
 	return recipcount;
 }
 
+/*!
+ * \internal
+ * \retval 1 to break loop in calling function
+ * \retval 0 to continue loop in calling function
+ */
+static int inspect_headerval(struct smtp_msg_process *mproc, const char *filename, const char *find, enum match_type matchtype, const char *start,
+	size_t *restrict findlen, int *restrict found, regex_t *restrict regexbuf, int *restrict regcompiled)
+{
+	if (matchtype == MATCH_STRICT) {
+		/* Exact match, easy */
+		if (!*findlen) {
+			*findlen = strlen(find);
+		}
+		/* This is relatively efficient since we don't do any copying to make comparisons. */
+		*found = !strncmp(start, find, *findlen); /* Values are case-sensitive */
+#ifdef EXTRA_DEBUG
+		bbs_debug(7, "Comparison(%d) = %.*s with %s\n", *found, (int) *findlen, start, find);
+#endif
+		start += *findlen;
+		if (*found && (!strlen_zero(start) && *start != '\r')) {
+			bbs_debug(8, "Was just a prefix of something else\n");
+			*found = 0;
+		} else {
+			return 1;
+		}
+	} else if (matchtype == MATCH_SUBSTR) {
+		/* Things like "CONTAINS" can be done with LIKE... (it's just a subset of it), technically even EQUALS could be, too...
+		 * However, this is obviously more efficient. */
+		*found = strstr(start, find) ? 1 : 0;
+		if (*found) {
+			return 1;
+		}
+	} else if (matchtype == MATCH_REGEX) {
+		/* Use a regular expression for LIKE */
+		if (!*regcompiled) {
+			char regerrorbuf[64];
+			int errcode;
+			if ((errcode = regcomp(regexbuf, find, REG_EXTENDED | REG_NOSUB))) {
+				regerror(errcode, regexbuf, regerrorbuf, sizeof(regerrorbuf));
+				mailscript_log(mproc, LOG_ERROR, "Malformed expression %s: %s\n", find, regerrorbuf);
+				return 1; /* If the regex is invalid, we'll never be able to use it anyways */
+			}
+			*regcompiled = 1;
+		}
+#ifdef EXTRA_DEBUG
+		bbs_debug(6, "Evaluating regex: '%s' %s\n", find, start);
+#endif
+		*found = regexec(regexbuf, start, 0, NULL, 0) ? 0 : 1;
+		if (*found) {
+			return 1;
+		}
+	} else { /* numeric comparisons */
+		*found = floatcmp(start, find, matchtype);
+	}
+	return 0;
+}
+
 /*! \retval -1 if no such header, 0 if not found, 1 if found */
 static int header_match(struct smtp_msg_process *mproc, const char *filename, const char *header, const char *find, enum match_type matchtype)
 {
@@ -244,7 +301,11 @@ static int header_match(struct smtp_msg_process *mproc, const char *filename, co
 	regex_t regexbuf;
 	int regcompiled = 0;
 	char headerval[1000];
+	char fullheaderval[32768];
+	char *fullheaderpos = fullheaderval;
+	size_t fullheaderleft = sizeof(fullheaderval);
 	size_t headerlen;
+	int in_header = 0;
 
 	if (!mproc->fp) {
 		mproc->fp = fopen(mproc->datafile, "r");
@@ -260,6 +321,25 @@ static int header_match(struct smtp_msg_process *mproc, const char *filename, co
 		char *start;
 		if (!strcmp(headerval, "\r\n")) {
 			break; /* End of headers */
+		}
+		if (in_header) {
+			if (headerval[0] == ' ' || headerval[0] == '\t') {
+				/* Continuation of header of interest, keep appending */
+				SAFE_FAST_APPEND(fullheaderval, sizeof(fullheaderval), fullheaderpos, fullheaderleft, "%s", headerval);
+				continue;
+			} else {
+				/* End of header, check if we found what we were looking for.
+				 * Certain headers can appear more than once, which is why we don't always break immediately here */
+				if (in_header) {
+					if (inspect_headerval(mproc, filename, find, matchtype, fullheaderval, &findlen, &found, &regexbuf, &regcompiled)) {
+						break;
+					}
+					/* Reset */
+					in_header = 0;
+					fullheaderpos = fullheaderval;
+					fullheaderleft = sizeof(fullheaderval);
+				}
+			}
 		}
 		if (strncasecmp(headerval, header, headerlen)) { /* Header names are not case-sensitive */
 			continue; /* It's not the right header. */
@@ -278,54 +358,14 @@ static int header_match(struct smtp_msg_process *mproc, const char *filename, co
 		start++;
 		ltrim(start);
 		bbs_strterm(start, '\r');
-		/*! \todo BUGBUG FIXME Technically, header values could cross line boundaries for multi-line headers,
-		 * but the logic here wouldn't match if a string is split by CR LF. */
-		if (matchtype == MATCH_STRICT) {
-			/* Exact match, easy */
-			if (!findlen) {
-				findlen = strlen(find);
-			}
-			/* This is relatively efficient since we don't do any copying to make comparisons. */
-			found = !strncmp(start, find, findlen); /* Values are case-sensitive */
-#ifdef EXTRA_DEBUG
-			bbs_debug(7, "Comparison(%d) = %.*s with %s\n", found, (int) findlen, start, find);
-#endif
-			start += findlen;
-			if (found && (!strlen_zero(start) && *start != '\r')) {
-				bbs_debug(8, "Was just a prefix of something else\n");
-				found = 0;
-			} else {
-				break;
-			}
-		} else if (matchtype == MATCH_SUBSTR) {
-			/* Things like "CONTAINS" can be done with LIKE... (it's just a subset of it), technically even EQUALS could be, too...
-			 * However, this is obviously more efficient. */
-			found = strstr(start, find) ? 1 : 0;
-			if (found) {
-				break;
-			}
-		} else if (matchtype == MATCH_REGEX) {
-			/* Use a regular expression for LIKE */
-			if (!regcompiled) {
-				int errcode;
-				if ((errcode = regcomp(&regexbuf, find, REG_EXTENDED | REG_NOSUB))) {
-					regerror(errcode, &regexbuf, headerval, sizeof(headerval)); /* steal headerval buf */
-					mailscript_log(mproc, LOG_ERROR, "Malformed expression %s: %s\n", find, headerval);
-					break; /* If the regex is invalid, we'll never be able to use it anyways */
-				}
-				regcompiled = 1;
-			}
-#ifdef EXTRA_DEBUG
-			bbs_debug(6, "Evaluating regex: '%s' %s\n", find, start);
-#endif
-			found = regexec(&regexbuf, start, 0, NULL, 0) ? 0 : 1;
-			if (found) {
-				break;
-			}
-		} else { /* numeric comparisons */
-			found = floatcmp(start, find, matchtype);
-		}
+		SAFE_FAST_APPEND(fullheaderval, sizeof(fullheaderval), fullheaderpos, fullheaderleft, "%s", start);
+		in_header = 1;
 	}
+
+	if (in_header) {
+		inspect_headerval(mproc, filename, find, matchtype, fullheaderval, &findlen, &found, &regexbuf, &regcompiled);
+	}
+
 	if (regcompiled) {
 		regfree(&regexbuf);
 	}

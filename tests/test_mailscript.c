@@ -297,6 +297,27 @@ static int run(void)
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "Rejecting quick rule match");
 
+	/* Test multi-line header parsing */
+	STANDARD_ENVELOPE_BEGIN();
+	SWRITE(clientfd, "From: " TEST_EMAIL_EXTERNAL ENDL);
+	SWRITE(clientfd, "Subject: This message has a multiline header" ENDL);
+	SWRITE(clientfd, "List-Id: Example List" ENDL);
+	SWRITE(clientfd, " <examplelist." TEST_HOSTNAME ">" ENDL); /* HEADER CONTAINS for this value (on 2nd line of header) */
+	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "This is the example mailing list");
+
+	/* Test message with multiple "Received" headers */
+	STANDARD_ENVELOPE_BEGIN();
+	SWRITE(clientfd, "Received: from host3.example.com (host3.example.com [192.0.2.3])" ENDL);
+	SWRITE(clientfd, "Received: from host2.example.com (host2.example.com [192.0.2.2])" ENDL);
+	SWRITE(clientfd, "Received: from host1.example.com (host1.example.com [192.0.2.1])" ENDL);
+	SWRITE(clientfd, "From: " TEST_EMAIL_EXTERNAL ENDL);
+	SWRITE(clientfd, "Subject: This message has multiple received header" ENDL);
+	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "Rejecting message from host2");
+
 	SWRITE(clientfd, "QUIT");
 	close(clientfd);
 
@@ -305,8 +326,6 @@ static int run(void)
 	REQUIRE_FD(clientfd);
 
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
-
-	/* Test each of the rules in test/before.rules, one by one */
 
 	/* Should be moved to .Junk */
 	SWRITE(clientfd, "EHLO " TEST_USER2 ENDL);
