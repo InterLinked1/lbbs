@@ -681,6 +681,33 @@ int __bbs_rwlock_unlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 	if (unlikely(--t->info.owners < 0)) {
 		lock_error("Lock %s unlocked more times than it was locked\n", name);
 	}
+	if (t->info.lwp == bbs_gettid()) {
+		/* If we were recorded as the thread that last locked this rwlock,
+		 * and we are unlocking now, erase us as being associated.
+		 * This is necessary to prevent false positives in rwlock_deadlock_check,
+		 * which can happen in this scenario:
+		 * 1. A (another thread) first grabs a rdlock (1 owner)
+		 * 2. B (that's us) then grabs a rdlock (2 owners)
+		 * 3. B (that's us) then releases the lock (back to the original owner)
+		 * 4. B (that's us) then tries to grab a wrlock.
+		 * With DETECT_DEADLOCKS, wrlock will temporarily fail with EBUSY,
+		 * and when we check the metadata, we'll see that B was the last thread
+		 * to lock the rwlock, but in this case, that's misleading because just
+		 * because it last grabbed the lock, doesn't mean it's still holding it.
+		 * If an earlier locker still holds the lock after the most recent one,
+		 * then we would false assert.
+		 *
+		 * To prevent this, whenever the most recent locker unlocks,
+		 * we scrub out the LWP entirely. If a recursive lock attempt were
+		 * really to occur, we wouldn't unlock prior to the next lock, so
+		 * this doesn't hurt the detection at all, although it does mean that
+		 * at times, we may not know who the last locker was, but we don't actually care
+		 * (and false negatives created by A locking, B locking, then A trying to lock
+		 *  again are possible even if we don't do this).
+		 *
+		 * Obviously, this issue only occurs with rwlock, not with mutexes. */
+		t->info.lwp = 0;
+	}
 	pthread_mutex_unlock(&t->intlock);
 
 	res = pthread_rwlock_unlock(&t->lock);
