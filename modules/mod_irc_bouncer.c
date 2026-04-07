@@ -70,6 +70,9 @@
  * but the important thing is that the corresponding user's client
  * is also active in the channel.
  *
+ * Additionally, USE_REAL_NICK_WHEN_POSSIBLE may be needed for other users
+ * to be able to reliably PM the bouncer user using the user's real username.
+ *
  * If USE_REAL_NICK_WHEN_POSSIBLE is defined, we will start by using
  * the user's actual nick (if possible), and the next time the user
  * joins, he will swap nicks with the bouncer so he gets the real one.
@@ -824,8 +827,6 @@ static inline int user_mentioned(const char *username, const char *msg)
 
 static void command_cb(const char *cb_username, enum irc_command_callback_event event, const char *cmd, const char *channel, const char *hostmask, const char *username, const char *data)
 {
-	struct bouncer_channel *bc;
-
 	UNUSED(username); /* We use the full hostmask instead */
 
 	/* During unloads, a deadlock is possible between net_irc:&channels <-> mod_irc_bouncers <-> &bouncer_users:
@@ -861,22 +862,44 @@ static void command_cb(const char *cb_username, enum irc_command_callback_event 
 		}
 	}
 
-	/* Find the bouncer channel that corresponds */
-	bc = find_bouncer_channel(cb_username, channel); /* returned locked, if found */
-	if (!bc) {
-		/* The bouncer client is active for this user, but this channel is not being watched. */
-		bbs_debug(7, "Ignoring, no bouncer channel for %s:%s\n", cb_username, channel);
+	if (!channel) {
+#ifdef USE_REAL_NICK_WHEN_POSSIBLE
+		struct bouncer_user *bu;
+		unsigned int userid = bbs_userid_from_username(username);
+		if (userid) {
+			RWLIST_RDLOCK(&bouncer_users);
+			bu = find_bouncer_user(userid);
+			if (bu) {
+				if (event & IRCCMD_EVENT_USER_DISCONNECT) {
+					/* If we have a bouncer user running, change nicknames to the real username if needed, so we impersonate the real user */
+					irc_user_set_identity(bu->user, bu->username, bu->username, bu->username, IRC_BOUNCER_HOSTNAME);
+				}
+				/* Note: We don't need to handle IRCCMD_EVENT_USER_CONNECT
+				 * For one, we would need to handle pre connect, not after the connect,
+				 * but net_irc already has logic for swapping out a programmatic user's nickname,
+				 * so we don't need to change our nickname manually here in response to the user connecting back. */
+			}
+			RWLIST_UNLOCK(&bouncer_users);
+		}
+#endif
 	} else {
-		if (data && user_mentioned(cb_username, data)) {
-			/* If we were mentioned in the message, then flush via email ~immediately if needed */
-			bc->user_mentioned = 1;
+		/* Find the bouncer channel that corresponds */
+		struct bouncer_channel *bc = find_bouncer_channel(cb_username, channel); /* returned locked, if found */
+		if (!bc) {
+			/* The bouncer client is active for this user, but this channel is not being watched. */
+			bbs_debug(7, "Ignoring, no bouncer channel for %s:%s\n", cb_username, channel);
+		} else {
+			if (data && user_mentioned(cb_username, data)) {
+				/* If we were mentioned in the message, then flush via email ~immediately if needed */
+				bc->user_mentioned = 1;
+			}
+			/* We only log if the bouncer is actually enabled.
+			 * i.e. if the user is in the channel, we don't. */
+			if (bc->fp) {
+				log_helper(bc, event, cmd, channel, hostmask, data);
+			}
+			bbs_mutex_unlock(&bc->bu->lock);
 		}
-		/* We only log if the bouncer is actually enabled.
-		 * i.e. if the user is in the channel, we don't. */
-		if (bc->fp) {
-			log_helper(bc, event, cmd, channel, hostmask, data);
-		}
-		bbs_mutex_unlock(&bc->bu->lock);
 	}
 }
 
@@ -910,7 +933,7 @@ static int create_bouncer_client(struct bouncer_user *bu)
 	nickname = alt_nickname;
 #endif
 	if (irc_user_set_identity(bu->user, bu->username, nickname, bu->username, IRC_BOUNCER_HOSTNAME)
-		|| irc_register_programmatic_user(bu->user, &event_callbacks, IRCCMD_EVENT_PRIVMSG | IRCCMD_EVENT_JOIN | IRCCMD_EVENT_PART | IRCCMD_EVENT_QUIT | IRCCMD_EVENT_KICK | IRCCMD_EVENT_TOPIC)) {
+		|| irc_register_programmatic_user(bu->user, &event_callbacks, IRCCMD_EVENT_USER_DISCONNECT | IRCCMD_EVENT_PRIVMSG | IRCCMD_EVENT_JOIN | IRCCMD_EVENT_PART | IRCCMD_EVENT_QUIT | IRCCMD_EVENT_KICK | IRCCMD_EVENT_TOPIC)) {
 		irc_user_destroy(bu->user);
 		bbs_error("Failed to create pseudo user for bouncer client\n");
 		return -1;
@@ -1005,7 +1028,7 @@ static int away_cb(const char *username, enum irc_user_status userstatus, const 
 	return 0;
 }
 
-static int join_leave(const char *username, const char *channel, int is_join)
+static int join_leave(const char *username, const char *channel, enum irc_command_callback_event event)
 {
 	struct bouncer_user *bu;
 	struct bouncer_channel *bc;
@@ -1025,7 +1048,7 @@ static int join_leave(const char *username, const char *channel, int is_join)
 			 * is notified about the JOIN, PART, or QUIT.
 			 * Our task here is to ensure that we can gracefully swap places
 			 * with the real user, so that nobody need know that anything happened. */
-			if (is_join) {
+			if (event & IRCCMD_EVENT_JOIN) {
 				/* The user is in the channel now, although we haven't yet announced it to the channel.
 				 * Stop the bouncer and, if appropriate, suppress the system message for JOIN/PART/QUIT/KICK. */
 				bbs_mutex_lock(&bc->bu->lock);
@@ -1044,7 +1067,7 @@ static int join_leave(const char *username, const char *channel, int is_join)
 #else
 				return 0; /* If we are using a different nick, then we need channel members to know that we joined since the user's nick is different */
 #endif
-			} else {
+			} else { /* PART */
 				/* The user has just left the channel, though we're still processing it.
 				 * Returning 1 will suppress the PART/QUIT/KICK message for it,
 				 * and even before that, we'll join the channel.

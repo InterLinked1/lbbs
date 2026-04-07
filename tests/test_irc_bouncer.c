@@ -62,7 +62,7 @@ static int pre(void)
 
 static int run(void)
 {
-	int client1 = -1, client2 = -1, clientfd = -1;
+	int client1 = -1, client2 = -1, client3 = -1, clientfd = -1;
 	int imapfd = -1;
 	int res = -1;
 
@@ -286,11 +286,54 @@ static int run(void)
 	SWRITE(client1, "PART #joinleave-test\r\n");
 	CLIENT_EXPECT(client1, "PART #joinleave-test");
 
+	TEST_DELIMIT(1, "User 1 quits");
+	close_if(client1);
+
+	/* Using a real client, message a bouncer user (which is a programmatic user) and ensure that the bouncer user picks up the message
+	 * This needs to work even if the user was in no channels at the time of quitting IRC */
+	client3 = test_make_socket(6667);
+	REQUIRE_FD(client3);
+
+	SWRITE(client3, "CAP LS 302\r\n");
+	SWRITE(client3, "NICK " TEST_USER3 ENDL);
+	SWRITE(client3, "USER " TEST_USER3 ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client3, "CAP * LS");
+	SWRITE(client3, "CAP REQ :sasl\r\n");
+	CLIENT_EXPECT(client3, "CAP * ACK");
+	SWRITE(client3, "AUTHENTICATE PLAIN\r\n");
+	CLIENT_EXPECT(client3, "AUTHENTICATE +\r\n");
+	SWRITE(client3, "AUTHENTICATE " TEST_SASL3 "\r\n");
+	CLIENT_EXPECT(client3, "903");
+	SWRITE(client3, "CAP END\r\n");
+
+	CLIENT_EXPECT_EVENTUALLY(client3, "376 " TEST_USER3);
+
+	TEST_DELIMIT(5, "User 3 sends a message to user 1");
+	SWRITE(client3, "PRIVMSG " TEST_USER " :This is a delayed message\r\n");
+
+	/* Rejoin as user 1, we should get the PM */
+	client1 = test_make_socket(6667);
+	REQUIRE_FD(client1);
+	/* SASL negotiation */
+	SWRITE(client1, "CAP LS 302\r\n");
+	SWRITE(client1, "NICK " TEST_USER ENDL);
+	SWRITE(client1, "USER " TEST_USER ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "CAP * LS");
+	SWRITE(client1, "CAP REQ :sasl\r\n");
+	CLIENT_EXPECT(client1, "CAP * ACK");
+	SWRITE(client1, "AUTHENTICATE PLAIN\r\n");
+	CLIENT_EXPECT(client1, "AUTHENTICATE +\r\n");
+	SWRITE(client1, "AUTHENTICATE " TEST_SASL "\r\n");
+	CLIENT_EXPECT(client1, "903");
+	SWRITE(client1, "CAP END\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "This is a delayed message");
+
 	res = 0;
 
 cleanup:
 	close_if(client1);
 	close_if(client2);
+	close_if(client3);
 	close_if(imapfd);
 	return res;
 }

@@ -593,6 +593,8 @@ static void broadcast_channel_event(enum irc_command_callback_event event, const
 
 	switch (event) {
 		case IRCCMD_EVENT_NONE: command = "NONE"; break;
+		case IRCCMD_EVENT_USER_CONNECT: command = "USER_CONNECT"; break;
+		case IRCCMD_EVENT_USER_DISCONNECT: command = "USER_DISCONNECT"; break;
 		case IRCCMD_EVENT_PRIVMSG: command = "PRIVMSG"; break;
 		case IRCCMD_EVENT_JOIN: command = "JOIN"; break;
 		case IRCCMD_EVENT_PART: command = "PART"; break;
@@ -3054,6 +3056,7 @@ static int handle_identify(struct irc_user *user, char *s)
 	if (res) {
 		send_numeric(user, 464, "Password incorrect\r\n");
 	} else {
+		char hostmask[128];
 		free_if(user->username);
 		user->username = strdup(username);
 		/* Just in case it was different here. */
@@ -3062,9 +3065,12 @@ static int handle_identify(struct irc_user *user, char *s)
 				return -1; /* If this fails, just abort the client since things will break */
 			}
 		}
+
 		do_identity_update(user);
 		send_numeric(user, 900, HOSTMASK_FMT " %s You are now logged in as %s\r\n", HOSTMASK_ARGS(user), user->username, user->username);
 		post_login(user);
+		snprintf(hostmask, sizeof(hostmask), HOSTMASK_FMT, HOSTMASK_ARGS(user));
+		broadcast_channel_event(IRCCMD_EVENT_USER_CONNECT, NULL, hostmask, user->username, NULL);
 	}
 	return 0;
 }
@@ -3438,9 +3444,9 @@ static int join_channel(struct irc_user *user, char *name)
 
 /* If it's a real user, we may want to suppress the JOIN, PART, etc.
  * if a programmatic user will be taking his place as a result. */
-#define BROADCAST_JOIN_LEAVE(user, channel, is_join) (IS_SERVICE(user) || (IS_REAL_USER(user) && !join_leave_suppress(user, channel, is_join)))
+#define BROADCAST_JOIN_LEAVE(user, channel, cmd) (IS_SERVICE(user) || (IS_REAL_USER(user) && !join_leave_suppress(user, channel, cmd)))
 
-	if (BROADCAST_JOIN_LEAVE(user, channel, 1)) {
+	if (BROADCAST_JOIN_LEAVE(user, channel, IRCCMD_EVENT_JOIN)) {
 		/* These MUST be in this order: https://modern.ircdocs.horse/#join-message */
 		channel_broadcast(channel, NULL, ":" HOSTMASK_FMT " JOIN %s\r\n", HOSTMASK_ARGS(user), channel->name); /* Send join message to everyone, including us */
 		if (channel->relay) {
@@ -3526,7 +3532,7 @@ static int leave_channel(struct irc_user *user, const char *name)
 		 * so that further list manipulation will not result in pointers being lost.
 		 */
 		RWLIST_MOVE_TO_FRONT(&channel->members, member, entry);
-		if (BROADCAST_JOIN_LEAVE(user, channel, 0)) {
+		if (BROADCAST_JOIN_LEAVE(user, channel, IRCCMD_EVENT_PART)) {
 			channel_broadcast_nolock(channel, NULL, ":" HOSTMASK_FMT " PART %s\r\n", HOSTMASK_ARGS(user), channel->name); /* Make sure leaver gets his/her own PART message! */
 			if (channel->relay) {
 				char partmsg[92];
@@ -3573,7 +3579,7 @@ static void drop_member_if_present(struct irc_channel *channel, struct irc_user 
 		/* If we're leaving ALL channels, don't relay QUIT messages to ourselves. */
 		bbs_debug(3, "Dropping user %s from channel %s\n", user->nickname, channel->name);
 		RWLIST_MOVE_TO_FRONT(&channel->members, member, entry);
-		if (BROADCAST_JOIN_LEAVE(user, channel, 0)) {
+		if (BROADCAST_JOIN_LEAVE(user, channel, IRCCMD_EVENT_QUIT)) {
 			/* Already locked, so don't try to recursively lock: */
 			channel_broadcast_nolock(channel, user, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(user), leavecmd, channel->name, S_IF(message));
 			if (channel->relay && !bbs_is_shutting_down()) { /* If BBS shutting down, don't relay a bunch of quit messages */
@@ -4628,6 +4634,8 @@ const char *irc_user_get_nickname(struct irc_user *user)
 /*! \brief Thread to handle a single IRC/IRCS client */
 static void irc_handler(struct bbs_node *node, int secure)
 {
+	char username[64];
+	char hostmask[128];
 	struct irc_user *user = irc_user_create(USER_MODE_NONE);
 
 	if (!user) {
@@ -4648,7 +4656,15 @@ static void irc_handler(struct bbs_node *node, int secure)
 	}
 
 	handle_client(user);
-	user_free(user);
+
+	if (user->username) {
+		safe_strncpy(username, user->username, sizeof(username)); /* Save username since we need to send event after user is freed */
+		snprintf(hostmask, sizeof(hostmask), HOSTMASK_FMT, HOSTMASK_ARGS(user)); /* Ditto for hostmask */
+		user_free(user);
+		broadcast_channel_event(IRCCMD_EVENT_USER_DISCONNECT, NULL, hostmask, username, NULL);
+	} else {
+		user_free(user);
+	}
 }
 
 static void *__irc_handler(void *varg)

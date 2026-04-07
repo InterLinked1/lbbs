@@ -187,6 +187,19 @@ enum irc_user_status {
 	IRC_USER_STATUS_QUIT,	/*!< User inactive. Now "away", because just QUIT IRC */
 };
 
+enum irc_command_callback_event {
+	IRCCMD_EVENT_NONE = 0,
+	IRCCMD_EVENT_USER_CONNECT = (1 << 0), /* Global when user connects, not channel-specific */
+	IRCCMD_EVENT_USER_DISCONNECT = (1 << 1), /* Global when user quits, not channel-specific */
+	IRCCMD_EVENT_PRIVMSG = (1 << 2),
+	IRCCMD_EVENT_JOIN = (1 << 3),
+	IRCCMD_EVENT_PART = (1 << 4),
+	IRCCMD_EVENT_QUIT = (1 << 5),
+	IRCCMD_EVENT_KICK = (1 << 6),
+	IRCCMD_EVENT_TOPIC = (1 << 7),
+	IRCCMD_EVENT_MODE = (1 << 8),
+};
+
 struct irc_relay_callbacks {
 	/*!< Callback function. The function should return 0 to continue processing any other relays, 1 if a failure occured, and -1 to stop processing (fatal error). */
 	int (*relay_send)(struct irc_relay_message *rmsg);
@@ -199,7 +212,7 @@ struct irc_relay_callbacks {
 	/*!< Callback for status changes. Can be NULL. */
 	int (*away)(const char *username, enum irc_user_status userstatus, const char *msg);
 	/*!< Callback for joins and leaves to a channel (JOIN/PART/QUIT), which should return 1 to suppress system messages */
-	int (*join_leave)(const char *username, const char *channel, int is_join);
+	int (*join_leave)(const char *username, const char *channel, enum irc_command_callback_event event);
 };
 
 #define irc_relay_register(callbacks) __irc_relay_register(callbacks, BBS_MODULE_SELF)
@@ -350,17 +363,6 @@ const char *irc_user_get_nickname(struct irc_user *user);
 
 /*! \brief Execute an IRC command as a programmatic user */
 int irc_user_exec(struct irc_user *user, char *s);
-
-enum irc_command_callback_event {
-	IRCCMD_EVENT_NONE = 0,
-	IRCCMD_EVENT_PRIVMSG = (1 << 0),
-	IRCCMD_EVENT_JOIN = (1 << 1),
-	IRCCMD_EVENT_PART = (1 << 2),
-	IRCCMD_EVENT_QUIT = (1 << 3),
-	IRCCMD_EVENT_KICK = (1 << 4),
-	IRCCMD_EVENT_TOPIC = (1 << 5),
-	IRCCMD_EVENT_MODE = (1 << 6),
-};
 
 struct irc_event_callbacks {
 	/*!
