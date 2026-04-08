@@ -43,7 +43,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           scripts/run_tests.sh test_unit
@@ -65,10 +65,40 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           scripts/run_tests.sh test_unit
+  ubuntu-24:
+    needs: rootfs
+    runs-on: ubuntu-24.04
+    name: Ubuntu 24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install prereqs
+        run: |
+          sudo sed -i 's/azure\.//' /etc/apt/sources.list
+          sudo ./scripts/install_prereq.sh 1
+      - name: Build LBBS
+        run: |
+          sudo make modcheck
+          sudo make -j$(nproc) || sudo make NOISY_BUILD=1
+          sudo make install
+          sudo make samples
+          sudo make tests
+      - name: Fetch rootfs
+        uses: actions/cache@v5
+        with:
+          path: rootfs.tar.gz
+          key: rootfs-v1
+      - name: Install rootfs
+        run: |
+          # rootfs needed for test_paging
+          ( cd /var/lib/lbbs && sudo tar -xzf $GITHUB_WORKSPACE/rootfs.tar.gz && sudo mkdir -p /tmp/lbbs/rootfs )
+          ls -la /var/lib/lbbs/rootfs
+      - name: Run tests
+        run: sudo scripts/run_tests.sh
   ubuntu-22:
     needs: rootfs
     runs-on: ubuntu-22.04
@@ -174,7 +204,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
@@ -204,7 +234,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
@@ -226,7 +256,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
@@ -252,7 +282,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           scripts/run_tests.sh test_unit
@@ -297,7 +327,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           scripts/run_tests.sh test_unit
@@ -320,7 +350,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
@@ -343,7 +373,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
@@ -366,7 +396,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
@@ -389,7 +419,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           scripts/run_tests.sh test_unit
@@ -412,7 +442,7 @@ jobs:
           make tests
       - name: Run basic tests
         run: |
-          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+          NO_VALGRIND=1 scripts/run_tests.sh test_menus
       - name: Run unit tests
         run: |
           scripts/run_tests.sh test_unit

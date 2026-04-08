@@ -1,5 +1,7 @@
 #!/bin/sh
 
+set -e
+
 cd /usr/local/src
 if [ -d OpenARC ]; then
 	cd OpenARC
@@ -11,5 +13,7 @@ else
 fi
 git checkout develop # master branch is behind
 # https://github.com/trusteddomainproject/OpenARC/issues/118
-aclocal && autoconf && autoreconf --install && automake --add-missing && ./configure && make all -j$(nproc)
+aclocal && autoconf && autoreconf --install && automake --add-missing
+./configure > /dev/null || ./configure
+make all -j$(nproc) >/dev/null 2>&1 || make all
 make install

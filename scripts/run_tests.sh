@@ -13,6 +13,9 @@ TEST=$1
 
 # Note: This script assumes a Debian-based system
 
+# We use debug level 9 instead of 10, as 10 is almost always unnecessary and can be very verbose
+BBS_DEBUG_LEVEL=-DDDDDDDDD
+
 # Process core dump, if there was one
 handle_failure() {
 	if [ -f tests/core ]; then
@@ -31,7 +34,7 @@ handle_failure() {
 		cat /var/log/lbbs/fd.log
 		# If we are debugging file descriptors for some reason, also give it a whirl under strace
 		if [ "$TEST" != "" ]; then
-			tests/test -t$TEST -ddddddddd -DDDDDDDDDD -x -s
+			tests/test -t$TEST -ddddddddd $BBS_DEBUG_LEVEL -x -s
 			printf "Displaying strace log\n"
 			cat /tmp/test_lbbs/strace.log
 		fi
@@ -77,21 +80,21 @@ install_valgrind() {
 
 if [ "$TEST" = "" ]; then # run all tests
 	# First, do one pass without -e, in case there's a failure, it'll be caught much more quickly
-	tests/test -dddddddddd -DDDDDDDDDD -x || handle_failure
+	tests/test -dddddddddd $BBS_DEBUG_LEVEL -x || handle_failure
 	if [ "$ASAN_RUN" != "1" ] && [ "$NO_VALGRIND" != "1" ]; then
 		# If all good so far, repeat but under valgrind
 		install_valgrind
-		tests/test -dddddddddd -DDDDDDDDDD -ex || handle_failure
+		tests/test -dddddddddd $BBS_DEBUG_LEVEL -ex || handle_failure
 	fi
 elif [ "$ASAN_RUN" = "1" ]; then
-	tests/test -t$TEST -ddddddddd -DDDDDDDDDD -x || handle_failure
+	tests/test -t$TEST -ddddddddd $BBS_DEBUG_LEVEL -x || handle_failure
 else
 	if [ "$NO_VALGRIND" = "1" ]; then
-		tests/test -t$TEST -ddddddddd -DDDDDDDDDD -x || handle_failure
+		tests/test -t$TEST -ddddddddd $BBS_DEBUG_LEVEL -x || handle_failure
 	else
 		# If we are only running a specific test, don't bother with the first pass, just run directly with the -e option (valgrind)
 		install_valgrind
-		tests/test -t$TEST -ddddddddd -DDDDDDDDDD -ex || handle_failure
+		tests/test -t$TEST -ddddddddd $BBS_DEBUG_LEVEL -ex || handle_failure
 	fi
 fi
 

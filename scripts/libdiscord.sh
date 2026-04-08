@@ -58,8 +58,9 @@ if [ "$CURL_SRC_VER" != "" ] || [ "$FORCE_CURL_REBUILD" = "1" ]; then
 	tar -xzf curl-${CURL_SRC_VER}.tar.gz
 	# libpsl doesn't seem to be available on all distros (e.g. Rocky Linux 8.9)
 	# https://daniel.haxx.se/blog/2024/01/10/psl-in-curl/
-	cd curl-${CURL_SRC_VER} && ./configure --with-openssl --enable-websockets --without-libpsl
-	make -j$(nproc)
+	cd curl-${CURL_SRC_VER}
+	./configure --with-openssl --enable-websockets --without-libpsl > /dev/null || ./configure --with-openssl --enable-websockets --without-libpsl
+	make -j$(nproc) > /dev/null || make # Quiet, but show errors on failure
 	make install
 	ldconfig
 fi
@@ -83,7 +84,7 @@ wget "https://patch-diff.githubusercontent.com/raw/Cogmasters/concord/pull/229.d
 git apply 229.diff
 
 printf "Compiling libdiscord\n"
-CFLAGS="-fPIC" make shared -j$(nproc)
+CFLAGS="-fPIC" make shared -j$(nproc) > /dev/null || CFLAGS="-fPIC" make shared # Quiet, but show errors on failure
 make install
 if [ -f /etc/alpine-release ]; then
 	ldconfig /etc/ld.so.conf.d

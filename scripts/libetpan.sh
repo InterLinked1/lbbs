@@ -29,7 +29,7 @@ git apply "4226610e3dc19f58345ae7c5146fa8cf249ca97b.patch" # SMTP AUTH
 wget "https://patch-diff.githubusercontent.com/raw/dinhvh/libetpan/pull/447.diff"
 git apply 447.diff
 
-./autogen.sh --with-poll
+./autogen.sh --with-poll > /dev/null || ./autogen.sh --with-poll
 
 ostype=$( uname -o )
 printf "OSTYPE: %s\n" "$ostype"
@@ -39,5 +39,7 @@ if [ "$ostype" = "FreeBSD" ]; then
 	MAKE=gmake
 fi
 
-$MAKE -j$(nproc)
+# libetpan's compilation is quite verbose, and full of warnings we can't do anything about since it's not being maintained
+# Suppress most output unless something goes wrong
+$MAKE -j$(nproc) >/dev/null 2>&1 || $MAKE # Quiet, but show errors on failure
 $MAKE install
