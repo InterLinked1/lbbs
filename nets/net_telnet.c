@@ -387,6 +387,7 @@ static int telnet_option_send(struct bbs_node *node, struct telnet_settings *set
 }
 
 #define handle_option_will(node, settings, cmd, opt) __handle_option_will(node, settings, cmd, opt, buf, len, depth)
+#define handle_option_do(node, settings, cmd, opt) __handle_option_do(node, settings, cmd, opt, buf, len, depth)
 
 /*!
  * \brief Whether we mutually agree to enable an option
@@ -464,6 +465,29 @@ static int __handle_option_will(struct bbs_node *node, struct telnet_settings *s
 		if (telnet_send_command6(node->wfd, SB, TELOPT_TTYPE, TELQUAL_SEND, IAC, SE)) {
 			return -1;
 		}
+		return 0;
+	default:
+		bbs_debug(3, "No handler for option %s\n", telopts[opt]);
+		break;
+	}
+	return 1;
+}
+
+/*! \brief Handler for when an option has been enabled */
+static int __handle_option_do(struct bbs_node *node, struct telnet_settings *settings, unsigned char cmd, unsigned char opt, unsigned char *buf, size_t len, int depth)
+{
+	UNUSED(node);
+	UNUSED(opt);
+	UNUSED(buf);
+	UNUSED(len);
+	UNUSED(depth);
+
+	bbs_assert(cmd == DO);
+
+	switch (opt) {
+	case TELOPT_ECHO:
+		settings->rcv_noecho = 1; /* Inhibit unneeded renegotiation of this option later */
+		bbs_debug(3, "Client acknowledged local echo disable\n");
 		return 0;
 	default:
 		bbs_debug(3, "No handler for option %s\n", telopts[opt]);
@@ -597,7 +621,7 @@ static int __telnet_process_command(struct bbs_node *node, struct telnet_setting
 	/* The next two cases are symmetrical:
 	 * We handle the option on our side by the same procedures, with DO-WILL, DONT-WONT, him-us, himq-usq swapped. */
 	case DO:
-		/* Client told us to enable an option. */
+		/* Client told us to enable an option or confirmed it will enable it. */
 		switch (settings->options[opt].us) {
 		case NO:
 			/* There are no options that we support enabling on the SERVER side...
@@ -634,6 +658,7 @@ static int __telnet_process_command(struct bbs_node *node, struct telnet_setting
 			switch (settings->options[opt].usq) {
 			case EMPTY:
 				settings->options[opt].us = YES;
+				handle_option_do(node, settings, cmd, opt); /* Post-processing for when option is enabled */
 				break;
 			case OPPOSITE:
 				settings->options[opt].us = WANTNO;
@@ -921,10 +946,6 @@ static int telnet_handshake(struct bbs_node *node)
 	if (!settings.rcv_noecho) {
 		bbs_debug(3, "Request to enable ECHO not yet acknowledged, retrying\n");
 		/* Temporarily break with RFC 1143, and manually fiddle some bits to force the request to send */
-		settings.options[TELOPT_ECHO].us = YES;
-		if (telnet_option_send(node, &settings, WONT, TELOPT_ECHO)) {
-			return -1;
-		}
 		settings.options[TELOPT_ECHO].us = NO;
 		if (telnet_option_send(node, &settings, WILL, TELOPT_ECHO)) {
 			return -1;
