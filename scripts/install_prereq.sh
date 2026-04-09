@@ -180,10 +180,14 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libopendmarc-dev"
 PACKAGES_SUSE="$PACKAGES_SUSE sendmail-devel"
 # opendmarc is available for Arch, but tries to install something that can satisfy smtp-server, so don't
 
-# mod_sieve
-PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsieve2-dev"
-# MISSING: RPM package
-# MISSING: Arch package
+# mod_sieve: libsieve needs lex/yacc (flex/bison in the GNU world)
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN flex bison"
+PACKAGES_FEDORA="$PACKAGES_FEDORA flex bison"
+PACKAGES_RHEL="$PACKAGES_RHEL flex bison"
+PACKAGES_SUSE="$PACKAGES_SUSE flex bison"
+PACKAGES_ARCH="$PACKAGES_ARCH flex bison"
+PACKAGES_ALPINE="$PACKAGES_ALPINE flex bison"
+PACKAGES_FREEBSD="$PACKAGES_FREEBSD flex bison"
 
 # For some reason, find is not installed in the OpenSUSE GitHub runner
 PACKAGES_SUSE="$PACKAGES_SUSE find"
@@ -310,6 +314,9 @@ scripts/libwss.sh
 
 # mod_slack (also depends on libwss)
 scripts/libslackrtm.sh
+
+# mod_sieve (libsieve2-dev is available on Debian, but it's an outdated version with known bugs)
+scripts/libsieve.sh
 
 if [ "$INSTALL_LIBDISCORD" != "0" ] && [ "$INSTALL_LIBETPAN" != "0" ] && [ "$INSTALL_LIBOPENARC" != "0" ]; then
 	# On machines with many CPU cores, take advantage of the parallelism available by building several libraries at once
