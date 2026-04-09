@@ -186,6 +186,33 @@ jobs:
           ls -la /var/lib/lbbs/rootfs
       - name: Run tests
         run: sudo ASAN_RUN=1 scripts/run_tests.sh
+  paging-tap:
+    runs-on: ubuntu-24.04
+    name: TAP/IXO Paging Tests
+    container: debian:13
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Asterisk
+        run: |
+          apt-get update -y
+          apt-get install -y wget
+          #cd /usr/local/src && wget "https://raw.githubusercontent.com/InterLinked1/phreakscript/refs/heads/master/phreaknet.sh" && chmod +x phreaknet.sh && ./phreaknet.sh make
+          cd /usr/local/src && wget "https://docs.phreaknet.org/script/phreaknet.sh" && chmod +x phreaknet.sh && ./phreaknet.sh make
+          # XXX If we use --lightweight, the extra modules (e.g. app_softmodem, app_tdd) don't get built
+          NO_AUTOSTART=1 phreaknet install --fast
+      - name: Install prereqs
+        run: |
+          ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
+          make modcheck
+          make -j$(nproc) || make NOISY_BUILD=1
+          make install
+          make samples
+          make tests
+      - name: Run TAP/IXO paging tests
+        run: |
+          scripts/run_tests.sh test_paging_tap
   debian-13:
     runs-on: ubuntu-24.04
     name: Debian 13

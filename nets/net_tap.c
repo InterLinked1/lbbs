@@ -318,6 +318,7 @@ static int process_page(struct tap_session *tap, struct stringlist *messages, co
 		return -1;
 	}
 
+	/* Get the message body in a single string, ending in CR LF (for SMTP compatibility) */
 	if (stringlist_size(messages) > 1) {
 		body = combine_fields_to_string(messages); /* Concatenate whatever fields remain together */
 		/* Fields can be empty (e.g. for tone only paging) */

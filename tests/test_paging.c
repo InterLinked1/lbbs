@@ -1,7 +1,7 @@
 /*
  * LBBS -- The Lightweight Bulletin Board System
  *
- * Copyright (C) 2025, Naveen Albert
+ * Copyright (C) 2026, Naveen Albert
  *
  * Naveen Albert <bbs@phreaknet.org>
  *
@@ -24,6 +24,16 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/stat.h>
+
+/*
+ * Things this test module tests (to some extent):
+ * - Inbound SNPP
+ * - Inbound SMTP
+ * - Outbound SNPP
+ * - Outbound SMTP
+ * - Delivery to IRC
+ * - Command Execution
+ */
 
 /* This needs to match the #define in mod_paging_smtp (if it's defined there, it should be here, and if not, it shouldn't be) */
 #define ALWAYS_HAVE_A_SUBJECT
@@ -349,23 +359,6 @@ static int run(void)
 	CLIENT_EXPECT(clientfd, "250");
 	SWRITE(clientfd, "PING 5553001\r\n");
 	CLIENT_EXPECT(clientfd, "821"); /* Even though it's not 2WAY, it'll acknowledge it's a valid endpoint, but no location data available */
-
-	/*
-	 * Things this test module DOES test (to some extent):
-	 * - Inbound SNPP
-	 * - Inbound SMTP
-	 * - Outbound SNPP
-	 * - Outbound SMTP
-	 * - Delivery to IRC
-	 * - Command Execution
-	 *
-	 * Major paging functionality that is NOT tested here
-	 * - Inbound TMP - manually tested March 2026 using Ultratec Superprint 4425 TDD
-	 * - Inbound TAP/IXO - manually tested March 2026 using Motorola AlphaMate II
-	 * - Outbound TAP/IXO - manually tested March 2026, works on same LAN and outbound to Spok over POTS (with SUPPORT_LOW_QUALITY_PHONE_LINES),
-	 *                      Softmodem <-> Softmodem doesn't work over non-ideal phone conditions (too much garbage data)
-	 * In conjunction with an Asterisk system, these could also be automatically tested.
-	 */
 
 	res = 0;
 

@@ -35,7 +35,7 @@
 #define DEFAULT_SNPP_PORT 444
 
 /* Implementation constants */
-#define MAX_MESSAGE_LEN 256
+#define MAX_MESSAGE_LEN 512
 #define MAX_SERVICE_LEVEL 11
 #define MAX_SUBJECT_LEN 32
 

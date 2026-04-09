@@ -150,7 +150,6 @@ static int tmp_response(struct tmp_session *tmp, const char *s, size_t len)
 
 static int handle_msg(struct tmp_session *tmp, char *buf, const char *number, const char *name)
 {
-	unsigned int userid;
 	int res;
 	struct bbs_paging_recipient recip;
 	struct bbs_paging_data data;
@@ -172,13 +171,6 @@ static int handle_msg(struct tmp_session *tmp, char *buf, const char *number, co
 	}
 
 	bbs_debug(3, "CallerNumber: %s, CallerName: %s, Recipient: %s, Body: %s\n", S_IF(number), S_IF(name), recipient, body);
-
-	/* Check if we have a valid recipient */
-	userid = bbs_userid_from_username(recipient);
-	if (!userid) {
-		TMP_RESPONSE(tmp, "No such recipient");
-		return 0;
-	}
 
 	/* Marshal our arguments into the paging structures (there ain't much here, though!) */
 	memset(&recip, 0, sizeof(recip));
