@@ -140,6 +140,15 @@ unsigned int bbs_node_count(void);
 unsigned int bbs_node_mod_count(void *mod);
 
 /*!
+ * \brief Get number of nodes on which a user is active, with optional filter
+ * \param userid
+ * \param filter Optional filter (NULL for no filter). Either the protocol name (e.g. "IRC") or the module name (e.g. "net_irc")
+ * \retval 0 if user not active
+ * \returns Number of nodes on which user is active (matching filter, if supplied)
+ */
+unsigned int bbs_node_user_count(unsigned int userid, const char *filter);
+
+/*!
  * \brief Get number of allocated nodes connected from a certain IP address
  * \param sinaddr
  * \retval Number of current nodes connected from specified IP address

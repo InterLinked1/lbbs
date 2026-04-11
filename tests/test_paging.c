@@ -360,6 +360,19 @@ static int run(void)
 	SWRITE(clientfd, "PING 5553001\r\n");
 	CLIENT_EXPECT(clientfd, "821"); /* Even though it's not 2WAY, it'll acknowledge it's a valid endpoint, but no location data available */
 
+	/* Should get the same response if pinging an IRC-only endpoint, when user is on IRC */
+	SWRITE(clientfd, "2WAY\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "PING testuser\r\n");
+	CLIENT_EXPECT(clientfd, "821");
+
+	close_if(ircfd);
+
+	usleep(250000); /* May need to wait momentarily for IRC connection to drop */
+
+	SWRITE(clientfd, "PING testuser\r\n");
+	CLIENT_EXPECT(clientfd, "750");
+
 	res = 0;
 
 cleanup:

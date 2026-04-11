@@ -181,6 +181,24 @@ unsigned int bbs_node_mod_count(void *mod)
 	return count;
 }
 
+unsigned int bbs_node_user_count(unsigned int userid, const char *filter)
+{
+	struct bbs_node *node;
+	unsigned int count = 0;
+
+	RWLIST_RDLOCK(&nodes);
+	RWLIST_TRAVERSE(&nodes, node, entry) {
+		if (node->user && node->user->id == userid) {
+			if (!filter || !strcmp(node->protname, filter) || !strcmp(bbs_module_name(node->module), filter)) {
+				count++;
+			}
+		}
+	}
+	RWLIST_UNLOCK(&nodes);
+
+	return count;
+}
+
 unsigned int bbs_node_ip_count(struct sockaddr_in *sinaddr)
 {
 	struct bbs_node *node;

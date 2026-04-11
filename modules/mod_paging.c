@@ -233,8 +233,12 @@ static int pager_ping(const char *pagerid, char *buf, size_t len)
 	}
 	if (e->userid && e->sendirc) {
 		if (strlen_zero(e->externalcmd) && strlen_zero(e->snpp) && strlen_zero(e->email) && strlen_zero(e->tap)) {
-			/*! \todo If user is currently online, return that; otherwise, return ENETDOWN */
-			if (0) {
+			/* If user is currently online on IRC, treat as "online" for paging purposes */
+			if (bbs_node_user_count(e->userid, "net_irc") > 0) {
+				RWLIST_UNLOCK(&endpoints);
+				errno = EIDRM; /* We have no actual location information, so just return EIDRM, like the default */
+				return -1;
+			} else {
 				/* User only pageable via IRC, and not currently on IRC */
 				RWLIST_UNLOCK(&endpoints);
 				/* We use ENETDOWN instead of ENONET (which has a more appropriate description)
