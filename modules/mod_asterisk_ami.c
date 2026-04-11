@@ -483,8 +483,8 @@ static int cli_ami_status(struct bbs_cli_args *a)
 	RWLIST_RDLOCK(&sessions);
 	RWLIST_TRAVERSE(&sessions, ami, entry) {
 		char hostport[512];
-		snprintf(hostport, sizeof(hostport), "%s://%s:%d", ami->tls ? "tls" : "tcp", ami->hostname, ami->port);
-		bbs_dprintf(a->fdout, "%-20s %6s %s\n", ami->name, hostport, ami->asterisk_up ? "UP" : "DOWN");
+		snprintf(hostport, sizeof(hostport), "%s://%s:%d", ami->tls ? "tls" : "tcp", ami->hostname, ami->port ? ami->port : ami->tls ? 5039 : 5038);
+		bbs_dprintf(a->fdout, "%-20s %6s %s\n", ami->name, ami->asterisk_up ? "UP" : "DOWN", hostport);
 	}
 	RWLIST_UNLOCK(&sessions);
 	return 0;
