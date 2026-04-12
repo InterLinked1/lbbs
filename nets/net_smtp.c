@@ -3004,12 +3004,15 @@ static int injectmail_simple(SIMPLE_MAILER_PARAMS)
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
-	/* This is just for the MAIL FROM, so just the address, no name */
-	tmpaddr = strchr(from, '<');
-	if (tmpaddr) {
-		bbs_strncpy_until(sender, tmpaddr + 1, sizeof(sender), '>');
-	} else {
-		safe_strncpy(sender, from, sizeof(sender));
+	if (!mailfrom) { /* If no envelope sender provided explicitly, default to the From address */
+		/* This is just for the MAIL FROM, so just the address, no name */
+		tmpaddr = strchr(from, '<');
+		if (tmpaddr) {
+			bbs_strncpy_until(sender, tmpaddr + 1, sizeof(sender), '>');
+		} else {
+			safe_strncpy(sender, from, sizeof(sender));
+		}
+		mailfrom = sender;
 	}
 #pragma GCC diagnostic pop
 #pragma GCC diagnostic pop
@@ -3023,9 +3026,9 @@ static int injectmail_simple(SIMPLE_MAILER_PARAMS)
 		snprintf(recipient, sizeof(recipient), "<%s>", to);
 	}
 
-	res = nosmtp_deliver(tmp, sender, recipient, (size_t) length);
+	res = nosmtp_deliver(tmp, mailfrom, recipient, (size_t) length);
 	unlink(tmp);
-	bbs_debug(3, "injectmail res=%d, sender=%s, recipient=%s\n", res, sender, recipient);
+	bbs_debug(3, "injectmail res=%d, sender=%s, recipient=%s\n", res, mailfrom, recipient);
 
 	/* This is likely to be used for sending mail to only one user at a time, so we can just return
 	 * 0 if it succeeds, 1 if exists but unable to deliver, and -1 if couldn't deliver. */

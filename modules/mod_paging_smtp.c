@@ -48,28 +48,15 @@ static int page_single(struct bbs_paging_recipient *recipient, struct bbs_paging
 {
 	char emailuser[128];
 	char fromaddr[256];
+	char mailfrom[256];
 	const char *subj, *msg, *from;
 	int res;
 
 	UNUSED(meta);
 
+	snprintf(mailfrom, sizeof(mailfrom), "%s@%s", "page-sender", smtp_hostname());
 	if (!strlen_zero(data->callerid) && strchr(data->callerid, '@')) {
 		/* If we already have an email address, simply use that */
-
-		/*! \todo FIXME There is a slight problem here.
-		 * This callback will get used when dropping a carbon copy of a page in a local user's mailbox,
-		 * or if relaying it elsewhere.
-		 * Even if the page did arrive by email, we are not forwarding it as is,
-		 * but reconstructing it entirely, so if the sender is not local,
-		 * neither SPF nor DKIM will pass.
-		 * The correct thing to do would be set the From header like we are doing,
-		 * but always use a new MAIL FROM envelope sender that is local, i.e. always use page-sender when we remail it.
-		 *
-		 * (This would also avoid us setting the Sender header to the same as the From header as bbs_mail does,
-		 *  which is not really appropriate in this case.)
-		 *
-		 * This would entail using bbs_mail_message where we can pass in a mailfrom and full RFC822 message,
-		 * as opposed to the simpler bbs_mail API. */
 		from = data->callerid;
 	} else {
 		snprintf(fromaddr, sizeof(fromaddr), "%s <%s@%s>", S_OR(data->callerid, "Page Sender"), "page-sender", smtp_hostname()); /* Since we depend on net_smtp, we can ask it for the best hostname to use */
@@ -94,9 +81,14 @@ static int page_single(struct bbs_paging_recipient *recipient, struct bbs_paging
 
 	/* Even though this module has an explicit dependency on net_smtp,
 	 * meaning we know net_smtp will be the mail provider,
-	 * use the abstracted mail interface, for its simplicity. */
+	 * use the abstracted mail interface, for its simplicity.
+	 *
+	 * We do explicitly specify the envelope sender, since the From address may not be local,
+	 * so DMARC could fail if we use a non-local envelope sender, hence we use our own.
+	 * We do this even if the page arrived by email, since we reconstruct the message,
+	 * so DKIM will not pass, and SPF would not pass either. */
 	msg = S_OR(data->body, data->message);
-	res = bbs_mail(1, emailuser, from, NULL, subj, S_IF(msg));
+	res = bbs_mail_sender(1, emailuser, from, mailfrom, NULL, subj, S_IF(msg));
 	if (res) {
 		errno = EAGAIN;
 		return -1;

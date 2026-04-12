@@ -17,7 +17,9 @@
 struct stringlist;
 
 #define	MAIL_FILE_MODE	0600
-#define SIMPLE_MAILER_PARAMS int async, const char *to, const char *from, const char *replyto, const char *errorsto, const char *subject, const char *body
+
+/* Note: mailfrom is optional and defaults to from if not specified */
+#define SIMPLE_MAILER_PARAMS int async, const char *to, const char *from, const char *mailfrom, const char *replyto, const char *errorsto, const char *subject, const char *body
 #define FULL_MAILER_PARAMS const char *tmpfile, const char *mailfrom, struct stringlist *recipients
 
 /*!
@@ -46,7 +48,7 @@ int bbs_mail_message(const char *tmpfile, const char *mailfrom, struct stringlis
  * \brief Create and send a simple email
  * \param async Whether to send the email asynchronously
  * \param to Recipient. If NULL, default from mail.conf will be used. Name is optional (use name \<email> format).
- * \param from Sender. If NULL, default from mail.conf will be used. Name is optional (use name \<email> format).
+ * \param from From header name/address. If NULL, default from mail.conf will be used. Name is optional (use name \<email> format).
  * \param replyto Optional Reply-To address.  Name is optional (use name \<email> format).
  * \param subject Optional Subject header
  * \param body
@@ -55,10 +57,24 @@ int bbs_mail_message(const char *tmpfile, const char *mailfrom, struct stringlis
 int bbs_mail(int async, const char *to, const char *from, const char *replyto, const char *subject, const char *body);
 
 /*!
+ * \brief Create and send a simple email
+ * \param async Whether to send the email asynchronously
+ * \param to Recipient. If NULL, default from mail.conf will be used. Name is optional (use name \<email> format).
+ * \param from From header name/address. If NULL, default from mail.conf will be used. Name is optional (use name \<email> format).
+ * \param mailfrom Envelope sender override (default is address from From header argument, if not specified).
+ * \param replyto Optional Reply-To address.  Name is optional (use name \<email> format).
+ * \param subject Optional Subject header
+ * \param body
+ * \retval 0 on success, -1 on failure
+ * \note mailfrom only supported by net_smtp and not the deprecated mod_sendmail implementation.
+ */
+int bbs_mail_sender(int async, const char *to, const char *from, const char *mailfrom, const char *replyto, const char *subject, const char *body);
+
+/*!
  * \brief Create and send a simple email, with variadic printf-style arguments
  * \param async Whether to send the email asynchronously
  * \param to Recipient. If NULL, default from mail.conf will be used. Name is optional (use email \<name> format).
- * \param from Sender. If NULL, default from mail.conf will be used. Name is optional (use email \<name> format).
+ * \param from From header name/address. If NULL, default from mail.conf will be used. Name is optional (use email \<name> format).
  * \param replyto Optional Reply-To address.  Name is optional (use email \<name> format).
  * \param subject
  * \param fmt printf-style format string
@@ -72,7 +88,7 @@ int bbs_mail_fmt(int async, const char *to, const char *from, const char *replyt
  * \param subject Email subject
  * \param body Email body
  * \param to Recipient. If no domain portion is specified, it will be interpreted as a local BBS user.
- * \param from Sender, used for From and Sender headers
+ * \param from From header name/address
  * \param replyto Reply-To address. If NULL, not added.
  * \param errorsto Errors-To address. If NULL, not added.
  * \param attachments Pipe (|) separated list of full file paths of attachments to attach.

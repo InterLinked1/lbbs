@@ -148,7 +148,6 @@ int bbs_make_email_file(FILE *p, const char *subject, const char *body, const ch
 
 	strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S %z", localtime_r(&t, &tm));
 	fprintf(p, "Date: %s" ENDL, date);
-	fprintf(p, "Sender: %s" ENDL, from);
 	fprintf(p, "From: %s" ENDL, from);
 	if (!strlen_zero(replyto)) {
 		fprintf(p, "Reply-To: %s" ENDL, replyto);
@@ -300,6 +299,11 @@ int bbs_unregister_mailer(int (*simple_mailer)(SIMPLE_MAILER_PARAMS), int (*full
 
 int bbs_mail(int async, const char *to, const char *from, const char *replyto, const char *subject, const char *body)
 {
+	return bbs_mail_sender(async, to, from, NULL, replyto, subject, body);
+}
+
+int bbs_mail_sender(int async, const char *to, const char *from, const char *mailfrom, const char *replyto, const char *subject, const char *body)
+{
 	struct mailer *m;
 	int res = -1;
 	const char *errorsto;
@@ -330,7 +334,7 @@ int bbs_mail(int async, const char *to, const char *from, const char *replyto, c
 			continue;
 		}
 		bbs_module_ref(m->module, 1);
-		res = m->simple_mailer(async, to, from, replyto, errorsto, subject, body);
+		res = m->simple_mailer(async, to, from, mailfrom, replyto, errorsto, subject, body);
 		bbs_module_unref(m->module, 1);
 		if (res >= 0) {
 			break;

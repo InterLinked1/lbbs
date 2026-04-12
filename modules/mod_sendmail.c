@@ -122,6 +122,10 @@ static int sendmail_simple(SIMPLE_MAILER_PARAMS)
 	int res;
 	char tmp[80] = "/tmp/bbsmail-XXXXXX";
 
+	/* Not currently supported (it could be, using sendmail -f option, but since this module is deprecated, not worth the effort now,
+	 * anything that requires overriding the envelope sender requires net_smtp to be used instead anyways) */
+	UNUSED(mailfrom);
+
 	/* We can't count on sendmail existing. Check first. */
 	if (eaccess(SENDMAIL, R_OK)) {
 		bbs_error("System mailer '%s' does not exist, unable to send email to %s\n", SENDMAIL, to);

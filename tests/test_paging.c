@@ -47,6 +47,7 @@ static int pre(void)
 	test_load_module("mod_paging_snpp.so");
 	test_load_module("mod_paging_smtp.so");
 	test_load_module("mod_smtp_delivery_local.so");
+	test_load_module("mod_smtp_filter.so"); /* So we can test Return-Path */
 	test_load_module("net_snpp.so");
 	test_load_module("net_smtp.so");
 	test_load_module("net_irc.so");
@@ -350,6 +351,8 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(imapfd, "Subject: Test Page" ENDL);
 	SWRITE(imapfd, "a9 UID FETCH 5 (BODY.PEEK[HEADER.FIELDS (From)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(imapfd, "From: " TEST_EMAIL_EXTERNAL ENDL); /* We include CR LF at the end to ensure there isn't anything AFTER in the header, either */
+	SWRITE(imapfd, "a10 UID FETCH 4 (BODY.PEEK[HEADER.FIELDS (Return-Path)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "Return-Path: page-sender@" TEST_HOSTNAME ENDL);
 
 	/* Can't ping non-2WAY pagers */
 	SWRITE(clientfd, "PING 5553001\r\n");
