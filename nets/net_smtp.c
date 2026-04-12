@@ -2793,7 +2793,7 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 			/* Delivery or queuing to this recipient succeeded */
 			bbs_smtp_log(4, smtp, "Delivery succeeded or queued: <%s> -> %s\n", smtp->from, recipient);
 			succeeded++;
-		} else if (mres < 0) { /* Includes if the message has no handler */
+		} else { /* Includes if the message has no handler */
 			char bouncemsg[512];
 			/* Process any error message before unlocking the list.
 			 * If there are multiple recipients, we cannot send an SMTP reply
@@ -2801,6 +2801,13 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 			 * Instead, we have to send a bounce message.
 			 * If this is the only recipient, we can bounce at the SMTP level. */
 			const char *replymsg = S_OR(resp.reply, "Message delivery failed");
+
+			if (!mres) {
+				/* These are more warning-worthy than outright failures, because failures are a normal part of SMTP.
+				 * However, if we couldn't even attempt to deliver the message, then this is more worthy of attention. */
+				bbs_warning("No suitable delivery handler for %s\n", recipient);
+			}
+
 			snprintf(bouncemsg, sizeof(bouncemsg), "%d%s%s %s",
 				resp.code ? resp.code : 451, resp.subcode ? " " : "", S_OR(resp.subcode, ""), replymsg);
 			bbs_smtp_log(2, smtp, "Delivery failed: <%s> -> %s: %s\n", smtp->from, recipient, bouncemsg);

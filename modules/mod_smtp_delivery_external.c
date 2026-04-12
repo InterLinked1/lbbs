@@ -1537,7 +1537,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	} else if (res == -2 || res > 0 || attempts >= (int) max_retries) { /* Permanent failure or retries exceeded */
 permfail:
 		/* Send a delivery failure response, then delete the file. */
-		bbs_warning("Delivery of message <%s> from <%s> to %s has failed permanently after %d attempt%s\n", mqf->datafile, mqf->realfrom, mqf->realto, attempts, ESS(attempts));
+		bbs_warning("Delivery of message %s from <%s> to %s has failed permanently after %d attempt%s\n", mqf->datafile, mqf->realfrom, mqf->realto, attempts, ESS(attempts));
 		bbs_smtp_log(1, NULL, "Delivery failed permanently after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		/* To the dead letter office we go */
 		/* XXX buf will only contain the last line of the SMTP transaction, since it was using the readline buffer
