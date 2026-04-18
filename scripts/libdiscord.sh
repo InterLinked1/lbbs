@@ -79,10 +79,6 @@ else
 	make clean
 fi
 
-# Apply critical fix to prevent double free
-wget "https://patch-diff.githubusercontent.com/raw/Cogmasters/concord/pull/229.diff"
-git apply 229.diff
-
 printf "Compiling libdiscord\n"
 CFLAGS="-fPIC" make shared -j$(nproc) > /dev/null || CFLAGS="-fPIC" make shared # Quiet, but show errors on failure
 make install
