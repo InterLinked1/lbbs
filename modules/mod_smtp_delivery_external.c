@@ -1467,7 +1467,10 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	struct stringlist *static_routes;
 	struct smtp_tx_data tx;
 	time_t message_age;
+	int no_retries = 0;
 	int attempts = mqf->retries + 1;
+	int no_mx = 0;
+	int disposable = strstr(mqf->realfrom, "dmarc-noreply") ? 1 : 0; /* Used for both RUF (individual) and RUA (batched) reports */
 
 	memset(&tx, 0, sizeof(tx));
 
@@ -1520,10 +1523,39 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 				}
 				bbs_warning("Recipient domain %s does not have any MX records, falling back to A record %s\n", mqf->domain, a_ip);
 				stringlist_push(&mxservers, a_ip);
+				no_mx = 1;
 			}
 
 			res = try_mx_delivery(NULL, &tx, mqf, &mxservers, mqf->realfrom, mqf->realto, fileno(mqf->fp), mqf->size, buf, sizeof(buf));
 			stringlist_empty_destroy(&mxservers);
+		}
+	}
+
+	if (disposable) {
+		/* At the moment, this is only for DMARC reports.
+		 * These messages are disposable, since they are a courtesy and not critical to deliver.
+		 * Since we can get a lot of spam from malicious/spammy servers
+		 * that do not actually accept mail, if we can't send them a
+		 * DMARC report in short order (no MX record, and delivery via A record failed),
+		 * and encounter temporary errors, don't retry the usual number of times, just drop it early.
+		 * Using these constraints avoid dropping mail to an actual legitimate mail server,
+		 * while preventing the mail queue from getting bogged down with junk. */
+
+		/*! \todo Replace static checks like this one with a generic mechanism
+		 * for submitters to indicate messages should not be retried, under certain conditions,
+		 * e.g. could set the flag DISPOSABLE_MESSAGE, which would be saved in the control file
+		 * and instruct us to be less stringent about retrying on temporary failure. */
+		if (no_mx) {
+			no_retries = 1;
+			bbs_debug(5, "Abandoning disposable message early, recipient has no MX records\n");
+		} else {
+			/* If we have an MX record to use, then we're a bit more strict about queuing;
+			 * still, abandon the message after a nominal number of retries,
+			 * since it's unlikely to succeed and disposable. */
+			if (attempts > 2) {
+				no_retries = 1;
+				bbs_debug(5, "Abandoning disposable message early\n");
+			}
 		}
 	}
 
@@ -1534,7 +1566,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		mqf_file_cleanup(mqf);
 		mqf_file_purge(mqf);
 		QUEUE_INCR_STAT(delivered);
-	} else if (res == -2 || res > 0 || attempts >= (int) max_retries) { /* Permanent failure or retries exceeded */
+	} else if (res == -2 || res > 0 || attempts >= (int) max_retries || no_retries) { /* Permanent failure or retries exceeded */
 permfail:
 		/* Send a delivery failure response, then delete the file. */
 		bbs_warning("Delivery of message %s from <%s> to %s has failed permanently after %d attempt%s\n", mqf->datafile, mqf->realfrom, mqf->realto, attempts, ESS(attempts));
@@ -1947,8 +1979,8 @@ static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, v
 
 static int is_queue_filename(const char *s)
 {
-	/* Formatted like 1749798013359795.q */
-	return strlen(s) == 18 && !strcmp(s + 16, ".q") && isdigit(*s);
+	/* Formatted like 1749798013359795_<uniqueID>.q */
+	return strlen(s) >= 19 && bbs_str_ends_with(s, ".q") && isdigit(*s);
 }
 
 static int cli_mailq(struct bbs_cli_args *a)
