@@ -126,14 +126,6 @@ char *bbs_sasl_encode(const char *nickname, const char *username, const char *pa
 int bbs_parse_email_address(char *addr, char **name, char **user, char **host);
 
 /*!
- * \brief Detect a mismatch between an email identity and the currently authenticated user
- * \param user
- * \param from Identity string. Can be user\@host or name <user\@host> format.
- * \retval 0 if okay, -1 on error, -1 if mismatch detected
- */
-int bbs_user_identity_mismatch(struct bbs_user *user, const char *from);
-
-/*!
  * \brief Append a byte stuffed line (for SMTP or NNTP data) to a fp
  * \param fp
  * \param line

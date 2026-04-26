@@ -220,6 +220,15 @@ struct mailbox *mailbox_get_by_name(const char *user, const char *domain);
 struct mailbox *mailbox_get_by_userid(unsigned int userid);
 
 /*!
+ * \brief Get the user ID of a mailbox
+ * \param user The user portion of the address
+ * \param domain The domain portion of the address
+ * \retval 0 if mailbox does not exist or is not a user mailbox
+ * \returns User ID of mailbox owner
+ */
+unsigned int mailbox_get_userid(const char *user, const char *domain);
+
+/*!
  * \brief Get all the destination addresses for a listserv
  * \param user User portion of address
  * \param domain Domain portion of address

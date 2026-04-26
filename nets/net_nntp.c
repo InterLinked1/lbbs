@@ -82,6 +82,7 @@ static int require_login = 1;
 static int require_secure_login = 0;
 static int require_login_posting = 1;
 static int min_priv_post = 1;
+static int check_identity = 1;
 static unsigned int max_post_size = 100000; /* 100 KB should be plenty */
 
 #define NNTP_MODE_TRANSIT 0
@@ -579,6 +580,35 @@ static int on_xover(const char *dir_name, const char *filename, struct nntp_sess
 	return 0;
 }
 
+static int identity_allowed_for_posting(struct nntp_session *nntp, const char *fromaddr)
+{
+	char dup_addr[256];
+	char *name = NULL, *user = NULL, *domain = NULL;
+	unsigned int userid;
+
+	/* While many news providers allow arbitrary email addresses to be used,
+	 * we require a valid email address, unless checkidentity=no. */
+	if (!check_identity) {
+		return 1;
+	}
+
+	safe_strncpy(dup_addr, fromaddr, sizeof(dup_addr));
+	if (bbs_parse_email_address(dup_addr, &name, &user, &domain)) {
+		return 0;
+	}
+	/* Newsgroups need a full email address */
+	if (!user || !domain) {
+		return 0;
+	}
+	/* If the user is allowed to send email from this address,
+	 * then we allow this identity to be used for posting to newsgroups. */
+	userid = mailbox_get_userid(user, domain);
+	if (!userid) {
+		return 0;
+	}
+	return nntp->node->user && userid == nntp->node->user->id;
+}
+
 static int do_post(struct nntp_session *nntp, const char *srcfilename)
 {
 	char *newsgroup, *newsgroups = NULL;
@@ -597,7 +627,7 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 		} else {
 			const char *from = nntp->fromheader + STRLEN("From:");
 			ltrim(from);
-			if (bbs_user_identity_mismatch(nntp->node->user, from)) {
+			if (!identity_allowed_for_posting(nntp, from)) {
 				bbs_warning("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, S_IF(from));
 				nntp_send(nntp, 441, "Identity not allowed for posting");
 				goto cleanup2;
@@ -1306,6 +1336,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "requiresecurelogin", &require_secure_login);
 	bbs_config_val_set_true(cfg, "general", "requireloginforposting", &require_login_posting);
 	bbs_config_val_set_int(cfg, "general", "minpostpriv", &min_priv_post);
+	bbs_config_val_set_true(cfg, "general", "checkidentity", &check_identity);
 	bbs_config_val_set_uint(cfg, "general", "maxpostsize", &max_post_size);
 
 	/* NNTP */
@@ -1403,4 +1434,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_DEPENDENT("RFC3977 NNTP/NNSP", "mod_uuid.so");
+BBS_MODULE_INFO_DEPENDENT("RFC3977 NNTP/NNSP", "mod_mail.so,mod_uuid.so");

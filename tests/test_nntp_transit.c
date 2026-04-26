@@ -27,10 +27,13 @@
 
 static int pre(void)
 {
+	test_preload_module("mod_mail.so");
 	test_load_module("net_nntp.so");
 
+	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_nntp.conf");
 
+	TEST_RESET_MKDIR(TEST_MAIL_DIR);
 	TEST_RESET_MKDIR(TEST_NEWS_DIR);
 	TEST_MKDIR(TEST_NEWS_DIR "/misc.test");
 	TEST_MKDIR(TEST_NEWS_DIR "/misc.empty");

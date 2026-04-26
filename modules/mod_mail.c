@@ -743,6 +743,15 @@ struct mailbox *mailbox_get_by_userid(unsigned int userid)
 	return mailbox_get(userid, NULL, NULL, 1);
 }
 
+unsigned int mailbox_get_userid(const char *user, const char *domain)
+{
+	struct mailbox *mbox = mailbox_get(0, user, domain, 1);
+	if (!mbox) {
+		return 0;
+	}
+	return mbox->id;
+}
+
 int mailbox_rdlock(struct mailbox *mbox)
 {
 	bbs_assert_exists(mbox);

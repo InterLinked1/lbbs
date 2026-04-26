@@ -350,34 +350,6 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host)
 	return 0;
 }
 
-int bbs_user_identity_mismatch(struct bbs_user *user, const char *from)
-{
-	char matchstr[32];
-
-	if (!user) {
-		return -1;
-	}
-
-	ltrim(from);
-	/* Skip name, if present. */
-	while (*from) {
-		if (*from != '<') {
-			from++;
-		} else {
-			from++;
-			break;
-		}
-	}
-
-	snprintf(matchstr, sizeof(matchstr), "%s@%s>", bbs_username(user), bbs_hostname());
-
-	if (strlen_zero(from) || (bbs_user_is_registered(user) && strcasecmp(from, matchstr))) {
-		return 1;
-	}
-
-	return 0;
-}
-
 int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len)
 {
 	size_t res;

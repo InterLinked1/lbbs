@@ -27,10 +27,13 @@
 
 static int pre(void)
 {
+	test_preload_module("mod_mail.so");
 	test_load_module("net_nntp.so");
 
+	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_nntp.conf");
 
+	TEST_RESET_MKDIR(TEST_MAIL_DIR);
 	TEST_RESET_MKDIR(TEST_NEWS_DIR);
 	TEST_MKDIR(TEST_NEWS_DIR "/misc.test");
 	TEST_MKDIR(TEST_NEWS_DIR "/misc.empty");
@@ -118,6 +121,19 @@ static int run(void)
 	/* No next */
 	SWRITE(clientfd, "NEXT\r\n");
 	CLIENT_EXPECT(clientfd, "421");
+
+	/* Post again, using a different From identity that is an alias of our mailbox,
+	 * so we should be allowed to post using it. */
+	SWRITE(clientfd, "POST\r\n");
+	CLIENT_EXPECT(clientfd, "340");
+	s = "From: \"Demo User\" <nntpalias@" TEST_HOSTNAME ">" ENDL
+		"Newsgroups: misc.test" ENDL
+		"Subject: I am just a test article" ENDL
+		ENDL
+		"This is just a test article." ENDL
+		"." ENDL;
+	write(clientfd, s, strlen(s)); /* This message is from RFC 3977 6.3.1.3 */
+	CLIENT_EXPECT(clientfd, "240");
 
 	res = 0;
 
