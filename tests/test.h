@@ -138,7 +138,18 @@ int test_load_module(const char *module);
 void test_autoload_all(void);
 void test_use_mysql(void);
 
+/*! \brief Open a TCP connection to a port */
 int test_make_socket(int port);
+
+/* Macros for use when writing to interactive CLI sessions opened using test_make_sysop_socket */
+#define CLI_SWRITE(fd, str) usleep(5000); SWRITE(fd, str); usleep(5000);
+#define CLI_EOL "\n" /* Just LF, not CR LF, since we don't have a PTY set up */
+
+/*! \brief Open an interactive sysop session */
+int test_make_sysop_socket(void);
+
+/*! \brief Run a sysop command non-interactively */
+#define TEST_CLI_COMMAND(cmd) if (system("/usr/local/sbin/rsysop \"" cmd "\"")) { bbs_error("Command failed at line %d: %s\n", __LINE__, strerror(errno)); goto cleanup; }
 
 int test_client_expect(int fd, int ms, const char *s, int line);
 int test_client_expect_buf(int fd, int ms, const char *s, int line, char *buf, size_t len);
@@ -175,8 +186,6 @@ int test_client_drain(int fd, int ms);
 		goto cleanup; \
 	} \
 }
-
-#define TEST_CLI_COMMAND(cmd) if (system("/usr/local/sbin/rsysop \"" cmd "\"")) { bbs_error("Command failed at line %d: %s\n", __LINE__, strerror(errno)); goto cleanup; }
 
 /*!< Do not run this test by default */
 #define TEST_FLAG_NO_AUTOLOAD (1 << 0)

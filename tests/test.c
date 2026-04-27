@@ -41,6 +41,7 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
+#include <sys/un.h>	/* use struct sockaddr_un */
 #include <arpa/inet.h>
 #include <pwd.h> /* use getpwnam */
 #include <limits.h> /* use PATH_MAX */
@@ -271,6 +272,32 @@ int test_make_socket(int port)
 	}
 	bbs_debug(1, "Connected to %s port %d\n", "TCP", port);
 	return sock;
+}
+
+int test_make_sysop_socket(void)
+{
+	struct sockaddr_un sunaddr;
+	int res;
+	int sockfd = socket(PF_LOCAL, SOCK_STREAM, 0);
+	if (sockfd < 0) {
+		bbs_error("Unable to create socket: %s\n", strerror(errno));
+		return 0;
+	}
+
+	memset(&sunaddr, 0, sizeof(sunaddr));
+	sunaddr.sun_family = AF_LOCAL;
+	strncpy(sunaddr.sun_path, "/var/run/lbbs/sysop.sock", sizeof(sunaddr.sun_path) - 1);
+	sunaddr.sun_path[sizeof(sunaddr.sun_path) - 1] = '\0';
+
+	res = connect(sockfd, (struct sockaddr *)&sunaddr, sizeof(sunaddr));
+	if (res) {
+		bbs_error( "Unable to connect to BBS, socket error: %s\n", strerror(errno));
+		close(sockfd);
+		sockfd = -1;
+		return -1;
+	}
+
+	return sockfd;
 }
 
 int test_client_drain(int fd, int ms)
