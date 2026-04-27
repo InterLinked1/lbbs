@@ -29,15 +29,37 @@ static int pre(void)
 {
 	test_preload_module("mod_mail.so");
 	test_load_module("net_nntp.so");
+	test_load_module("mod_sysop.so"); /* For creating newsgroups */
 
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_nntp.conf");
 
 	TEST_RESET_MKDIR(TEST_MAIL_DIR);
 	TEST_RESET_MKDIR(TEST_NEWS_DIR);
-	TEST_MKDIR(TEST_NEWS_DIR "/misc.test");
-	TEST_MKDIR(TEST_NEWS_DIR "/misc.empty");
 	return 0;
+}
+
+static int create_groups(void)
+{
+	int sockfd;
+
+	OPEN_CLI_SOCKET(sockfd);
+
+#define NEW_GROUP(name, desc, creator, posting) \
+	CLI_SWRITE(sockfd, "/news newgroup" CLI_EOL); \
+	CLI_SWRITE(sockfd, name CLI_EOL); \
+	CLI_SWRITE(sockfd, desc CLI_EOL); \
+	CLI_SWRITE(sockfd, creator CLI_EOL); \
+	CLI_SWRITE(sockfd, posting CLI_EOL);
+
+	NEW_GROUP("misc.test", "A miscellaneous test group", "Sysop", "y");
+	NEW_GROUP("misc.empty", "A miscellaneous empty group", "Sysop", "y");
+
+	close(sockfd);
+	return 0;
+
+cleanup:
+	return -1; /* No need to close_if(sockfd) first, the only failure path is from REQUIRE_FD in OPEN_CLI_SOCKET */
 }
 
 static int run(void)
@@ -45,6 +67,10 @@ static int run(void)
 	const char *s;
 	int clientfd;
 	int res = -1;
+
+	if (create_groups()) {
+		return -1;
+	}
 
 	s = "From: \"Demo User\" <" TEST_EMAIL_UNAUTHORIZED ">" ENDL
 		"Newsgroups: misc.test" ENDL

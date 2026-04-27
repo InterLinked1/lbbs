@@ -142,6 +142,10 @@ void test_use_mysql(void);
 int test_make_socket(int port);
 
 /* Macros for use when writing to interactive CLI sessions opened using test_make_sysop_socket */
+#define OPEN_CLI_SOCKET(fd) \
+	fd = test_make_sysop_socket(); \
+	REQUIRE_FD(sockfd); \
+	usleep(200000); /* Wait for sysop listener to be fully ready for input */
 #define CLI_SWRITE(fd, str) usleep(5000); SWRITE(fd, str); usleep(5000);
 #define CLI_EOL "\n" /* Just LF, not CR LF, since we don't have a PTY set up */
 

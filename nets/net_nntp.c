@@ -38,6 +38,8 @@
 #include "include/node.h"
 #include "include/auth.h"
 #include "include/user.h"
+#include "include/cli.h"
+#include "include/term.h"
 #include "include/test.h"
 
 #include "include/mod_mail.h"
@@ -70,7 +72,11 @@ static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
 static bbs_mutex_t nntp_lock;
 
 static char newsdir[256] = "";
-static char newsgroups_file[sizeof(newsdir) + STRLEN("/newsgroups")] = "";
+
+/* News server metadata files */
+static char active_file[sizeof(newsdir) + STRLEN("/active")] = ""; /* active file (used for LIST ACTIVE) */
+static char active_times_file[sizeof(newsdir) + STRLEN("/active_times")] = ""; /* used for LIST ACTIVE.TIMES */
+static char newsgroups_file[sizeof(newsdir) + STRLEN("/newsgroups")] = ""; /* used for LIST NEWSGROUPS */
 
 /* Relay in */
 static int requirerelaytls = 1;
@@ -293,6 +299,12 @@ static struct bbs_unit_test tests[] =
 	{ "NNTP Wildmats", test_wildmats },
 };
 
+#define NNTP_MAX_LINE_LENGTH 512 /* RFC 3977 3.1. Includes CR LF (but not NUL) */
+#define NNTP_MAX_ARG_LENGTH 497 /* RFC 3977 3.1 */
+#define NNTP_BUFSIZE (NNTP_MAX_ARG_LENGTH + 1) /* For things like group names, etc. where we don't have any better official limitation to adhere to */
+
+#define NNTP_MAX_PATH_LENGTH 1024
+
 #define NNTP_MODE_TRANSIT 0
 #define NNTP_MODE_READER 1
 
@@ -304,7 +316,7 @@ struct nntp_session {
 	char *currentgroup;
 	int currentarticle;
 	int nextlastarticle;
-	char grouppath[512];
+	char grouppath[NNTP_MAX_PATH_LENGTH];
 	char template[64];
 	char *user;
 	FILE *fp;
@@ -354,11 +366,13 @@ static void nntp_destroy(struct nntp_session *nntp)
 
 static int build_newsgroup_path(const char *name, char *buf, size_t len)
 {
+	errno = 0;
 	if (strstr(name, "..")) { /* Reject dangerous inputs */
 		return -1;
 	}
 	snprintf(buf, len, "%s/%s", newsdir, name);
 	if (eaccess(buf, R_OK)) {
+		errno = ENOENT;
 		return -1; /* Doesn't exist */
 	}
 	return 0;
@@ -400,7 +414,7 @@ static int scan_newsgroup(const char *path, int *min, int *max, int *total)
 	return 0;
 }
 
-/*! \brief Cache newsgroup info in a file for LIST, GROUP, etc. The generated newsgroups_file can be sent as a response to LIST ACTIVE
+/*! \brief Cache newsgroup info in a file for LIST, GROUP, etc. The generated active_file can be sent as a response to LIST ACTIVE
  * Doing this once will be much more efficient at runtime, since messages are read far more often than they are posted. */
 static int scan_newsgroups(void)
 {
@@ -408,13 +422,17 @@ static int scan_newsgroups(void)
 	FILE *fp;
 	int fno = 0;
 	int subs;
-	char fullpath[512];
+	char fullpath[1024];
+
+	/*! \todo Calling this function to completely rewrite the active file is somewhat inefficient, especially if only a small change occured
+	 * (in the least extreme case, just a single byte being changed, and no new bytes being written)
+	 * An optimization by callers would be to know if the file size is staying the same and only edit the modified bytes in place. */
 
 	/* Overwrite anything currently in the file. */
 	bbs_mutex_lock(&nntp_lock);
-	fp = fopen(newsgroups_file, "w");
+	fp = fopen(active_file, "w");
 	if (!fp) {
-		bbs_error("Failed to open %s: %s\n", newsgroups_file, strerror(errno));
+		bbs_error("Failed to open %s: %s\n", active_file, strerror(errno));
 		bbs_mutex_unlock(&nntp_lock);
 		return -1;
 	}
@@ -437,13 +455,164 @@ static int scan_newsgroups(void)
 		snprintf(fullpath, sizeof(fullpath), "%s/%s", newsdir, entry->d_name);
 		scan_newsgroup(fullpath, &min, &max, &total);
 		snprintf(groupinfo, sizeof(groupinfo), "%s %d %d %c", entry->d_name, min, max, perm);
-		bbs_debug(4, "Loading newsgroup: %s\n", groupinfo);
 		fprintf(fp, "%s\r\n", groupinfo);
 		free(entry);
 	}
 	free(entries);
 	fclose(fp);
 	bbs_mutex_unlock(&nntp_lock);
+	return 0;
+}
+
+/*! \note Must be called locked */
+static int newgroup_file_insert(const char *filename, const char *name, const char *str)
+{
+	FILE *fp;
+
+	/* Append to the file with the new group information.
+	 * Note: In the future, we could also keep the file sorted here by more diligently rewriting it,
+	 * check if it already exists in the file and abort, etc.
+	 * however at the moment, we just do a dumb append.
+	 * With a+, writes go to the end, but for portability, we should explicitly seek when reading. */
+	UNUSED(name);
+
+	fp = fopen(filename, "a+"); /* Append to existing or create */
+	if (!fp) {
+		bbs_error("Failed to open %s: %s\n", filename, strerror(errno));
+		return -1;
+	}
+	fprintf(fp, "%s\r\n", str);
+	fclose(fp);
+	return 0;
+}
+
+/*!
+ * \brief Create a newsgroup on this server (either a new group in the hierarchy, or instantiate an existing group on this server for the first time)
+ *        The directory for articles will be created, and the newsgroup metadata will be added to all necessary metadata files.
+ * \param name The name of the newsgroup.
+ * \param description A short description about the purpose of the group
+ * \param creation_time When group was created on this news server, in epoch time
+ * \param creator Entity that created the newsgroup; may be an email address (though not necessarily, often just 'usenet' in many Usenet groups)
+ * \param posting The current status of the group on this server. (y = posting allowed, n = posting not allowed, m = posts forwarded to newsgroup moderator)
+ * \retval 0 Group created successfully
+ * \retval 1 Group already exists
+ * \retval -1 Error creating group
+ */
+static int newgroup(const char *name, const char *description, time_t creation_time, const char *creator, char posting)
+{
+	char groupdir[NNTP_MAX_PATH_LENGTH];
+	char buf[NNTP_BUFSIZE];
+	int res;
+
+	if (strlen_zero(name) || strlen_zero(description)) {
+		bbs_error("Missing mandatory fields name and/or description\n");
+		return -1;
+	}
+	if (strlen_zero(creator)) {
+		creator = "BBS";
+	}
+	if (posting != 'y' && posting != 'n' && posting != 'm') {
+		bbs_error("Illegal posting setting '%c'\n", posting);
+		return -1;
+	}
+	if (strchr(name, '\n') || strchr(description, '\n') || strchr(creator, '\n')) {
+		bbs_error("Group metadata contains illegal value\n");
+		return -1;
+	}
+
+	/* This is a ridiculously long limit, but it's the only one we have */
+	if (strlen(name) > NNTP_MAX_ARG_LENGTH) {
+		bbs_error("Group name '%s' is too long\n", name);
+		return -1;
+	}
+
+	/* Will return -1 since it doesn't exist yet, that's fine and expected in this case.
+	 * In fact, if it returns 0, it already exists and we have a problem. */
+	res = build_newsgroup_path(name, groupdir, sizeof(groupdir));
+	if (!res) {
+		bbs_error("Directory %s already exists, please delete it and manually synchronize metadata\n", groupdir);
+		return 1; /* Directory already exists? */
+	}
+	if (errno != ENOENT) {
+		return -1; /* Something else went wrong */
+	}
+
+	bbs_mutex_lock(&nntp_lock);
+
+	if (mkdir(groupdir, 0755)) {
+		bbs_error("Failed to create %s: %s\n", groupdir, strerror(errno));
+		goto abort;
+	}
+
+	/* Update the other files with what we want for this group
+	 * These files create static data that does not change when articles are posted.
+	 * The active file is the only one that mutates frequently, and hence it recreates itself.
+	 * For that reason, the active file is sorted alphabetically, but others are not. */
+	snprintf(buf, sizeof(buf), "%s %lu %s", name, creation_time, creator); /* LIST ACTIVE.TIMES format */
+	res = newgroup_file_insert(active_times_file, name, buf);
+	if (res) {
+		goto abort;
+	}
+
+	snprintf(buf, sizeof(buf), "%s %s", name, description); /* LIST NEWSGROUPS format */
+	res = newgroup_file_insert(newsgroups_file, name, buf);
+	if (res) {
+		goto abort;
+	}
+
+	bbs_mutex_unlock(&nntp_lock); /* Unlock before scan_newsgroups, since that locks as well */
+
+	scan_newsgroups(); /* Last but not least, regenerate the active file */
+	bbs_verb(4, "Created newsgroup %s (%s)\n", name, description);
+	return 0;
+
+abort:
+	bbs_mutex_unlock(&nntp_lock);
+	return -1;
+}
+
+static int cli_newgroup(struct bbs_cli_args *a)
+{
+	char name[128];
+	char description[256];
+	char creator[64];
+	char posting[2];
+	int res;
+	ssize_t rres;
+
+	bbs_cli_set_stdout_logging(a->fdout, 0); /* Disable logging to the terminal until we're finished (mod_sysop will reset anyways when we return) */
+	bbs_buffer_input(a->fdin, 1);
+
+	bbs_dprintf(a->fdout, "Create Newsgroup:\n");
+
+#define PROMPT_AND_READ(var, str) \
+	bbs_dprintf(a->fdout, "%s: ", str); \
+	rres = bbs_poll_read(a->fdin, MIN_MS(2), var, sizeof(var) - 1); \
+	if (rres <= 0) { \
+		bbs_dprintf(a->fdout, "Failed to receive input, aborting\n"); \
+		return -1; \
+	} \
+	var[rres] = '\0'; \
+	if (rres > 0 && var[rres - 1] == '\n') { \
+		var[rres - 1] = '\0'; \
+	} \
+	bbs_debug(5, "Read %s: %s\n", #var, var);
+
+	PROMPT_AND_READ(name, "Name");
+	PROMPT_AND_READ(description, "Description");
+	PROMPT_AND_READ(creator, "Group Creator");
+	PROMPT_AND_READ(posting, "Posting Permitted (y = yes/n = no/m = moderated)");
+
+	res = newgroup(name, description, time(NULL), creator, posting[0]);
+	if (res < 0) {
+		bbs_dprintf(a->fdout, "Error occured creating newsgroup '%s'\n", name);
+		return -1;
+	} else if (res > 0) {
+		bbs_dprintf(a->fdout, "Newsgroup '%s' already exists\n", name);
+		return -1;
+	}
+
+	bbs_dprintf(a->fdout, "Created newsgroup %s (%s)\n", name, description);
 	return 0;
 }
 
@@ -550,7 +719,7 @@ static int article_id_exists(const char *articleid)
 {
 	DIR *dir, *dir2;
 	struct dirent *entry;
-	char fulldir[512];
+	char fulldir[NNTP_MAX_PATH_LENGTH + 1];
 	int exists = 0;
 
 	/* Order of newsgroup traversal doesn't matter.
@@ -754,7 +923,7 @@ static int find_header(FILE *fp, const char *header, char **ptr, char *buf, size
 static int on_xover(const char *dir_name, const char *filename, struct nntp_session *nntp, int number)
 {
 	FILE *fp;
-	char fullpath[3 * 256];
+	char fullpath[3 * 256 + NNTP_MAX_PATH_LENGTH];
 	char subjbuf[256], authorbuf[256], datebuf[256], bytecountbuf[12] = "";
 	char *subject = subjbuf, *author = authorbuf, *date = datebuf, *references = NULL, *bytecount = bytecountbuf, *linecount = NULL;
 	const char *msgid = NULL;
@@ -869,8 +1038,8 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 	newsgroups = nntp->newsgroups + STRLEN("Newsgroups:");
 	ltrim(newsgroups);
 	while ((newsgroup = strsep(&newsgroups, ","))) {
-		char group[512];
-		char filename[512];
+		char group[NNTP_BUFSIZE];
+		char filename[NNTP_MAX_PATH_LENGTH];
 
 		int min, max, total;
 		int msgno;
@@ -992,6 +1161,155 @@ static int sender_authorized(struct nntp_session *nntp)
 		return 0; \
 	}
 
+struct list_info {
+	const char *category; /* Category name */
+	const char *resp; /* Response start text */
+	const char *file; /* Filename */
+	unsigned int per_newsgroup:1;
+};
+
+static struct list_info list_handlers[] =
+{
+	/* Similar to INN (InterNetNews), we use separate files for different purposes, to optimize responses to various LIST commands.
+	 * Each file begins with the newsgroup as the first word, but subsequent words differ by file. */
+
+	/* Same as original LIST command in RFC 977 (all newsgroups client is permitted to select using GROUP)
+	 * <name> <high water mark> <low water mark> <posting permitted: y/n/m> */
+	{ "ACTIVE", "Newsgroup listing follows in form \"group high low status\"", active_file, 1 }, /* Must be first in array. */
+
+	/* active.times list provides creation information: <name> <epoch time of creation> <creator, i.e. email address> */
+	{ "ACTIVE.TIMES", "Newsgroup creation times follow in form \"group time who\"", active_times_file, 1 },
+
+	/* <name> <short description about purpose of the group> (groups for which information is unavailable may be omitted, i.e. may miss groups included in LIST ACTIVE) */
+	{ "NEWSGROUPS", "Newsgroup information follows in form \"group description\"", newsgroups_file, 1 },
+
+	/* distrib.pats list assists clients to choose a value for the Distribution header of an article being posted.
+	 * <weight> <wildmat> <value for Distribution header content>
+	 * Client selects highest-weighted line with a matching wildmat. */
+	/* Note: Eternal September just responds with the 2nd line here, so for now we just do that as well instead of pulling from a file: */
+	{ "DISTRIB.PATS", "Default distributions in form \"weight:group-pattern:distribution\"\r\n10:local.*:local", NULL, 0 },
+
+	/*! \todo Add additional handlers as specified in RFC 2980 and RFC 6048 */
+};
+
+static struct list_info *find_list_handler(const char *keyword)
+{
+	size_t i;
+	for (i = 0; i < ARRAY_LEN(list_handlers); i++) {
+		if (!strcasecmp(keyword, list_handlers[i].category)) {
+			return &list_handlers[i];
+		}
+	}
+	return NULL;
+}
+
+/*!
+ * \internal
+ * \brief Send LIST response
+ * \param nntp
+ * \param keyword e.g. ACTIVE
+ * \param argument Optional wildmat or argument
+ * \retval 0 on success
+ * \retval -1 on fatal failure (disconnect)
+ * \retval 1 on non-fatal failure
+ */
+static int handle_list(struct nntp_session *nntp, const char *keyword, const char *argument)
+{
+	int res = 0;
+	FILE *fp = NULL;
+	struct list_info *lp = NULL;
+
+	lp = !strlen_zero(keyword) ? find_list_handler(keyword) : &list_handlers[0]; /* RFC 2980 2.1.2 states that "LIST ACTIVE" is the same as "LIST" (with no keyword modifier) */
+	if (!lp) {
+		nntp_send(nntp, 501, "Unknown LIST keyword");
+		return 1;
+	}
+	if (!strlen_zero(argument) && !lp->per_newsgroup) {
+		/* We have an argument, but we don't consume one */
+		nntp_send(nntp, 501, "This command is not newsgroup-based and does not accept an argument");
+		return 1;
+	}
+
+	/* Before starting a 2xx response, try opening the file if there is one, so we can abort early on failure */
+	if (lp->file) {
+		fp = fopen(lp->file, "r");
+		if (!fp) {
+			bbs_error("Failed to open %s: %s\n", lp->file, strerror(errno));
+			nntp_send(nntp, 503, "Data item not available");
+			return 1;
+		}
+	}
+
+	nntp_send(nntp, 215, "%s", lp->resp);
+	if (fp) {
+		int lineno = 0;
+		char *group, buf[NNTP_MAX_LINE_LENGTH + 1];
+		while ((fgets(buf, sizeof(buf), fp))) {
+			char *line = buf;
+			lineno++;
+#define nntp_sep(ptr) strsep(ptr, " ")
+			group = nntp_sep(&line); /* The first word (prior to a space or tab) is the newsgroup. Subsequent "words" and their meaning depend on the file. */
+			if (strlen_zero(line)) {
+				bbs_error("Malformed line (%s:%d)\n", lp->file, lineno);
+				continue;
+			}
+			/* Check if the group matches any filters present */
+			if (argument && !wildmat(group, argument)) {
+				continue; /* Didn't match wildmat */
+			}
+			bbs_term_line(line);
+			/* We don't care what the rest of the line is, if the group matches, send it to the client */
+			_nntp_send(nntp, "%s %s\r\n", group, line);
+		}
+		fclose(fp);
+	}
+	if (res < 0) {
+		return res;
+	}
+	_nntp_send(nntp, ".\r\n");
+	return res;
+}
+
+/*! \note Condensed equivalent of handle_list for CLI */
+static int cli_list(struct bbs_cli_args *a)
+{
+	struct list_info *lp;
+	const char *keyword = a->argv[2];
+	const char *argument = a->argc >= 4 ? a->argv[3] : NULL;
+
+	lp = find_list_handler(keyword);
+	if (!lp) {
+		bbs_dprintf(a->fdout, "Unknown LIST keyword\n");
+		return -1;
+	}
+	if (argument && !lp->per_newsgroup) {
+		bbs_dprintf(a->fdout, "This command does not accept a wildmat argument\n");
+		return -1;
+	}
+	bbs_dprintf(a->fdout, "%s\n", lp->resp);
+	if (lp->file) {
+		char *group, buf[NNTP_MAX_LINE_LENGTH + 1];
+		FILE *fp = fopen(lp->file, "r");
+		if (!fp) {
+			bbs_dprintf(a->fdout, "Failed to open %s: %s\n", lp->file, strerror(errno));
+			return -1;
+		}
+		while ((fgets(buf, sizeof(buf), fp))) {
+			char *line = buf;
+			group = nntp_sep(&line); /* The first word (prior to a space or tab) is the newsgroup. Subsequent "words" and their meaning depend on the file. */
+			if (strlen_zero(line)) {
+				continue;
+			} else if (argument && !wildmat(group, argument)) {
+				continue;
+			}
+			bbs_term_line(line);
+			bbs_dprintf(a->fdout, "%s\t%s\n", group, line); /* Use TAB instead of space after group for slightly better alignment in formatting */
+		}
+		fclose(fp);
+	}
+	return 0;
+}
+
 static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 {
 	char *command;
@@ -1065,9 +1383,6 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 		if (!strcasecmp(command, "READER")) {
 			nntp->mode = NNTP_MODE_READER;
 			nntp_send(nntp, 200, "Reader mode, posting permitted");
-		} else if (!strcasecmp(command, "READER")) {
-			nntp->mode = NNTP_MODE_READER;
-			nntp_send(nntp, 200, "Reader mode, posting permitted");
 		} else {
 			bbs_error("Unknown mode: %s\n", command);
 		}
@@ -1079,11 +1394,11 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 		if (!nntp->node->secure) {
 			_nntp_send(nntp, "STARTTLS\r\n");
 		}
-		if (nntp->mode == NNTP_MODE_READER) {
+		if (nntp->mode == NNTP_MODE_READER) { /* Reader mode */
 			_nntp_send(nntp, "READER\r\n");
 			_nntp_send(nntp, "POST\r\n");
 			_nntp_send(nntp, "LIST ACTIVE\r\n");
-		} else {
+		} else { /* Transit mode */
 			_nntp_send(nntp, "IHAVE\r\n");
 			_nntp_send(nntp, "MODE-READER\r\n");
 		}
@@ -1247,26 +1562,12 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 	} else if (nntp->mode == NNTP_MODE_READER && require_login && !bbs_user_is_registered(nntp->node->user)) {
 		nntp_send(nntp, 480, "Must authenticate first");
 	} else if (!strcasecmp(command, "LIST")) {
-		const char *keyword;
-		char *wildmat; /* wildmat or argument */
-		keyword = strsep(&s, " ");
-		if (strlen_zero(keyword)) {
-			keyword = "ACTIVE"; /* Default if no keyword provided */
+		const char *keyword = strsep(&s, " ");
+		if (handle_list(nntp, keyword, s) < 0) {
+			return -1;
 		}
-		if (!strcasecmp(keyword, "ACTIVE")) {
-			/* List all groups available, in current state. */
-			nntp_send(nntp, 215, "Newsgroup listing follows");
-			/* name, high water mark, low water mark, current status (posting permitted: y/n/m (moderated) */
-			if (bbs_send_file(newsgroups_file, nntp->node->wfd) < 0) {
-				return -1; /* Just disconnect */
-			}
-			_nntp_send(nntp, ".\r\n");
-		} else {
-			bbs_error("Unsupported LIST keyword: %s\n", keyword);
-		}
-		UNUSED(wildmat);
 	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "GROUP")) {
-		char group[512];
+		char group[NNTP_BUFSIZE + 1];
 		int min, max, total;
 		if (build_newsgroup_path(s, group, sizeof(group))) {
 			nntp_send(nntp, 411, "%s is unknown", s);
@@ -1359,7 +1660,9 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 			return 0;
 		}
 		if (!get_article_id(nntp, nntp->nextlastarticle)) {
-			bbs_error("Couldn't find article ID for %s #%d???\n", nntp->currentgroup, nntp->nextlastarticle);
+			if (nntp->nextlastarticle > 0) {
+				bbs_warning("Couldn't find article ID for %s #%d???\n", nntp->currentgroup, nntp->nextlastarticle);
+			}
 			nntp_send(nntp, 422, "No previous article in group");
 			return 0;
 		}
@@ -1378,7 +1681,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 			return 0;
 		}
 		if (!get_article_id(nntp, nntp->nextlastarticle)) {
-			bbs_error("Couldn't find article ID for %s #%d???\n", nntp->currentgroup, nntp->nextlastarticle);
+			bbs_warning("Couldn't find article ID for %s #%d???\n", nntp->currentgroup, nntp->nextlastarticle);
 			nntp_send(nntp, 421, "No next article in group");
 			return 0;
 		}
@@ -1462,6 +1765,7 @@ static void handle_client(struct nntp_session *nntp)
 	/* 200 means client can post, 201 means not, but this is not a perfect distinction (see RFC) */
 	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", bbs_hostname());
 
+	/* Default mode is transit mode (NNTP_MODE_TRANSIT) for mode-switching servers */
 	for (;;) {
 		ssize_t res = bbs_node_readline(nntp->node, &rldata, "\r\n", MIN_MS(5));
 		if (res < 0) {
@@ -1539,7 +1843,11 @@ static int load_config(void)
 		bbs_config_unlock(cfg);
 		return -1;
 	}
+
+	snprintf(active_file, sizeof(active_file), "%s/active", newsdir);
+	snprintf(active_times_file, sizeof(active_times_file), "%s/active_times", newsdir);
 	snprintf(newsgroups_file, sizeof(newsgroups_file), "%s/newsgroups", newsdir);
+
 	bbs_config_val_set_true(cfg, "general", "requirelogin", &require_login);
 	bbs_config_val_set_true(cfg, "general", "requiresecurelogin", &require_secure_login);
 	bbs_config_val_set_true(cfg, "general", "requireloginforposting", &require_login_posting);
@@ -1590,6 +1898,11 @@ static int load_config(void)
 	return 0;
 }
 
+static struct bbs_cli_entry cli_commands_nntp[] = {
+	BBS_CLI_COMMAND(cli_newgroup, "news newgroup", 2, "Create a new newsgroup", NULL),
+	BBS_CLI_COMMAND(cli_list, "news list", 3, "List newsgroup info, optionally filtered", "news list <active|active.times|newsgroups> [wildmat]"),
+};
+
 static int load_module(void)
 {
 	stringlist_init(&inpeers);
@@ -1618,6 +1931,7 @@ static int load_module(void)
 	}
 
 	bbs_register_tests(tests);
+	bbs_cli_register_multiple(cli_commands_nntp);
 	return bbs_start_tcp_listener3(nntp_enabled ? nntp_port : 0, nntps_enabled ? nntps_port : 0, nnsp_enabled ? nnsp_port : 0, "NNTP", "NNTPS", "NNSP", __nntp_handler);
 
 cleanup:
@@ -1628,6 +1942,7 @@ cleanup:
 
 static int unload_module(void)
 {
+	bbs_cli_unregister_multiple(cli_commands_nntp);
 	bbs_unregister_tests(tests);
 	if (nntp_enabled) {
 		bbs_stop_tcp_listener(nntp_port);

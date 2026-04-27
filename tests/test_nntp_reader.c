@@ -29,15 +29,37 @@ static int pre(void)
 {
 	test_preload_module("mod_mail.so");
 	test_load_module("net_nntp.so");
+	test_load_module("mod_sysop.so"); /* For creating newsgroups */
 
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_nntp.conf");
 
 	TEST_RESET_MKDIR(TEST_MAIL_DIR);
 	TEST_RESET_MKDIR(TEST_NEWS_DIR);
-	TEST_MKDIR(TEST_NEWS_DIR "/misc.test");
-	TEST_MKDIR(TEST_NEWS_DIR "/misc.empty");
 	return 0;
+}
+
+static int create_groups(void)
+{
+	int sockfd;
+
+	OPEN_CLI_SOCKET(sockfd);
+
+#define NEW_GROUP(name, desc, creator, posting) \
+	CLI_SWRITE(sockfd, "/news newgroup" CLI_EOL); \
+	CLI_SWRITE(sockfd, name CLI_EOL); \
+	CLI_SWRITE(sockfd, desc CLI_EOL); \
+	CLI_SWRITE(sockfd, creator CLI_EOL); \
+	CLI_SWRITE(sockfd, posting CLI_EOL);
+
+	NEW_GROUP("misc.test", "A miscellaneous test group", "Sysop", "y");
+	NEW_GROUP("misc.empty", "A miscellaneous empty group", "Sysop", "y");
+
+	close(sockfd);
+	return 0;
+
+cleanup:
+	return -1; /* No need to close_if(sockfd) first, the only failure path is from REQUIRE_FD in OPEN_CLI_SOCKET */
 }
 
 static int run(void)
@@ -45,6 +67,10 @@ static int run(void)
 	const char *s;
 	int clientfd;
 	int res = -1;
+
+	if (create_groups()) {
+		return -1;
+	}
 
 	clientfd = test_make_socket(119);
 	REQUIRE_FD(clientfd);
@@ -103,7 +129,24 @@ static int run(void)
 	SWRITE(clientfd, "LIST\r\n");
 	CLIENT_EXPECT(clientfd, "215");
 	/* Should be sorted, so misc.empty should be in the first line. */
-	CLIENT_EXPECT(clientfd, "misc.empty"); /* Don't also wait for misc.test, etc. since it's probably part of the same read() output and we don't chunk per line */
+	CLIENT_EXPECT(clientfd, "misc.empty 0 0 y"); /* Don't also wait for misc.test, etc. since it's probably part of the same read() output and we don't chunk per line */
+
+	/* Ask for different LIST variants */
+	SWRITE(clientfd, "LIST ACTIVE\r\n");
+	CLIENT_EXPECT(clientfd, "215");
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "misc.test 1 1 y"); /* Should appear last alphabetically */
+
+	SWRITE(clientfd, "LIST ACTIVE.TIMES *test\r\n"); /* specify wildmat that will only match one group */
+	CLIENT_EXPECT(clientfd, "215");
+	CLIENT_EXPECT(clientfd, "Sysop");
+
+	SWRITE(clientfd, "LIST NEWSGROUPS\r\n");
+	CLIENT_EXPECT(clientfd, "215");
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "misc.test A miscellaneous test group");
+
+	SWRITE(clientfd, "LIST DISTRIB.PATS\r\n");
+	CLIENT_EXPECT(clientfd, "215");
+	CLIENT_EXPECT_EVENTUALLY(clientfd, ".");
 
 	/* Try reading that article: it should now exist. */
 	SWRITE(clientfd, "GROUP misc.test\r\n");
