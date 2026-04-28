@@ -45,15 +45,9 @@ static int create_groups(void)
 
 	OPEN_CLI_SOCKET(sockfd);
 
-#define NEW_GROUP(name, desc, creator, posting) \
-	CLI_SWRITE(sockfd, "/news newgroup" CLI_EOL); \
-	CLI_SWRITE(sockfd, name CLI_EOL); \
-	CLI_SWRITE(sockfd, desc CLI_EOL); \
-	CLI_SWRITE(sockfd, creator CLI_EOL); \
-	CLI_SWRITE(sockfd, posting CLI_EOL);
-
-	NEW_GROUP("misc.test", "A miscellaneous test group", "Sysop", "y");
-	NEW_GROUP("misc.empty", "A miscellaneous empty group", "Sysop", "y");
+	NEW_NEWSGROUP(sockfd, "misc.test", "A miscellaneous test group", "Sysop", "y");
+	NEW_NEWSGROUP(sockfd, "misc.empty", "A miscellaneous empty group", "Sysop", "y");
+	NEW_NEWSGROUP(sockfd, "misc.restricted", "A miscellaneous restricted group", "Sysop", "y");
 
 	close(sockfd);
 	return 0;
@@ -65,123 +59,131 @@ cleanup:
 static int run(void)
 {
 	const char *s;
-	int clientfd;
+	int client1 = -1, client3 = -1;
 	int res = -1;
 
 	if (create_groups()) {
 		return -1;
 	}
 
-	clientfd = test_make_socket(119);
-	REQUIRE_FD(clientfd);
+	client1 = test_make_socket(119);
+	REQUIRE_FD(client1);
 
 	/* Initial connection */
-	CLIENT_EXPECT(clientfd, "200 " TEST_HOSTNAME);
-	SWRITE(clientfd, "CAPABILITIES\r\n");
-	CLIENT_EXPECT(clientfd, "101");
-	CLIENT_EXPECT_EVENTUALLY(clientfd, ".\r\n");
+	CLIENT_EXPECT(client1, "200 " TEST_HOSTNAME);
+	SWRITE(client1, "CAPABILITIES\r\n");
+	CLIENT_EXPECT(client1, "101");
+	CLIENT_EXPECT_EVENTUALLY(client1, ".\r\n");
 
 	/* Posting without logging in should fail */
-	SWRITE(clientfd, "POST\r\n");
-	CLIENT_EXPECT(clientfd, "480");
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "480");
 
 	/* Log in now */
-	SWRITE(clientfd, "AUTHINFO USER " TEST_USER "@" TEST_HOSTNAME "\r\n");
-	CLIENT_EXPECT(clientfd, "381");
-	SWRITE(clientfd, "AUTHINFO PASS " TEST_PASS "\r\n");
-	CLIENT_EXPECT(clientfd, "281");
+	SWRITE(client1, "AUTHINFO USER " TEST_USER "@" TEST_HOSTNAME "\r\n");
+	CLIENT_EXPECT(client1, "381");
+	SWRITE(client1, "AUTHINFO PASS " TEST_PASS "\r\n");
+	CLIENT_EXPECT(client1, "281");
 
 	/* Try posting an article under an unauthorized identity */
-	SWRITE(clientfd, "POST\r\n");
-	CLIENT_EXPECT(clientfd, "340");
-	s = "From: \"Demo User\" <" TEST_EMAIL_UNAUTHORIZED ">" ENDL
-		"Newsgroups: misc.test" ENDL
-		"Subject: I am just a test article" ENDL
-		ENDL
-		"This is just a test article." ENDL
-		"." ENDL;
-	write(clientfd, s, strlen(s)); /* This message is from RFC 3977 6.3.1.3 */
-	CLIENT_EXPECT(clientfd, "441");
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "340");
+	POST_NEWS_ARTICLE(s, client1, TEST_EMAIL_UNAUTHORIZED, "misc.test"); /* This message is from RFC 3977 6.3.1.3 */
+	CLIENT_EXPECT(client1, "441");
 
 	/* Ensure the article wasn't accepted and stored */
-	SWRITE(clientfd, "ARTICLE 1\r\n");
-	CLIENT_EXPECT(clientfd, "412"); /* No group currently selected */
-	SWRITE(clientfd, "GROUP misc.test\r\n"); /* Select a group */
-	CLIENT_EXPECT(clientfd, "211 0 0 0 misc.test");
+	SWRITE(client1, "ARTICLE 1\r\n");
+	CLIENT_EXPECT(client1, "412"); /* No group currently selected */
+	SWRITE(client1, "GROUP misc.test\r\n"); /* Select a group */
+	CLIENT_EXPECT(client1, "211 0 0 0 misc.test");
 
 	/* Attempts to fetch nonexistent articles should fail */
-	SWRITE(clientfd, "ARTICLE 1\r\n");
-	CLIENT_EXPECT(clientfd, "423");
+	SWRITE(client1, "ARTICLE 1\r\n");
+	CLIENT_EXPECT(client1, "423");
 
 	/* Try again with an authorized identity */
-	SWRITE(clientfd, "POST\r\n");
-	CLIENT_EXPECT(clientfd, "340");
-	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL
-		"Newsgroups: misc.test" ENDL
-		"Subject: I am just a test article" ENDL
-		ENDL
-		"This is just a test article." ENDL
-		"." ENDL;
-	write(clientfd, s, strlen(s)); /* This message is from RFC 3977 6.3.1.3 */
-	CLIENT_EXPECT(clientfd, "240");
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "340");
+	POST_NEWS_ARTICLE(s, client1, TEST_EMAIL, "misc.test");
+	CLIENT_EXPECT(client1, "240");
 
 	/* Try querying all the newsgroups */
-	SWRITE(clientfd, "LIST\r\n");
-	CLIENT_EXPECT(clientfd, "215");
+	SWRITE(client1, "LIST\r\n");
+	CLIENT_EXPECT(client1, "215");
 	/* Should be sorted, so misc.empty should be in the first line. */
-	CLIENT_EXPECT(clientfd, "misc.empty 0 0 y"); /* Don't also wait for misc.test, etc. since it's probably part of the same read() output and we don't chunk per line */
+	CLIENT_EXPECT(client1, "misc.empty 0 0 y"); /* Don't also wait for misc.test, etc. since it's probably part of the same read() output and we don't chunk per line */
 
 	/* Ask for different LIST variants */
-	SWRITE(clientfd, "LIST ACTIVE\r\n");
-	CLIENT_EXPECT(clientfd, "215");
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "misc.test 1 1 y"); /* Should appear last alphabetically */
+	SWRITE(client1, "LIST ACTIVE\r\n");
+	CLIENT_EXPECT(client1, "215");
+	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test 1 1 y"); /* Should appear last alphabetically */
 
-	SWRITE(clientfd, "LIST ACTIVE.TIMES *test\r\n"); /* specify wildmat that will only match one group */
-	CLIENT_EXPECT(clientfd, "215");
-	CLIENT_EXPECT(clientfd, "Sysop");
+	SWRITE(client1, "LIST ACTIVE.TIMES *test\r\n"); /* specify wildmat that will only match one group */
+	CLIENT_EXPECT(client1, "215");
+	CLIENT_EXPECT(client1, "Sysop");
 
-	SWRITE(clientfd, "LIST NEWSGROUPS\r\n");
-	CLIENT_EXPECT(clientfd, "215");
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "misc.test A miscellaneous test group");
+	SWRITE(client1, "LIST NEWSGROUPS\r\n");
+	CLIENT_EXPECT(client1, "215");
+	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test A miscellaneous test group");
 
-	SWRITE(clientfd, "LIST DISTRIB.PATS\r\n");
-	CLIENT_EXPECT(clientfd, "215");
-	CLIENT_EXPECT_EVENTUALLY(clientfd, ".");
+	SWRITE(client1, "LIST DISTRIB.PATS\r\n");
+	CLIENT_EXPECT(client1, "215");
+	CLIENT_EXPECT_EVENTUALLY(client1, ".");
 
 	/* Try reading that article: it should now exist. */
-	SWRITE(clientfd, "GROUP misc.test\r\n");
-	CLIENT_EXPECT(clientfd, "211 1 1 1 misc.test");
-	SWRITE(clientfd, "HEAD 1\r\n");
-	CLIENT_EXPECT(clientfd, "221");
-	CLIENT_EXPECT(clientfd, TEST_EMAIL); /* Our email should be in the response data */
-	SWRITE(clientfd, "ARTICLE 1\r\n");
-	CLIENT_EXPECT_EVENTUALLY(clientfd, ".\r\n");
+	SWRITE(client1, "GROUP misc.test\r\n");
+	CLIENT_EXPECT(client1, "211 1 1 1 misc.test");
+	SWRITE(client1, "HEAD 1\r\n");
+	CLIENT_EXPECT(client1, "221");
+	CLIENT_EXPECT(client1, TEST_EMAIL); /* Our email should be in the response data */
+	SWRITE(client1, "ARTICLE 1\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, ".\r\n");
 
 	/* No previous */
-	SWRITE(clientfd, "LAST\r\n");
-	CLIENT_EXPECT(clientfd, "422");
+	SWRITE(client1, "LAST\r\n");
+	CLIENT_EXPECT(client1, "422");
 
 	/* No next */
-	SWRITE(clientfd, "NEXT\r\n");
-	CLIENT_EXPECT(clientfd, "421");
+	SWRITE(client1, "NEXT\r\n");
+	CLIENT_EXPECT(client1, "421");
 
 	/* Post again, using a different From identity that is an alias of our mailbox,
 	 * so we should be allowed to post using it. */
-	SWRITE(clientfd, "POST\r\n");
-	CLIENT_EXPECT(clientfd, "340");
-	s = "From: \"Demo User\" <nntpalias@" TEST_HOSTNAME ">" ENDL
-		"Newsgroups: misc.test" ENDL
-		"Subject: I am just a test article" ENDL
-		ENDL
-		"This is just a test article." ENDL
-		"." ENDL;
-	write(clientfd, s, strlen(s)); /* This message is from RFC 3977 6.3.1.3 */
-	CLIENT_EXPECT(clientfd, "240");
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "340");
+	POST_NEWS_ARTICLE(s, client1, "nntpalias@" TEST_HOSTNAME, "misc.test");
+	CLIENT_EXPECT(client1, "240");
+
+	/* Try some things that should be denied by ACL */
+
+	/* Can't post to misc.restricted */
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "340");
+	POST_NEWS_ARTICLE(s, client1, TEST_EMAIL, "misc.restricted");
+	CLIENT_EXPECT(client1, "440");
+
+	/* User 3 isn't allowed to do anything, since he has no matching ACL */
+	client3 = test_make_socket(119);
+	REQUIRE_FD(client3);
+	CLIENT_EXPECT(client3, "200 " TEST_HOSTNAME);
+
+	SWRITE(client3, "AUTHINFO USER " TEST_USER3 "@" TEST_HOSTNAME "\r\n");
+	CLIENT_EXPECT(client3, "381");
+	SWRITE(client3, "AUTHINFO PASS " TEST_PASS3 "\r\n");
+	CLIENT_EXPECT(client3, "281");
+
+	SWRITE(client3, "LIST ACTIVE misc.test\r\n");
+	CLIENT_EXPECT(client3, "215");
+	CLIENT_EXPECT(client3, ".");
+
+	SWRITE(client3, "GROUP misc.test\r\n");
+	CLIENT_EXPECT(client3, "502");
 
 	res = 0;
 
 cleanup:
-	close(clientfd);
+	close_if(client1);
+	close_if(client3);
 	return res;
 }
 

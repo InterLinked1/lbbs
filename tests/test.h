@@ -127,6 +127,23 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 
 #define ENDL "\r\n"
 
+/* NNTP test specific: */
+#define NEW_NEWSGROUP(sockfd, name, desc, creator, posting) \
+	CLI_SWRITE(sockfd, "/news newgroup" CLI_EOL); \
+	CLI_SWRITE(sockfd, name CLI_EOL); \
+	CLI_SWRITE(sockfd, desc CLI_EOL); \
+	CLI_SWRITE(sockfd, creator CLI_EOL); \
+	CLI_SWRITE(sockfd, posting CLI_EOL);
+
+#define POST_NEWS_ARTICLE(s, fd, from, newsgroup) \
+	s = "From: \"Demo User\" <" from ">" ENDL \
+		"Newsgroups: " newsgroup ENDL \
+		"Subject: I am just a test article" ENDL \
+		ENDL \
+		"This is just a test article." ENDL \
+		"." ENDL; \
+	write(fd, s, strlen(s));
+
 int test_dir_file_count(const char *directory);
 
 #define TEST_BBS_EXPECT(s, ms) if (test_bbs_expect(s, ms)) { goto cleanup; }

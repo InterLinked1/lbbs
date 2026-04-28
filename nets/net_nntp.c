@@ -71,7 +71,9 @@ static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
 
 static bbs_mutex_t nntp_lock;
 
+/* General settings */
 static char newsdir[256] = "";
+static unsigned int max_post_size = 100000; /* 100 KB should be plenty */
 
 /* News server metadata files */
 static char active_file[sizeof(newsdir) + STRLEN("/active")] = ""; /* active file (used for LIST ACTIVE) */
@@ -85,12 +87,11 @@ static int requirerelaytls = 1;
 static unsigned int relayfrequency = 3600;
 static unsigned int relaymaxage = 86400;
 
-static int require_login = 1;
+/* Reader settings */
 static int require_secure_login = 0;
-static int require_login_posting = 1;
-static int min_priv_post = 1;
 static int check_identity = 1;
-static unsigned int max_post_size = 100000; /* 100 KB should be plenty */
+
+/* =============== Begin wildmat code =============== */
 
 /*
  * Adapted from public domain code for matching wildmats written by Rich Salz in 1986 and appearing in INN 1.4
@@ -293,6 +294,7 @@ static int test_wildmats(void)
 cleanup:
 	return -1;
 }
+/* =============== End wildmat code =============== */
 
 static struct bbs_unit_test tests[] =
 {
@@ -307,9 +309,6 @@ static struct bbs_unit_test tests[] =
 
 #define NNTP_MODE_TRANSIT 0
 #define NNTP_MODE_READER 1
-
-static struct stringlist inpeers;
-static struct stringlist outpeers;
 
 struct nntp_session {
 	struct bbs_node *node;
@@ -326,11 +325,303 @@ struct nntp_session {
 	char *rxarticleid;
 	unsigned int postlen;
 	unsigned int mode:1;	/* MODE (0 = transit, 1 = reader) */
+	unsigned int inpeer_any:1; /* Whether this is an in peer authorized in at least one inpeer ACL */
 	unsigned int inpost:1;
 	unsigned int inpostheaders:1;
 	unsigned int postfail:1;
 	unsigned int dostarttls:1;
 };
+
+static struct stringlist outpeers;
+
+/* =============== Begin ACL Code =============== */
+
+struct reader_acl {
+	const char *users; /*!< Wildmat of usernames to which this ACL applies */
+	const char *read; /*!< Wildmat of newsgroups for which this ACL allows read access */
+	const char *post; /*!< Wildmat of newsgroups for which this ACL authorizes posting */
+	int minreadpriv; /*!< Additional minimum privilege required for read access */
+	int minpostpriv; /*!< Additional minimum privilege required for post access */
+	struct stringlist guests; /*!< List of IPv4 CIDR ranges to which this ACL applies */
+	RWLIST_ENTRY(reader_acl) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(acls, reader_acl);
+
+static void free_acl(struct reader_acl *acl)
+{
+	stringlist_empty_destroy(&acl->guests);
+	free(acl);
+}
+
+static int load_acl(const char *guests, const char *userswm, const char *readwm, const char *postwm, int minreadpriv, int minpostpriv)
+{
+	struct reader_acl *acl;
+	size_t userslen, readlen, postlen;
+	char *data;
+
+	/* Because ACLs are checked frequently and there may be multiple that we need to check, for any given operation,
+	 * we optimize for efficiency during runtime, i.e. we shouldn't need to copy/split strings later. */
+	userslen = STRING_ALLOC_SIZE(userswm);
+	readlen = STRING_ALLOC_SIZE(readwm);
+	postlen = STRING_ALLOC_SIZE(postwm);
+
+	acl = calloc(1, sizeof(*acl) + userslen + readlen + postlen);
+	if (ALLOC_FAILURE(acl)) {
+		return -1;
+	}
+
+	data = acl->data;
+	SET_FSM_STRING_VAR(acl, data, users, userswm, userslen);
+	SET_FSM_STRING_VAR(acl, data, read, readwm, readlen);
+	SET_FSM_STRING_VAR(acl, data, post, postwm, postlen);
+
+	acl->minreadpriv = minreadpriv;
+	acl->minpostpriv = minpostpriv;
+
+	stringlist_init(&acl->guests);
+	if (guests) {
+		stringlist_push_list(&acl->guests, guests);
+	}
+	RWLIST_INSERT_HEAD(&acls, acl, entry);
+	return 0;
+}
+
+enum nntp_acl_action {
+	NNTP_ACL_READ,
+	NNTP_ACL_POST,
+	/* Could be extended for more granular control over operations (e.g. LIST, NEWNEWS, etc.) */
+};
+
+static inline int stringlist_contains_ip(struct stringlist *l, const char *ip)
+{
+	const char *s;
+	struct stringitem *i = NULL;
+
+	while ((s = stringlist_next(l, &i))) {
+		if (bbs_ip_match_ipv4(ip, s)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/*! \brief Whether this reader ACL matches the connection */
+static inline int acl_matches(struct nntp_session *nntp, struct reader_acl *acl)
+{
+	if (bbs_user_is_registered(nntp->node->user)) {
+		/* Authenticated user, the wildmat has to match the username */
+		if (acl->users) {
+			return wildmat(bbs_username(nntp->node->user), acl->users);
+		} else {
+			return 0; /* No authenticated users authorized by this ACL */
+		}
+	} else {
+		/* Guest user */
+		return stringlist_contains_ip(&acl->guests, nntp->node->ip); /* Okay, even if list is empty */
+	}
+}
+
+/*! \brief Whether a connection is allowed to perform a certain action against a certain group */
+static int allowed_by_acl_locked(struct nntp_session *nntp, const char *group, enum nntp_acl_action action)
+{
+	struct reader_acl *acl;
+	int acl_count = 0;
+
+	RWLIST_TRAVERSE(&acls, acl, entry) {
+		acl_count++;
+		if (acl_matches(nntp, acl)) {
+			/* ACL matches the connection, check if it allows this action */
+			switch (action) {
+				case NNTP_ACL_READ:
+					if (acl->read && wildmat(group, acl->read)) {
+						if (!acl->minreadpriv || (bbs_user_is_registered(nntp->node->user) && nntp->node->user->priv >= acl->minreadpriv)) {
+							return 1;
+						}
+					}
+					break;
+				case NNTP_ACL_POST:
+					if (acl->post && wildmat(group, acl->post)) {
+						if (!acl->minpostpriv || (bbs_user_is_registered(nntp->node->user) && nntp->node->user->priv >= acl->minpostpriv)) {
+							return 1;
+						}
+					}
+					break;
+			}
+		}
+	}
+
+	return acl_count ? 0 : 1; /* If no ACLs are configured, actions are implicitly authorized */
+}
+
+static int allowed_by_acl(struct nntp_session *nntp, const char *group, enum nntp_acl_action action)
+{
+	int res;
+	RWLIST_RDLOCK(&acls);
+	res = allowed_by_acl_locked(nntp, group, action);
+	RWLIST_UNLOCK(&acls);
+	return res;
+}
+
+/*! \brief Whether guests are able to post at all without logging in */
+static int guests_can_post_at_all(void)
+{
+	static int computed = 0;
+	static int guests_can_post = 0;
+	if (!computed) {
+		struct reader_acl *acl;
+		RWLIST_RDLOCK(&acls);
+		RWLIST_TRAVERSE(&acls, acl, entry) {
+			if (!stringlist_is_empty(&acl->guests) && acl->post) {
+				/* Seems likely that guest users are possibly authorized to post to some newsgroups */
+				guests_can_post = 1;
+				break;
+			}
+		}
+		RWLIST_UNLOCK(&acls);
+		computed = 1;
+	}
+	return guests_can_post;
+}
+
+/* For inpeers, we use a slightly less expressive form of ACL that is equivalent to treating read and post the same (without some of the other reader ACL options)
+ * In theory, we COULD have used the same ACL structure and allowed for the same configuration, but it's not quite the same use case.
+ * In particular, reading clients will generally authenticate, while transit clients generally won't.
+ * The actual underlying differences in ACL handling between transit and reader clients are mostly abstracted away using the ACL_ macros,
+ * so if we wanted to change this in the future, it would not be super disruptive. */
+
+/*! \brief ACL for transit peer authorized to send us articles (using IHAVE) */
+enum inpeer_type {
+	INPEER_IPV4,
+	INPEER_HOSTNAME,
+	INPEER_USERNAME,
+};
+
+struct inpeer {
+	const char *identity; /*!< IPv4 address, hostname, or username */
+	const char *groups; /*!< Wildmat of newsgroups for which this ACL authorizes IHAVE posting */
+	enum inpeer_type type;
+	RWLIST_ENTRY(inpeer) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(inpeers, inpeer);
+
+static int add_inpeer(const char *identity, const char *groups)
+{
+	struct inpeer *i;
+	char *data;
+	size_t idlen = STRING_ALLOC_SIZE(identity);
+	size_t grplen = STRING_ALLOC_SIZE(groups);
+
+	i = calloc(1, sizeof(*i) + idlen + grplen);
+	if (ALLOC_FAILURE(i)) {
+		return -1;
+	}
+
+	data = i->data;
+	SET_FSM_STRING_VAR(i, data, identity, identity, idlen);
+	SET_FSM_STRING_VAR(i, data, groups, groups, grplen);
+
+	/* Determine which type of peer it is now, so we don't have to determine it later */
+	if (bbs_user_exists(identity)) {
+		i->type = INPEER_USERNAME;
+	} else {
+		i->type = bbs_hostname_is_ipv4(identity) ? INPEER_IPV4 : INPEER_HOSTNAME;
+	}
+	RWLIST_INSERT_HEAD(&inpeers, i, entry);
+	return 0;
+}
+
+static inline int inpeer_acl_matches(struct nntp_session *nntp, struct inpeer *i)
+{
+	switch (i->type) {
+		case INPEER_IPV4:
+		case INPEER_HOSTNAME:
+			if (bbs_ip_match_ipv4(nntp->node->ip, i->identity)) {
+				return 1;
+			}
+			break;
+		case INPEER_USERNAME:
+			if (bbs_user_is_registered(nntp->node->user) && !strcmp(bbs_username(nntp->node->user), i->identity)) {
+				return 1;
+			}
+			break;
+	}
+	return 0;
+}
+
+/*! \brief Whether a transit peer is authorized for any groups (not necessarily the one of interest) */
+static int authorized_inpeer_for_any_groups(struct nntp_session *nntp)
+{
+	struct inpeer *i;
+
+	RWLIST_RDLOCK(&inpeers);
+	RWLIST_TRAVERSE(&inpeers, i, entry) {
+		if (inpeer_acl_matches(nntp, i)) {
+			RWLIST_UNLOCK(&inpeers);
+			return 1;
+		}
+	}
+	RWLIST_UNLOCK(&inpeers);
+
+	return 0;
+}
+
+/*! \brief Whether a transit peer is authorized for a specific group, e.g. for IHAVE */
+static int authorized_inpeer_for_group_locked(struct nntp_session *nntp, const char *group, enum nntp_acl_action action)
+{
+	struct inpeer *i;
+
+	UNUSED(action); /* Assumed to be NNTP_ACL_POST, but not currently checked. In theory, the ACL mechanism could be extended to allow IHAVE but deny reading, for example. */
+
+	RWLIST_TRAVERSE(&inpeers, i, entry) {
+		if (inpeer_acl_matches(nntp, i)) {
+			if (wildmat(group, i->groups)) {
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+static int authorized_inpeer_for_group(struct nntp_session *nntp, const char *group, enum nntp_acl_action action)
+{
+	int res;
+	RWLIST_RDLOCK(&inpeers);
+	res = authorized_inpeer_for_group_locked(nntp, group, action);
+	RWLIST_UNLOCK(&inpeers);
+	return res;
+}
+
+/* When a client connects, and after any authentication, we cache whether this client is authorized for any groups by an inpeer ACL.
+ * This way, if not, we can easily deny IHAVE attempts without wasting resources going through the whole post process,
+ * only to check ACLs for all groups in the post and find that none authorize posting. */
+#define RECHECK_TRANSIT_ACL(nntp) \
+	/* In case an inpeer ACL would match the user that just authenticated, recheck: */ \
+	if (!nntp->inpeer_any) { /* If an ACL already matched, it won't stop matching now, no need to recheck in that case */ \
+		SET_BITFIELD(nntp->inpeer_any, authorized_inpeer_for_any_groups(nntp)); \
+	}
+
+#define ACL_RDLOCK(nntp) \
+	if (nntp->mode == NNTP_MODE_READER) { \
+		RWLIST_RDLOCK(&acls); \
+	} else { \
+		RWLIST_RDLOCK(&inpeers); \
+	}
+
+#define ACL_UNLOCK(nntp) \
+	if (nntp->mode == NNTP_MODE_READER) { \
+		RWLIST_UNLOCK(&acls); \
+	} else { \
+		RWLIST_UNLOCK(&inpeers); \
+	}
+
+#define ACL_ALLOWED(nntp, group, action) (nntp->mode == NNTP_MODE_READER ? allowed_by_acl(nntp, group, action) : authorized_inpeer_for_group(nntp, group, action))
+#define ACL_ALLOWED_LOCKED(nntp, group, action) (nntp->mode == NNTP_MODE_READER ? allowed_by_acl_locked(nntp, group, action) : authorized_inpeer_for_group_locked(nntp, group, action))
+
+/* =============== End ACL Code =============== */
 
 static void nntp_reset_data(struct nntp_session *nntp)
 {
@@ -616,7 +907,8 @@ static int cli_newgroup(struct bbs_cli_args *a)
 	return 0;
 }
 
-static int nntp_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, struct nntp_session *nntp, int number, int msgfilter, const char *msgidfilter), struct nntp_session *nntp, int msgfilter, const char *msgidfilter)
+static int nntp_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, struct nntp_session *nntp, int number, int msgfilter, const char *msgidfilter),
+	struct nntp_session *nntp, int msgfilter, const char *msgidfilter)
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
@@ -969,6 +1261,11 @@ static int identity_allowed_for_posting(struct nntp_session *nntp, const char *f
 		return 1;
 	}
 
+	/* We can't check identity if user isn't logged in */
+	if (!bbs_user_is_registered(nntp->node->user)) {
+		return 0;
+	}
+
 	safe_strncpy(dup_addr, fromaddr, sizeof(dup_addr));
 	if (bbs_parse_email_address(dup_addr, &name, &user, &domain)) {
 		return 0;
@@ -986,11 +1283,13 @@ static int identity_allowed_for_posting(struct nntp_session *nntp, const char *f
 	return nntp->node->user && userid == nntp->node->user->id;
 }
 
+/*! \brief Final processing of POST/IHAVE */
 static int do_post(struct nntp_session *nntp, const char *srcfilename)
 {
 	char *newsgroup, *newsgroups = NULL;
 	char *uuid = NULL;
 	int res = -1;
+	int total_errors = 0, permission_errors = 0;
 	int srcfd;
 
 	if (!nntp->newsgroups) {
@@ -1035,8 +1334,9 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 		goto cleanup;
 	}
 
-	newsgroups = nntp->newsgroups + STRLEN("Newsgroups:");
+	newsgroups = nntp->newsgroups + STRLEN("Newsgroups:"); /*! \todo FIXME This doesn't handle multiline headers, should be moved to data loop to concatenate if needed */
 	ltrim(newsgroups);
+	ACL_RDLOCK(nntp);
 	while ((newsgroup = strsep(&newsgroups, ","))) {
 		char group[NNTP_BUFSIZE];
 		char filename[NNTP_MAX_PATH_LENGTH];
@@ -1047,11 +1347,14 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 
 		bbs_debug(5, "Processing newsgroup %s (%s)\n", newsgroup, nntp->mode == NNTP_MODE_READER ? "READER" : "TRANSIT");
 		if (build_newsgroup_path(newsgroup, group, sizeof(group))) {
-			if (nntp->mode == NNTP_MODE_READER) {
-				bbs_warning("Newsgroup '%s' does not exist\n", newsgroup); /* Try to deliver to any other groups listed */
-			} else if (nntp->mode == NNTP_MODE_TRANSIT) {
-				bbs_debug(3, "Newsgroup '%s' does not exist\n", newsgroup); /* Try to deliver to any other groups listed */
-			}
+			bbs_debug(3, "Newsgroup '%s' does not exist\n", newsgroup); /* Try to deliver to any other groups listed */
+			total_errors++;
+			continue;
+		}
+
+		if (!ACL_ALLOWED_LOCKED(nntp, newsgroup, NNTP_ACL_POST)) {
+			permission_errors++;
+			total_errors++;
 			continue;
 		}
 
@@ -1070,6 +1373,7 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 		if (!eaccess(filename, R_OK)) {
 			bbs_debug(2, "Ignoring duplicate post attempt\n");
 			bbs_mutex_unlock(&nntp_lock);
+			total_errors++;
 			continue;
 		}
 		if (nntp->mode == NNTP_MODE_READER) {
@@ -1081,6 +1385,7 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 		if (fd < 0) {
 			bbs_warning("open(%s) failed: %s\n", filename, strerror(errno));
 			bbs_mutex_unlock(&nntp_lock);
+			total_errors++;
 			continue;
 		}
 		bbs_copy_file(srcfd, fd, 0, (int) nntp->postlen);
@@ -1089,12 +1394,26 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 		res = 0;
 		bbs_debug(3, "Posted article %s to newsgroup %s\n", filename, newsgroup);
 	}
+	ACL_UNLOCK(nntp);
 	close(srcfd);
 
 cleanup:
 	if (res) {
 		/* Should we instead do permanent error for transit (437), if newsgroup doesn't exist? But what if it's added later? */
-		nntp_send(nntp, nntp->mode == NNTP_MODE_READER ? 441 : 436, "Posting failed");
+		if (nntp->mode == NNTP_MODE_READER) {
+			if (total_errors == permission_errors) {
+				/* We weren't authorized to post to the group(s) */
+				nntp_send(nntp, 440, "Posting not allowed");
+			} else {
+				nntp_send(nntp, 441, "Posting failed");
+			}
+		} else {
+			if (total_errors == permission_errors) {
+				nntp_send(nntp, 437, "Transfer rejected; do not retry");
+			} else {
+				nntp_send(nntp, 436, "Transfer failed; retry later");
+			}
+		}
 	} else {
 		/* Posting succeeded to at least one newsgroup. */
 		nntp_send(nntp, nntp->mode == NNTP_MODE_READER ? 240 : 235, "Article received OK");
@@ -1121,45 +1440,6 @@ static int parse_min_max(char *s, int *min, int *max, char sep)
 	*max = atoi(tmp);
 	return 0;
 }
-
-static int sender_match(struct nntp_session *nntp, const char *s)
-{
-	bbs_debug(6, "Checking peer %s/%s against %s\n", nntp->node->ip, bbs_username(nntp->node->user), s);
-	/* Could have:
-	 * user=sysop
-	 * ip=127.0.0.1
-	 * ip=127.0.0.1/32
-	 * host=example.com
-	 */
-	if (!strchr(s, '.')) {
-		/* It's a username */
-		if (bbs_user_is_registered(nntp->node->user) && !strcmp(bbs_username(nntp->node->user), s)) {
-			bbs_debug(5, "Authorized by username match: %s\n", s);
-			return 1;
-		}
-	}
-	return bbs_ip_match_ipv4(nntp->node->ip, s);
-}
-
-static int sender_authorized(struct nntp_session *nntp)
-{
-	const char *s;
-	struct stringitem *i = NULL;
-	RWLIST_RDLOCK(&inpeers);
-	while ((s = stringlist_next(&inpeers, &i))) {
-		if (sender_match(nntp, s)) {
-			break;
-		}
-	}
-	RWLIST_UNLOCK(&inpeers);
-	return s ? 1 : 0;
-}
-
-#define REQUIRE_GROUP() \
-	if (!nntp->currentgroup) { \
-		nntp_send(nntp, 412, "No newsgroup selected"); \
-		return 0; \
-	}
 
 struct list_info {
 	const char *category; /* Category name */
@@ -1219,6 +1499,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 	FILE *fp = NULL;
 	struct list_info *lp = NULL;
 
+	/* If a keyword is not specified, then an argument is not present either (per syntax in RFC 3977 7.6.1.1) */
 	lp = !strlen_zero(keyword) ? find_list_handler(keyword) : &list_handlers[0]; /* RFC 2980 2.1.2 states that "LIST ACTIVE" is the same as "LIST" (with no keyword modifier) */
 	if (!lp) {
 		nntp_send(nntp, 501, "Unknown LIST keyword");
@@ -1244,6 +1525,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 	if (fp) {
 		int lineno = 0;
 		char *group, buf[NNTP_MAX_LINE_LENGTH + 1];
+		ACL_RDLOCK(nntp); /* Lock the ACL list once for the whole loop so we can use the locked version of the ACL check */
 		while ((fgets(buf, sizeof(buf), fp))) {
 			char *line = buf;
 			lineno++;
@@ -1257,10 +1539,15 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 			if (argument && !wildmat(group, argument)) {
 				continue; /* Didn't match wildmat */
 			}
+			/* Check if allowed by ACL */
+			if (!ACL_ALLOWED_LOCKED(nntp, group, NNTP_ACL_READ)) {
+				continue;
+			}
 			bbs_term_line(line);
 			/* We don't care what the rest of the line is, if the group matches, send it to the client */
 			_nntp_send(nntp, "%s %s\r\n", group, line);
 		}
+		ACL_UNLOCK(nntp);
 		fclose(fp);
 	}
 	if (res < 0) {
@@ -1309,6 +1596,18 @@ static int cli_list(struct bbs_cli_args *a)
 	}
 	return 0;
 }
+
+#define REQUIRE_READER() \
+	if (nntp->mode != NNTP_MODE_READER) { \
+		nntp_send(nntp, 401, "MODE-READER"); \
+		return 0; \
+	}
+
+#define REQUIRE_GROUP() \
+	if (!nntp->currentgroup) { \
+		nntp_send(nntp, 412, "No newsgroup selected"); \
+		return 0; \
+	}
 
 static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 {
@@ -1482,6 +1781,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 			return 0;
 		}
 		nntp_send(nntp, 290, "Password for %s accepted", user); /*! \todo Is this really the right response code? */
+		RECHECK_TRANSIT_ACL(nntp);
 	} else if ((nntp->node->secure || !require_secure_login) && !strcasecmp(command, "AUTHINFO")) {
 		/* RFC 4643 AUTHINFO */
 		/* If this command is not implemented and we send a 480,
@@ -1528,6 +1828,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 				return 0;
 			}
 			nntp_send(nntp, 281, "Authentication accepted");
+			RECHECK_TRANSIT_ACL(nntp);
 		} else if (!strcasecmp(command, "SASL")) {
 			/* RFC 4643 SASL */
 			command = strsep(&s, " ");
@@ -1551,6 +1852,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 					return 0;
 				}
 				nntp_send(nntp, 281, "Authentication accepted");
+				RECHECK_TRANSIT_ACL(nntp);
 			} else {
 				/* RFC 4643 says we MUST implement the DIGEST-MD5 mechanism, but, well, we don't. */
 				nntp_send(nntp, 503, "Mechanism not recognized");
@@ -1558,28 +1860,30 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 		} else {
 			nntp_send(nntp, 501, "Unknown AUTHINFO command");
 		}
-	/* Must be authenticated, past this point, if so configured */
-	} else if (nntp->mode == NNTP_MODE_READER && require_login && !bbs_user_is_registered(nntp->node->user)) {
-		nntp_send(nntp, 480, "Must authenticate first");
 	} else if (!strcasecmp(command, "LIST")) {
 		const char *keyword = strsep(&s, " ");
 		if (handle_list(nntp, keyword, s) < 0) {
 			return -1;
 		}
-	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "GROUP")) {
-		char group[NNTP_BUFSIZE + 1];
+	} else if (!strcasecmp(command, "GROUP")) { /* Note, this command can be used in either mode */
+		char grouppath[NNTP_BUFSIZE + 1];
 		int min, max, total;
-		if (build_newsgroup_path(s, group, sizeof(group))) {
+		if (build_newsgroup_path(s, grouppath, sizeof(grouppath))) {
 			nntp_send(nntp, 411, "%s is unknown", s);
+			return 0;
+		}
+		/* For future commands which require a group, we don't check read ACL since we check it here, before changing the group */
+		if (!ACL_ALLOWED(nntp, s, NNTP_ACL_READ)) {
+			nntp_send(nntp, 502, "Read access denied");
 			return 0;
 		}
 		/* Must not change current group unless we succeed */
 		REPLACE(nntp->currentgroup, s);
-		safe_strncpy(nntp->grouppath, group, sizeof(nntp->grouppath));
-		scan_newsgroup(group, &min, &max, &total);
+		safe_strncpy(nntp->grouppath, grouppath, sizeof(nntp->grouppath));
+		scan_newsgroup(grouppath, &min, &max, &total);
 		nntp_send(nntp, 211, "%d %d %d %s", total, min, max, s);
 		nntp->currentarticle = min;
-	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "XOVER")) {
+	} else if (!strcasecmp(command, "XOVER")) {
 		/* RFC 2980 XOVER */
 		/* Thunderbird-based clients prefer XOVER to HEAD, and will only issue a HEAD if XOVER is not available. */
 		/* XXX For some reason, Thunderbird-based clients bork on HEAD and don't show any body (and don't ask for it),
@@ -1588,6 +1892,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 		 * Either way, this really needs to work properly: */
 		int min, max;
 
+		REQUIRE_READER();
 		REQUIRE_GROUP();
 		if (strlen_zero(s)) {
 			parse_min_max(s, &min, &max, '-');
@@ -1601,8 +1906,9 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 		nntp_send(nntp, 224, "Overview information follows");
 		nntp_traverse2(nntp->grouppath, on_xover, nntp, min, max);
 		_nntp_send(nntp, ".\r\n");
-	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "HEAD")) {
+	} else if (!strcasecmp(command, "HEAD")) {
 		int msgid;
+		REQUIRE_READER();
 		REQUIRE_GROUP();
 		REQUIRE_ARGS(s);
 		msgid = atoi(s); /*! \todo BUGBUG If we're filtering by msg id (not article ID), but msg ID begins with a numeric, atoi will not return 0 */
@@ -1616,8 +1922,9 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 			nntp_send(nntp, msgid ? 423 : 430, "No Such Article Found");
 			return 0;
 		}
-	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "ARTICLE")) {
+	} else if (!strcasecmp(command, "ARTICLE")) {
 		int msgid;
+		REQUIRE_READER();
 		REQUIRE_GROUP();
 		REQUIRE_ARGS(s);
 		msgid = atoi(s); /*! \todo BUGBUG If we're filtering by msg id (not article ID), but msg ID begins with a numeric, atoi will not return 0 */
@@ -1631,8 +1938,9 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 			nntp_send(nntp, msgid ? 423 : 430, "No Such Article Found");
 			return 0;
 		}
-	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "BODY")) {
+	} else if (!strcasecmp(command, "BODY")) {
 		int msgid;
+		REQUIRE_READER();
 		REQUIRE_GROUP();
 		REQUIRE_ARGS(s);
 		msgid = atoi(s); /*! \todo BUGBUG If we're filtering by msg id (not article ID), but msg ID begins with a numeric, atoi will not return 0 */
@@ -1646,7 +1954,8 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 			nntp_send(nntp, 430, "No Such Article Found");
 			return 0;
 		}
-	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "LAST")) {
+	} else if (!strcasecmp(command, "LAST")) {
+		REQUIRE_READER();
 		REQUIRE_GROUP();
 		if (!nntp->currentarticle) {
 			nntp_send(nntp, 420, "Current article number is invalid");
@@ -1668,7 +1977,8 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 		}
 		nntp_send(nntp, 223, "%d %s", nntp->nextlastarticle, nntp->articleid);
 		free_if(nntp->articleid);
-	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "NEXT")) {
+	} else if (!strcasecmp(command, "NEXT")) {
+		REQUIRE_READER();
 		REQUIRE_GROUP();
 		if (!nntp->currentarticle) {
 			nntp_send(nntp, 420, "Current article number is invalid");
@@ -1687,12 +1997,10 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 		}
 		nntp_send(nntp, 223, "%d %s", nntp->nextlastarticle, nntp->articleid);
 		free_if(nntp->articleid);
-	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "POST")) {
-		if (require_login_posting && !bbs_user_is_registered(nntp->node->user)) {
+	} else if (!strcasecmp(command, "POST")) {
+		REQUIRE_READER();
+		if (!bbs_user_is_registered(nntp->node->user) && !guests_can_post_at_all()) {
 			nntp_send(nntp, 480, "Must authenticate first");
-			return 0;
-		} else if (min_priv_post > nntp->node->user->priv) {
-			nntp_send(nntp, 502, "Insufficient privileges to post");
 			return 0;
 		}
 		/* Group not required, the headers will say group(s) to which message should be posted. */
@@ -1706,13 +2014,17 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 			nntp->inpost = 1;
 			nntp->inpostheaders = 1;
 		}
-	} else if (nntp->mode == NNTP_MODE_TRANSIT && !strcasecmp(command, "IHAVE")) {
+	} else if (!strcasecmp(command, "IHAVE")) {
+		if (nntp->mode != NNTP_MODE_TRANSIT) {
+			nntp_send(nntp, 401, "Readers must use POST, not IHAVE");
+			return 0;
+		}
 		/* Check if client is authorized to relay us articles. */
 		if (requirerelaytls && !nntp->node->secure) {
 			nntp_send(nntp, 483, "Secure connection required");
 			return 0;
 		}
-		if (!sender_authorized(nntp)) {
+		if (!nntp->inpeer_any) {
 			bbs_warning("Sender %s/%s unauthorized to send us articles\n", bbs_username(nntp->node->user), nntp->node->ip);
 			nntp_send(nntp, 500, "Not authorized to relay articles");
 			return 0;
@@ -1764,6 +2076,8 @@ static void handle_client(struct nntp_session *nntp)
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 	/* 200 means client can post, 201 means not, but this is not a perfect distinction (see RFC) */
 	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", bbs_hostname());
+
+	SET_BITFIELD(nntp->inpeer_any, authorized_inpeer_for_any_groups(nntp)); /* Cache whether this client has an inpeer ACL */
 
 	/* Default mode is transit mode (NNTP_MODE_TRANSIT) for mode-switching servers */
 	for (;;) {
@@ -1844,16 +2158,17 @@ static int load_config(void)
 		return -1;
 	}
 
+	/* Build metadata file paths */
 	snprintf(active_file, sizeof(active_file), "%s/active", newsdir);
 	snprintf(active_times_file, sizeof(active_times_file), "%s/active_times", newsdir);
 	snprintf(newsgroups_file, sizeof(newsgroups_file), "%s/newsgroups", newsdir);
 
-	bbs_config_val_set_true(cfg, "general", "requirelogin", &require_login);
-	bbs_config_val_set_true(cfg, "general", "requiresecurelogin", &require_secure_login);
-	bbs_config_val_set_true(cfg, "general", "requireloginforposting", &require_login_posting);
-	bbs_config_val_set_int(cfg, "general", "minpostpriv", &min_priv_post);
-	bbs_config_val_set_true(cfg, "general", "checkidentity", &check_identity);
-	bbs_config_val_set_uint(cfg, "general", "maxpostsize", &max_post_size);
+	/* Remaining general settings */
+	bbs_config_val_set_uint(cfg, "readers", "maxpostsize", &max_post_size);
+
+	/* Reader settings */
+	bbs_config_val_set_true(cfg, "readers", "requiresecurelogin", &require_secure_login);
+	bbs_config_val_set_true(cfg, "readers", "checkidentity", &check_identity);
 
 	/* NNTP */
 	bbs_config_val_set_true(cfg, "nntp", "enabled", &nntp_enabled);
@@ -1868,29 +2183,80 @@ static int load_config(void)
 	bbs_config_val_set_port(cfg, "nnsp", "port", &nnsp_port);
 
 	bbs_config_val_set_true(cfg, "relayin", "requiretls", &requirerelaytls);
-	bbs_debug(3, "Setting: %d\n", requirerelaytls);
 
 	bbs_config_val_set_uint(cfg, "relayout", "frequency", &relayfrequency);
 	bbs_config_val_set_uint(cfg, "relayout", "maxage", &relaymaxage);
 
-	/* If reload without unloading/loading were supported, we'd want to empty the list first. */
-	stringlist_empty(&inpeers);
-	stringlist_empty(&outpeers);
+#define SKIP_SECTION(sectname) if (!strcasecmp(bbs_config_section_name(section), sectname)) { continue; }
 
+	RWLIST_WRLOCK(&acls);
 	RWLIST_WRLOCK(&inpeers);
 	RWLIST_WRLOCK(&outpeers);
 	while ((section = bbs_config_walk(cfg, section))) {
-		if (!strcasecmp(bbs_config_section_name(section), "trusted")) {
+		/* Skip sections already processed above */
+		SKIP_SECTION("general");
+		SKIP_SECTION("readers");
+		SKIP_SECTION("nntp");
+		SKIP_SECTION("nntps");
+		SKIP_SECTION("nnsp");
+		SKIP_SECTION("relayin");
+		SKIP_SECTION("relayout");
+		if (!strcasecmp(bbs_config_section_name(section), "infeeds")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
-				/* Internally we don't actually differentiate between host=,ip=,user= when storing config in memory */
-				stringlist_push(&inpeers, bbs_keyval_val(keyval));
+				add_inpeer(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}
 		} else if (!strcasecmp(bbs_config_section_name(section), "relayto")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				stringlist_push(&outpeers, bbs_keyval_val(keyval));
 			}
+		} else {
+			/* The only config section type that isn't defined by the section name is user ACLs */
+			const char *type = bbs_config_sect_val(section, "type");
+			if (!type) {
+				bbs_error("Unrecognized section name '%s' (if this is an ACL, add type=acl)\n", bbs_config_section_name(section));
+			} else if (!strcasecmp(type, "acl")) {
+				const char *guests = NULL, *userswm = NULL, *readwm = NULL, *postwm = NULL;
+				int tmp, minreadpriv = 0, minpostpriv = 0;
+				while ((keyval = bbs_config_section_walk(section, keyval))) {
+					const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);
+					if (!strcasecmp(key, "type")) {
+						continue;
+					} else if (!strcasecmp(key, "guests")) {
+						guests = val;
+					} else if (!strcasecmp(key, "users")) {
+						userswm = val;
+					} else if (!strcasecmp(key, "read")) {
+						readwm = val;
+					} else if (!strcasecmp(key, "post")) {
+						postwm = val;
+					} else if (!strcasecmp(key, "minreadpriv")) {
+						tmp = atoi(val);
+						if (tmp < 0) {
+							bbs_error("Invalid %s: %s\n", key, val);
+						} else {
+							minreadpriv = tmp;
+						}
+					} else if (!strcasecmp(key, "minpostpriv")) {
+						tmp = atoi(val);
+						if (tmp < 0) {
+							bbs_error("Invalid %s: %s\n", key, val);
+						} else {
+							minpostpriv = tmp;
+						}
+					}
+				}
+				if (!guests && !userswm) {
+					bbs_error("An ACL section must apply to at least either guests or users, ignoring [%s]\n", bbs_config_section_name(section));
+					continue;
+				}
+				/* Create the ACL */
+				load_acl(guests, userswm, readwm, postwm, minreadpriv, minpostpriv);
+			} else {
+				bbs_error("Unrecognized section type '%s'\n", type);
+			}
 		}
 	}
+	RWLIST_UNLOCK(&acls);
 	RWLIST_UNLOCK(&inpeers);
 	RWLIST_UNLOCK(&outpeers);
 
@@ -1903,9 +2269,16 @@ static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_list, "news list", 3, "List newsgroup info, optionally filtered", "news list <active|active.times|newsgroups> [wildmat]"),
 };
 
+static void cleanup_lists(void)
+{
+	RWLIST_WRLOCK_REMOVE_ALL(&acls, entry, free_acl);
+	RWLIST_WRLOCK_REMOVE_ALL(&inpeers, entry, free);
+	stringlist_empty_destroy(&outpeers);
+}
+
 static int load_module(void)
 {
-	stringlist_init(&inpeers);
+	RWLIST_HEAD_INIT(&inpeers);
 	stringlist_init(&outpeers);
 	if (load_config()) {
 		return -1;
@@ -1935,8 +2308,7 @@ static int load_module(void)
 	return bbs_start_tcp_listener3(nntp_enabled ? nntp_port : 0, nntps_enabled ? nntps_port : 0, nnsp_enabled ? nnsp_port : 0, "NNTP", "NNTPS", "NNSP", __nntp_handler);
 
 cleanup:
-	stringlist_empty_destroy(&inpeers);
-	stringlist_empty_destroy(&outpeers);
+	cleanup_lists();
 	return -1;
 }
 
@@ -1954,8 +2326,7 @@ static int unload_module(void)
 		bbs_stop_tcp_listener(nnsp_port);
 	}
 	bbs_mutex_destroy(&nntp_lock);
-	stringlist_empty_destroy(&inpeers);
-	stringlist_empty_destroy(&outpeers);
+	cleanup_lists();
 	return 0;
 }
 

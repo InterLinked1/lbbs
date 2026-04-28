@@ -45,15 +45,9 @@ static int create_groups(void)
 
 	OPEN_CLI_SOCKET(sockfd);
 
-#define NEW_GROUP(name, desc, creator, posting) \
-	CLI_SWRITE(sockfd, "/news newgroup" CLI_EOL); \
-	CLI_SWRITE(sockfd, name CLI_EOL); \
-	CLI_SWRITE(sockfd, desc CLI_EOL); \
-	CLI_SWRITE(sockfd, creator CLI_EOL); \
-	CLI_SWRITE(sockfd, posting CLI_EOL);
-
-	NEW_GROUP("misc.test", "A miscellaneous test group", "Sysop", "y");
-	NEW_GROUP("misc.empty", "A miscellaneous empty group", "Sysop", "y");
+	NEW_NEWSGROUP(sockfd, "misc.test", "A miscellaneous test group", "Sysop", "y");
+	NEW_NEWSGROUP(sockfd, "misc.empty", "A miscellaneous empty group", "Sysop", "y");
+	NEW_NEWSGROUP(sockfd, "misc.restricted", "A miscellaneous restricted group", "Sysop", "y");
 
 	close(sockfd);
 	return 0;
@@ -72,13 +66,6 @@ static int run(void)
 		return -1;
 	}
 
-	s = "From: \"Demo User\" <" TEST_EMAIL_UNAUTHORIZED ">" ENDL
-		"Newsgroups: misc.test" ENDL
-		"Subject: I am just a test article" ENDL
-		ENDL
-		"This is just a test article." ENDL
-		"." ENDL;
-
 	clientfd = test_make_socket(433);
 	REQUIRE_FD(clientfd);
 
@@ -93,12 +80,22 @@ static int run(void)
 	/* Offer new article that we don't currently have. */
 	SWRITE(clientfd, "IHAVE <" TEST_MESSAGE_ID ">\r\n");
 	CLIENT_EXPECT(clientfd, "335");
-	write(clientfd, s, strlen(s));
+	POST_NEWS_ARTICLE(s, clientfd, TEST_EMAIL_UNAUTHORIZED, "misc.test"); /* This message is from RFC 3977 6.3.1.3 */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "235");
 
 	/* Offer the same article again, it should be rejected. */
 	SWRITE(clientfd, "IHAVE <" TEST_MESSAGE_ID ">\r\n");
 	CLIENT_EXPECT(clientfd, "435");
+
+	/* Offer an article in a newsgroup for which peering is not authorized */
+	SWRITE(clientfd, "IHAVE <restricted.message@" TEST_HOSTNAME ">\r\n");
+	CLIENT_EXPECT(clientfd, "335");
+	POST_NEWS_ARTICLE(s, clientfd, TEST_EMAIL_UNAUTHORIZED, "misc.restricted");
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "437");
+
+	/* Shouldn't be able to read any articles from this group either */
+	SWRITE(clientfd, "GROUP misc.restricted\r\n");
+	CLIENT_EXPECT(clientfd, "502");
 
 	res = 0;
 
