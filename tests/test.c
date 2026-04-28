@@ -1213,7 +1213,7 @@ static int run_test(const char *filename, int multiple)
 				goto cleanup;
 			}
 			if (use_static_auth) {
-				test_load_module("mod_auth_static.so"); /* Always load this module, unless told not to */
+				test_preload_module("mod_auth_static.so"); /* Always load this module, unless told not to */
 			}
 			if (option_autoload_all) {
 				/* Truncate file and start again. Most tests don't use this. */
