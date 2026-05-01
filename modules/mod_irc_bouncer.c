@@ -1561,7 +1561,7 @@ static int handle_bouncer_reply(struct smtp_session *smtp, struct smtp_response 
 				}
 				created_client = 1;
 			}
-			if (!bouncer_send(bu->user, "PRIVMSG %s: %s", recip, msg)) {
+			if (!bouncer_send(bu->user, "PRIVMSG %s :%s", recip, msg)) {
 				lines_sent++;
 				if (bu->pmbc->fp && (ALWAYS_LOG_SENT_MESSAGES || !bu->pmbc->email_frequency)) {
 					/* Log the message we sent, so there's context in the logs later.
