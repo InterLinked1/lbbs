@@ -135,14 +135,46 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 	CLI_SWRITE(sockfd, creator CLI_EOL); \
 	CLI_SWRITE(sockfd, posting CLI_EOL);
 
-#define POST_NEWS_ARTICLE(s, fd, from, newsgroup) \
+#define IHAVE_NEWS_ARTICLE(s, fd, messageid, from, newsgroup) \
 	s = "From: \"Demo User\" <" from ">" ENDL \
 		"Newsgroups: " newsgroup ENDL \
+		"Message-ID: " messageid ENDL \
+		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
 		"Subject: I am just a test article" ENDL \
 		ENDL \
 		"This is just a test article." ENDL \
 		"." ENDL; \
 	write(fd, s, strlen(s));
+
+/* This message is from RFC 3977 6.3.1.3 */
+#define POST_NEWS_ARTICLE(s, fd, from, newsgroup) \
+	s = "From: \"Demo User\" <" from ">" ENDL \
+		"Newsgroups: " newsgroup ENDL \
+		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
+		"Subject: I am just a test article" ENDL \
+		ENDL \
+		"This is just a test article." ENDL \
+		"." ENDL; \
+	write(fd, s, strlen(s));
+
+#define TEST_EXPECT_STRING(s, val) \
+	if (strlen_zero(s) || !strstr(s, val)) { \
+		bbs_error("Expected '%s' but found '%s'\n", val, S_IF(s)); \
+		goto cleanup; \
+	}
+
+#define TEST_EXPECT(cond) \
+	if (!(cond)) { \
+		bbs_error("Condition failed: %s\n", #cond); \
+		goto cleanup; \
+	}
+
+#define FMT_WRITE(fd, fmt, ...) { \
+	char _scratch_buf[1024]; \
+	int _len; \
+	_len = snprintf(_scratch_buf, sizeof(_scratch_buf), fmt, ## __VA_ARGS__); \
+	write(fd, _scratch_buf, (size_t) _len); \
+}
 
 int test_dir_file_count(const char *directory);
 
@@ -162,7 +194,7 @@ int test_make_socket(int port);
 #define OPEN_CLI_SOCKET(fd) \
 	fd = test_make_sysop_socket(); \
 	REQUIRE_FD(sockfd); \
-	usleep(200000); /* Wait for sysop listener to be fully ready for input */
+	usleep(500000); /* Wait for sysop listener to be fully ready for input */
 #define CLI_SWRITE(fd, str) usleep(5000); SWRITE(fd, str); usleep(5000);
 #define CLI_EOL "\n" /* Just LF, not CR LF, since we don't have a PTY set up */
 

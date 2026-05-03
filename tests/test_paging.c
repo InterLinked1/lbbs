@@ -94,13 +94,6 @@ static int pre(void)
 		} \
 	}
 
-#define FMT_WRITE(fd, fmt, ...) { \
-	char _scratch_buf[1024]; \
-	int _len; \
-	_len = snprintf(_scratch_buf, sizeof(_scratch_buf), fmt, ## __VA_ARGS__); \
-	write(fd, _scratch_buf, (size_t) _len); \
-}
-
 static int run(void)
 {
 	int clientfd = -1, ircfd = -1, smtpfd = -1, imapfd = -1;

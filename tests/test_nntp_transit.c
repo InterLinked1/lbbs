@@ -69,28 +69,28 @@ static int run(void)
 	clientfd = test_make_socket(433);
 	REQUIRE_FD(clientfd);
 
-#define TEST_MESSAGE_ID "test.message@" TEST_HOSTNAME
+#define TEST_MESSAGE_ID "<test.message@" TEST_HOSTNAME ">"
 
 	/* Initial connection */
 	CLIENT_EXPECT(clientfd, "200 " TEST_HOSTNAME);
 	SWRITE(clientfd, "CAPABILITIES\r\n");
 	CLIENT_EXPECT(clientfd, "101");
-	CLIENT_EXPECT_EVENTUALLY(clientfd, ".\r\n");
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "IHAVE");
 
 	/* Offer new article that we don't currently have. */
-	SWRITE(clientfd, "IHAVE <" TEST_MESSAGE_ID ">\r\n");
-	CLIENT_EXPECT(clientfd, "335");
-	POST_NEWS_ARTICLE(s, clientfd, TEST_EMAIL_UNAUTHORIZED, "misc.test"); /* This message is from RFC 3977 6.3.1.3 */
+	SWRITE(clientfd, "IHAVE " TEST_MESSAGE_ID "\r\n");
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "335");
+	IHAVE_NEWS_ARTICLE(s, clientfd, TEST_MESSAGE_ID, TEST_EMAIL_UNAUTHORIZED, "misc.test"); /* This message is from RFC 3977 6.3.1.3 */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "235");
 
 	/* Offer the same article again, it should be rejected. */
-	SWRITE(clientfd, "IHAVE <" TEST_MESSAGE_ID ">\r\n");
+	SWRITE(clientfd, "IHAVE " TEST_MESSAGE_ID "\r\n");
 	CLIENT_EXPECT(clientfd, "435");
 
 	/* Offer an article in a newsgroup for which peering is not authorized */
 	SWRITE(clientfd, "IHAVE <restricted.message@" TEST_HOSTNAME ">\r\n");
 	CLIENT_EXPECT(clientfd, "335");
-	POST_NEWS_ARTICLE(s, clientfd, TEST_EMAIL_UNAUTHORIZED, "misc.restricted");
+	IHAVE_NEWS_ARTICLE(s, clientfd, TEST_MESSAGE_ID, TEST_EMAIL_UNAUTHORIZED, "misc.restricted");
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "437");
 
 	/* Shouldn't be able to read any articles from this group either */

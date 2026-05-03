@@ -1,0 +1,874 @@
+/*
+ * LBBS -- The Lightweight Bulletin Board System
+ *
+ * Copyright (C) 2026, Naveen Albert
+ *
+ * Naveen Albert <bbs@phreaknet.org>
+ *
+ * This program is free software, distributed under the terms of
+ * the GNU General Public License Version 2. See the LICENSE file
+ * at the top of the source tree.
+ */
+
+/*! \file
+ *
+ * \brief Traditional file-based spool implementation (and history and overview)
+ */
+
+#include "include/bbs.h"
+
+#include <dirent.h>
+
+#include "include/node.h"
+#include "include/utils.h"
+#include "include/stringlist.h"
+
+#include "nntp.h"
+#include "nntp_spool_trad.h"
+
+/* Each thread opens a group's overview file for reading/writing, so multiple readers can operate simultaneously */
+static bbs_mutex_t histlock;
+
+/* Each thread opens a group's overview file for reading/writing, so multiple readers can operate simultaneously.
+ * Right now, we don't have any per-group data structures, so for simplicity, we have one rwlock_t globally,
+ * even though overview file operations are PER GROUP; so if one group's overview file is being modified,
+ * no other reads/writes can occur; but otherwise, all reading operations are unconstrained. */
+static bbs_rwlock_t overviewlock;
+
+static char history_file[sizeof(newsdir) + STRLEN("/history")] = "";
+static FILE *histfp;
+
+int tradspool_init(void)
+{
+	snprintf(history_file, sizeof(history_file), "%s/%s", newsdir, "history");
+	/* Keep the history file open for writing at runtime.
+	 * We don't even need to lock for writes to it, since fprintf will ensure writes get interleaved properly. */
+	histfp = fopen(history_file, "a+");
+	if (!histfp) {
+		bbs_error("Failed to open %s: %s\n", history_file, strerror(errno));
+		return -1;
+	}
+	bbs_mutex_init(&histlock, NULL);
+	bbs_rwlock_init(&overviewlock, NULL);
+	return 0;
+}
+
+void tradspool_cleanup(void)
+{
+	if (histfp) {
+		fclose(histfp);
+		histfp = NULL;
+	}
+	bbs_mutex_destroy(&histlock);
+	bbs_rwlock_destroy(&overviewlock);
+}
+
+static int build_newsgroup_path(const char *name, char *buf, size_t len)
+{
+	errno = 0;
+	if (strstr(name, "..")) { /* Reject dangerous inputs */
+		return -1;
+	}
+	snprintf(buf, len, "%s/%s", newsdir, name);
+
+	/* Conventionally, the hierarchy itself is mirrored on disk,
+	 * e.g. misc.news is misc/news on disk (a folder 'news' within a folder 'misc'), not
+	 * just misc.news in the top-level newsdir.
+	 *
+	 * This differs from the IMAP convention of having a flatter directory structure.
+	 * While I can't think of any performance advantages of this method (large
+	 * directories may have been more problematic back in the day, but large groups
+	 * would likely have more files inside of them with the tradspool method),
+	 * this may have the slight advantage of allowing certain hierarchies to be easily
+	 * stored on different disks. */
+	bbs_strreplace(buf, '.', '/');
+
+	if (eaccess(buf, R_OK)) {
+		errno = ENOENT;
+		return -1; /* Doesn't exist */
+	}
+	return 0;
+}
+
+static int build_article_path_grouppath(const char *grouppath, int article_num, char *buf, size_t len)
+{
+	snprintf(buf, len, "%s/%d", grouppath, article_num);
+	return 0;
+}
+
+static int build_article_path(const char *groupname, int article_num, char *buf, size_t len)
+{
+	if (strstr(groupname, "..")) { /* Reject dangerous inputs */
+		return -1;
+	}
+	snprintf(buf, len, "%s/%s/%d", newsdir, groupname, article_num);
+	bbs_strreplace(buf, '.', '/');
+	return 0; /* Don't check for existence since we'll try to open it now */
+}
+
+static int build_overview_path(const char *groupname, char *buf, size_t len)
+{
+	size_t slen;
+	if (strstr(groupname, "..")) { /* Reject dangerous inputs */
+		return -1;
+	}
+	slen = (size_t) snprintf(buf, len, "%s/%s/%s", newsdir, groupname, ".overview");
+	if (slen > len) {
+		return -1;
+	}
+	buf[slen - STRLEN(".overview")] = '\0'; /* Don't change .overview to /overview */
+	bbs_strreplace(buf, '.', '/');
+	buf[slen - STRLEN(".overview")] = '.'; /* Change it back */
+	return 0; /* Don't check for existence since we'll try to open it now */
+}
+
+static int build_group_article_path(const char *name, int article_num, char *buf, size_t len)
+{
+	errno = 0;
+	if (strstr(name, "..")) { /* Reject dangerous inputs */
+		return -1;
+	}
+	snprintf(buf, len, "%s/%s/%d", newsdir, name, article_num);
+
+	bbs_strreplace(buf, '.', '/');
+
+	if (eaccess(buf, R_OK)) {
+		errno = ENOENT;
+		return -1; /* Doesn't exist */
+	}
+	return 0;
+}
+
+int tradspool_group_create(const char *groupname)
+{
+	char grouppath[NNTP_MAX_PATH_LENGTH];
+	int res;
+
+	/* Will return -1 since it doesn't exist yet, that's fine and expected in this case.
+	 * In fact, if it returns 0, it already exists and we have a problem. */
+	res = build_newsgroup_path(groupname, grouppath, sizeof(grouppath));
+	if (!res) {
+		bbs_error("Directory %s already exists, please delete it and manually synchronize metadata\n", grouppath);
+		return 1; /* Directory already exists? */
+	}
+	if (errno != ENOENT) {
+		return -1; /* Something else went wrong */
+	}
+	/* Create the directory, recursively creating any ancestors in the hierarchy as needed */
+	if (bbs_ensure_directory_exists_recursive(grouppath)) {
+		bbs_error("Failed to create %s: %s\n", grouppath, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+int tradspool_group_delete(const char *groupname)
+{
+	char grouppath[NNTP_MAX_PATH_LENGTH];
+	int res;
+
+	res = build_newsgroup_path(groupname, grouppath, sizeof(grouppath));
+	if (res) {
+		return -1;
+	}
+	if (bbs_delete_directory(grouppath)) {
+		return -1;
+	}
+	return 0;
+}
+
+int tradspool_group_exists(const char *groupname)
+{
+	char grouppath[NNTP_MAX_PATH_LENGTH];
+	int res = build_newsgroup_path(groupname, grouppath, sizeof(grouppath));
+	return res == 0;
+}
+
+static int overview_add(struct article_info *artinfo, const char *group, int article_num)
+{
+	FILE *fp;
+	char overviewfile[NNTP_MAX_PATH_LENGTH];
+
+	if (build_overview_path(group, overviewfile, sizeof(overviewfile))) {
+		return -1;
+	}
+
+	bbs_rwlock_wrlock(&overviewlock);
+	fp = fopen(overviewfile, "a");
+	if (!fp) {
+		bbs_error("Failed to open %s: %s\n", overviewfile, strerror(errno));
+		bbs_rwlock_unlock(&overviewlock);
+		return -1;
+	}
+	/* References is optional (not every article has one), the rest should be present: */
+	fprintf(fp, "%d\t%s\t%s\t%s\t%s\t%s\t%lu\t%d\n", article_num, artinfo->subject, artinfo->from, artinfo->date, artinfo->messageid, S_IF(artinfo->references), artinfo->bytes, artinfo->lines);
+	/*! \todo X-Ref is often included as an optional header. */
+	fclose(fp);
+	bbs_rwlock_unlock(&overviewlock);
+	return 0;
+}
+
+static void scandir_free(struct dirent **entries, int count)
+{
+	int i = 0;
+	struct dirent *entry;
+	while (i < count && (entry = entries[i++])) {
+		free(entry);
+	}
+	free(entries);
+}
+
+/*! \brief Numeric sort callback to scandir - alphasort is lexiographic, not numeric, so we use this */
+static int numsort(const struct dirent **da, const struct dirent **db)
+{
+	const char *a = (*da)->d_name;
+	const char *b = (*db)->d_name;
+	int numa = atoi(a), numb = atoi(b);
+	if (numa != numb) {
+		return numa < numb ? -1 : 1;
+	}
+	return strcmp(a, b); /* If one or both are not numeric, fall back to normal comparison */
+}
+
+/*!
+ * \brief Rebuild the overview file by removing entries for articles that no longer exist (done as soon as any article is removed from a group)
+ * \param group Name of group
+ * \param article_to_remove Article number if we just want to remove a single article and we know which one. Otherwise 0, to scan the spool for articles to remove (e.g. after nightly expire)
+ *        0 is always an acceptable argument for this parameter; it's just more efficient to provide an article if you just want to remove that one.
+ */
+static int overview_rebuild(const char *group, int article_to_remove)
+{
+	FILE *oldfp, *newfp;
+	int res = 0;
+	char grouppath[NNTP_MAX_PATH_LENGTH];
+	char template[64] = "/tmp/nntp_overviewXXXXXX";
+	char overviewfile[NNTP_MAX_PATH_LENGTH];
+	char buf[NNTP_BUFSIZ];
+	/* for scandir: */
+	struct dirent **entries;
+	int dirfiles = 0, fileindex = 0;
+
+	res = build_newsgroup_path(group, grouppath, sizeof(grouppath));
+	if (res) {
+		return res;
+	}
+
+	if (build_overview_path(group, overviewfile, sizeof(overviewfile))) {
+		return -1;
+	}
+
+	bbs_debug(5, "Rebuilding overview for %s\n", group);
+
+	bbs_rwlock_wrlock(&overviewlock);
+	oldfp = fopen(overviewfile, "r");
+	if (!oldfp) {
+		bbs_rwlock_unlock(&overviewlock);
+		return 1; /* If an overview file doesn't already exist, there is nothing to rebuild */
+	}
+	newfp = bbs_mkftemp(template, 0644);
+	if (!newfp) {
+		fclose(oldfp);
+		bbs_rwlock_unlock(&overviewlock);
+		return -1;
+	}
+	if (!article_to_remove) {
+		/* We're going to end up checking if every article still in overview still exists in the spool.
+		 * For a single file, stat/access would be faster, but since we'll want to know this for all of them,
+		 * it's worth it to use scandir + numsort once up front, and then we can check in memory
+		 * for existence of the article we want. We sort the files so we don't need to do a linear scan. */
+		dirfiles = scandir(grouppath, &entries, NULL, numsort);
+		if (dirfiles < 0) {
+			bbs_error("scandir(%s) failed: %s\n", newsdir, strerror(errno));
+			bbs_rwlock_unlock(&overviewlock);
+			return -1;
+		}
+	}
+	while ((fgets(buf, sizeof(buf), oldfp))) {
+		int artnum = atoi(buf); /* Should automatically stop at the tab */
+		if (article_to_remove) {
+			if (artnum == article_to_remove) {
+				continue; /* We already know this article no longer exists, so don't copy it to the new file */
+			}
+		} else {
+			int eartnum = 0;
+			/* Look in entries to see if it exists.
+			 * This should be ~constant time because the overview file and the list of entries are both sorted. */
+			for (; fileindex < dirfiles; fileindex++) {
+				struct dirent *entry = entries[fileindex];
+				if (entry->d_name[0] == '.') { /* This covers . and .. for directories as well as .overview */
+					continue;
+				}
+				eartnum = atoi(entry->d_name);
+				if (eartnum >= artnum) {
+					/* We found the article we want (or we're past it, so it doesn't exist) */
+					break;
+				}
+			}
+			if (eartnum != artnum) {
+				continue; /* Article no longer exists, don't copy it to the new file */
+			}
+		}
+		/* The article still exists, copy the whole line to the new file.
+		 * For articles that were removed and are NOT copied over, we don't add them to the expire log now.
+		 * They'll be added when the history log gets pruned. */
+		fprintf(newfp, "%s", buf); /* Already includes LF */
+	}
+	fclose(oldfp);
+	fclose(newfp);
+
+	/* Replace the old overview file with the new one */
+	if (rename(template, overviewfile)) {
+		bbs_error("Failed to rename new overview file %s -> %s: %s\n", template, overviewfile, strerror(errno));
+		res = -1;
+	}
+
+	bbs_rwlock_unlock(&overviewlock);
+	if (!article_to_remove) {
+		scandir_free(entries, dirfiles);
+	}
+	return res;
+}
+
+static int overview_line_extract_messageid(char *s, char *buf, size_t len)
+{
+	char *msgid, *tmp = s;
+	if (skipn(&tmp, '\t', 4) != 4 || !tmp) {
+		bbs_error("Malformed overview line '%s'\n", s);
+		return -1;
+	}
+	msgid = strsep(&tmp, "\t");
+	safe_strncpy(buf, msgid, len);
+	return 0;
+}
+
+static int overview_find_messageid(const char *group, int article_num, char *msgidbuf, size_t msgidlen)
+{
+	FILE *fp;
+	char buf[NNTP_BUFSIZ];
+	char overviewfile[NNTP_MAX_PATH_LENGTH];
+
+	if (build_overview_path(group, overviewfile, sizeof(overviewfile))) {
+		return -1;
+	}
+
+	bbs_rwlock_rdlock(&overviewlock);
+	fp = fopen(overviewfile, "r");
+	if (!fp) {
+		/* If the group is empty, the overview file may not exist yet */
+		bbs_rwlock_unlock(&overviewlock);
+		return 1;
+	}
+	while ((fgets(buf, sizeof(buf), fp))) {
+		int artnum = atoi(buf); /* Should automatically stop at the tab */
+		if (artnum != article_num) {
+			continue;
+		}
+		/* Found the article, extract the Message-ID. It's the fifth element in the tab-delimited list. */
+		fclose(fp);
+		bbs_rwlock_unlock(&overviewlock);
+		if (overview_line_extract_messageid(buf, msgidbuf, msgidlen)) {
+			return -1;
+		}
+		return 0;
+	}
+	fclose(fp);
+	bbs_rwlock_unlock(&overviewlock);
+	return 1;
+}
+
+int tradspool_group_seek(const char *groupname, int cur_artnum, int *new_artnum, int direction, char *msgidbuf, size_t msgidlen)
+{
+	FILE *fp;
+	long int lastoffset = 0, bestoffset = -1;
+	char buf[NNTP_BUFSIZ];
+	char artpath[NNTP_MAX_PATH_LENGTH];
+	char overviewfile[NNTP_MAX_PATH_LENGTH];
+
+	/* There are two logical ways to determine the NEXT or LAST articles in a group.
+	 * The simplest way is simply to scan the directory and find the min/max article number as appropriate.
+	 * However, this could require a lot of file system operations.
+	 * A better way is to use the overview file, since it should reflect all the articles on disk,
+	 * unless one was deleted and the overview file didn't get updated. */
+	*new_artnum = cur_artnum;
+	*msgidbuf = '\0';
+
+	if (build_overview_path(groupname, overviewfile, sizeof(overviewfile))) {
+		return -1;
+	}
+	bbs_rwlock_rdlock(&overviewlock);
+	fp = fopen(overviewfile, "r");
+	if (!fp) {
+		/* If the group is empty, the overview file may not exist yet */
+		bbs_rwlock_unlock(&overviewlock);
+		return 1;
+	}
+
+	/* We need to find the article number, but we also need to return the Message-ID of the article.
+	 * Rather than copying on every better match, which would involve a lot of copies,
+	 * and rather than scanning a second time back to the right article,
+	 * store the best match's offset in the file, so we can come back at the end to parse out the Message-ID.
+	 * Of course, when we match, the file position will be the beginning of the next line, so we need to save
+	 * the offset each time. */
+
+	lastoffset = 0;
+	while ((fgets(buf, sizeof(buf), fp))) {
+		int artnum = atoi(buf); /* Should automatically stop at the tab */
+		if (direction > 0) { /* +1 for NEXT */
+			/* We want the smallest article number greater than cur_artnum */
+			if (artnum > cur_artnum) {
+				/* NEXT is slightly easier than LAST.
+				 * Because the overview file is in ascending order of article numbers,
+				 * we can stop as soon as we find our match. */
+				*new_artnum = artnum;
+				bestoffset = lastoffset;
+				break;
+			}
+		} else { /* -1 for LAST */
+			/* We want the largest article number smaller than cur_artnum */
+			if (artnum < cur_artnum) {
+				/* Either this is the first match, in which case it automatically wins, or it's a better match.
+				 * In practice, all the articles will match until we get past cur_artnum. */
+				if (*new_artnum == cur_artnum || artnum > *new_artnum) {
+					*new_artnum = artnum;
+					bestoffset = lastoffset;
+				}
+			} else {
+				/* We've gone past cur_artnum, so we can stop scanning now */
+				break;
+			}
+		}
+		lastoffset = ftell(fp);
+	}
+
+	if (*new_artnum != cur_artnum) {
+		/* If we succeeded, retrieve the Message-ID now */
+		fseek(fp, bestoffset, SEEK_SET);
+		if (fgets(buf, sizeof(buf), fp)) {
+			int artnum = atoi(buf); /* Should automatically stop at the tab */
+			if (artnum != *new_artnum) {
+				bbs_error("Found article %d when seeking to article %d?\n", artnum, *new_artnum);
+			} else {
+				overview_line_extract_messageid(buf, msgidbuf, msgidlen);
+			}
+		}
+	}
+
+	fclose(fp);
+	bbs_rwlock_unlock(&overviewlock);
+
+	/* Go ahead and check if this article actually exists.
+	 * It should, so if it doesn't, then the overview file is out of sync with the spool. */
+	if (*new_artnum != cur_artnum && (build_article_path(groupname, *new_artnum, artpath, sizeof(artpath)) || !bbs_file_exists(artpath))) {
+		bbs_warning("Overview file %s is out of sync with the spool (%s doesn't exist)\n", overviewfile, artpath);
+		/* Don't change our answer. Technically, even if the article doesn't exist,
+		 * pretending it does here isn't quite "illegal", because it's always possible the article
+		 * could have existed, but between our response to the client and when it tries to retrieve
+		 * the article, it suddenly expired. */
+	}
+
+	return 0;
+}
+
+int tradspool_group_overview(struct nntp_session *nntp, const char *groupname, int min, int max)
+{
+	FILE *fp;
+	char buf[NNTP_BUFSIZ];
+	char overviewfile[NNTP_MAX_PATH_LENGTH];
+	int matches = 0;
+
+	if (build_overview_path(groupname, overviewfile, sizeof(overviewfile))) {
+		return -1;
+	}
+	bbs_rwlock_rdlock(&overviewlock);
+	fp = fopen(overviewfile, "r");
+	if (!fp) {
+		/* If the group is empty, the overview file may not exist yet */
+		bbs_rwlock_unlock(&overviewlock);
+		return 1;
+	}
+	while ((fgets(buf, sizeof(buf), fp))) {
+		int artnum = atoi(buf); /* Should automatically stop at the tab */
+		if (artnum < min) {
+			continue;
+		} else if (artnum > max) {
+			break; /* Since file is in ascending order of articles, there will be no more matches at this point */
+		} else {
+			/* It matches the range filter, dump the line */
+			if (!matches++) {
+				nntp_send(nntp, 224, "Overview information follows");
+			}
+			_nntp_send(nntp, "%s", buf); /* msgbuf already includes CR LF */
+		}
+	}
+	fclose(fp);
+	bbs_rwlock_unlock(&overviewlock);
+	if (!matches) {
+		return 1;
+	}
+	_nntp_send(nntp, ".\r\n");
+	return 0;
+}
+
+static int history_add(const char *messageid, time_t arrival_time, const char *expires, size_t len, const char *links)
+{
+	bbs_mutex_lock(&histlock); /* The write will be atomic, but other threads may want to read the hist file */
+	fprintf(histfp, "%s\t%ld~%s~%lu\t%s\n", messageid, arrival_time, expires, len, links);
+	fflush(histfp);
+	bbs_mutex_unlock(&histlock);
+	return 0;
+}
+
+static int history_find_article_by_messageid(const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum)
+{
+	int found = 0;
+	char buf[NNTP_BUFSIZ];
+	int line = 0;
+
+	bbs_mutex_lock(&histlock);
+	/* Seek to the beginning of the file */
+	if (fseek(histfp, 0, SEEK_SET)) {
+		bbs_error("fseek failed: %s\n", strerror(errno));
+		bbs_mutex_unlock(&histlock);
+		return -1;
+	}
+	while ((fgets(buf, sizeof(buf), histfp))) {
+		char *grp, *artnumstr, *restofline = buf;
+		char *msgid = strsep(&restofline, "\t");
+		line++;
+		if (!msgid) {
+			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+			continue;
+		}
+		if (strcmp(msgid, messageid)) {
+			continue;
+		}
+		/* Found the article */
+		strsep(&restofline, "\t"); /* This is the complex middle, restofline now is just the links */
+		if (strlen_zero(restofline)) {
+			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+			continue;
+		}
+
+		/* If prefgroup was provided, then return that group/article number if it's present in the list of links.
+		 * If we don't care (no preference), just use the first one. If we do but don't find it, we'll end up using the last one.
+		 * Note we do this as a courtesy; the RFC allows 0 to be returned for the article number in any case;
+		 * however, we aim to provide the article number in the current group if it actually exists there, to be as helpful as we can. */
+		while ((artnumstr = strsep(&restofline, " "))) {
+			grp = strsep(&artnumstr, "/"); /* Parse out the group name */
+			if (!grp) {
+				bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+				continue;
+			}
+			/* If !prefgroup, we don't care, just pick the first one.
+			 * If we do, we'll prefer the group if it exists in the list.
+			 * If we get to the end and there weren't any matches, use the last one. */
+			if (!prefgroup || !strcmp(grp, prefgroup) || strlen_zero(restofline)) {
+				safe_strncpy(group, grp, len);
+				*artnum = atoi(artnumstr);
+				break;
+			}
+		}
+		found = 1;
+		break;
+	}
+	/* When we're done, seek back to the end of the file for appends */
+	if (fseek(histfp, 0, SEEK_END)) {
+		bbs_error("fseek failed: %s\n", strerror(errno));
+	}
+	bbs_mutex_unlock(&histlock);
+	return found ? 0 : 1;
+}
+
+int tradspool_article_create(struct stringlist *groups, struct article_info *artinfo, int srcfd, size_t len)
+{
+	char hardpath[NNTP_MAX_PATH_LENGTH];
+	char links[4 * NNTP_MAX_PATH_LENGTH];
+	char expiresbuf[32] = "-"; /* - indicates no expiration */
+	char *linkspos = links;
+	size_t linksleft = sizeof(links);
+	char *group;
+	int delivered = 0;
+	int groups_full = 0;
+	time_t arrival_time;
+
+	arrival_time = time(NULL);
+
+	/* Add the article to the spool.
+	 * For the first group, we'll actually create a file in the spool;
+	 * subsequent groups (cross-posts) will just get a link to the file, to save space. */
+	while ((group = stringlist_pop(groups))) {
+		char articlepath[NNTP_MAX_PATH_LENGTH];
+		int article_num;
+		if (group_assign_article_number_locked(group, &article_num)) {
+			free(group);
+			continue;
+		}
+		if (!article_num) {
+			/* Group is full! */
+			groups_full++;
+			free(group);
+			continue;
+		}
+		/* Shouldn't fail, as group was already verified to exist, but it will return -1 so we need to check errno */
+		if (!build_group_article_path(group, article_num, articlepath, sizeof(articlepath)) || errno != ENOENT) {
+			free(group);
+			continue;
+		}
+		if (delivered) {
+			/* Subsequent groups link to the original file
+			 *
+			 * This is a hard link, so we won't be able to tell the difference between the two afterwards.
+			 * All the links will point to the same inode, so we don't duplicate the article itself on disk.
+			 * Only when all links are deleted is the original file deleted.
+			 *
+			 * A side effect that this has is that if the retention of articles differs wildly between two groups,
+			 * an article may not get deleted in one group, even if it's expired there, because it's
+			 * still being retained for another group. */
+			if (link(hardpath, articlepath)) {
+				bbs_error("Failed to symlink %s -> %s: %s\n", articlepath, hardpath, strerror(errno));
+				/* We already delivered one article, so don't fail overall at this point */
+				free(group);
+				continue;
+			}
+		} else {
+			/* First group gets the "real" file */
+			int destfd = open(articlepath, O_CREAT | O_WRONLY, 0600);
+			if (destfd < 0) {
+				bbs_warning("open(%s) failed: %s\n", articlepath, strerror(errno));
+				free(group);
+				return -1; /* Caller will free the rest of the list */
+			}
+			bbs_copy_file(srcfd, destfd, 0, (int) len);
+			close(destfd);
+			safe_strncpy(hardpath, articlepath, sizeof(hardpath)); /* Save the filename so we can create links to this for further groups */
+		}
+		/* links are space-separated and relative to the root newsdir */
+		SAFE_FAST_APPEND(links, sizeof(links), linkspos, linksleft, "%s/%d", group, article_num);
+		/* Add article to overview */
+		overview_add(artinfo, group, article_num);
+		delivered++;
+		bbs_debug(6, "Successfully delivered article to %s (article %d)\n", group, article_num);
+		free(group);
+	}
+
+	if (delivered) {
+		/* Add the article to history, so we can keep track of message-IDs of articles we've already seen */
+		if (artinfo->expires) {
+			/*! \todo If article has an Expires header, we would include that in expiresbuf instead - need to convert string to epoch time */
+		}
+		history_add(artinfo->messageid, arrival_time, expiresbuf, len, links);
+	} else {
+		errno = groups_full ? ERANGE : 0;
+	}
+	return delivered;
+}
+
+/*! \brief Scan the files in a news directory to determine the water marks and article count (typically after articles expire) */
+static int scan_for_marks_and_counts(const char *path, int *min, int *max, int *count)
+{
+	DIR *dir;
+	struct dirent *entry;
+
+	*count = *min = *max = 0;
+
+	if (!(dir = opendir(path))) {
+		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		int articlenum;
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		articlenum = atoi(entry->d_name);
+		if (!articlenum) {
+			continue; /* Probably the overview file or something that isn't an article */
+		}
+		*count += 1;
+		if (articlenum > *max) {
+			*max = articlenum;
+		}
+		if (!*min || articlenum < *min) {
+			*min = articlenum;
+		}
+	}
+
+	closedir(dir);
+	return 0;
+}
+
+/*!
+ * \brief Delete an article from a newsgroup
+ * \param groupname Newsgroup name
+ * \param article_num Article number
+ * \retval 0 on success, 1 on nonexistent article, -1 on system error
+ */
+int tradspool_article_delete_by_number(const char *groupname, int article_num)
+{
+	char grouppath[NNTP_MAX_PATH_LENGTH];
+	char articlefile[NNTP_MAX_PATH_LENGTH + 32];
+	int low, high, last, oldcount;
+
+	if (build_newsgroup_path(groupname, grouppath, sizeof(grouppath))) {
+		return -1;
+	} else if (build_article_path_grouppath(grouppath, article_num, articlefile, sizeof(articlefile))) {
+		return -1;
+	}
+
+	/* Low water mark is a lower bound, so we increment it after deleting article(s) */
+	if (group_get_stats_locked(groupname, &last, &high, &low, &oldcount)) {
+		return -1;
+	}
+
+	/* This is also our existence check, so it's okay if it fails: */
+	if (unlink(articlefile)) {
+		bbs_debug(1, "Attempt to delete nonexistent article %d\n", article_num);
+		return 1;
+	}
+
+	/* If we deleted either the low or high water mark article,
+	 * then we need to recalculate at least one of the water marks. */
+	if (article_num == low || article_num == high) {
+		int curlow, curhigh, curcount;
+		/* At least one water mark will need adjusting, maybe both */
+		if (!scan_for_marks_and_counts(grouppath, &curlow, &curhigh, &curcount)) {
+			int newlow, newhigh;
+			if (curcount) {
+				/* Group has at least one article left */
+				newlow = curlow; /* Should not have changed if article_num == high */
+				newhigh = curhigh; /* Should not have changed if article_num == low */
+			} else {
+				/* Group is now empty.
+				 * This is a special case, rather than assigning newlow = article_num,
+				 * we instead assign newlow = "last", so that we can have the highest
+				 * low water mark permissible, now that all older articles are deleted
+				 * (and won't be reinstated). */
+				newlow = last;
+				newhigh = newlow - 1;
+			}
+			/* Update the low water mark to next */
+			group_update_counts_locked(groupname, newhigh, newlow, curcount);
+		}
+	} else {
+		/* We deleted an article somewhere in the middle.
+		 * Water marks stay the same, count decrements by 1.
+		 * We could call scan_for_marks_and_counts for the most accurate count (in case the spool is out of sync with the active file),
+		 * but just subtract 1 from the old count. */
+		group_update_counts_locked(groupname, -1, -1, oldcount - 1);
+	}
+
+	/* Delete the article from overview immediately.
+	 * It'll stay in history for a sufficient amount of time (at least until IHAVE would reject the same article for being too old). */
+	overview_rebuild(groupname, article_num);
+	return 0;
+}
+
+int tradspool_article_exists(const char *messageid)
+{
+	char eff_group[NNTP_BUFSIZ];
+	int eff_artnum;
+	/* Scan the history file for any messages matching this Message-ID */
+	if (history_find_article_by_messageid(messageid, NULL, eff_group, sizeof(eff_group), &eff_artnum)) {
+		return 0;
+	}
+	return 1;
+}
+
+int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter filter, const char *messageid, const char *groupname, int article_num)
+{
+	char artpath[NNTP_MAX_PATH_LENGTH];
+	char eff_group[NNTP_BUFSIZ];
+	char buf[NNTP_BUFSIZ];
+	int eff_artnum;
+	char found_messageid[NNTP_BUFSIZ];
+	int resp_artnum;
+	int res;
+
+	/* First, find the article, if it even exists */
+	if (messageid) {
+		/* If we just have a Message-ID, we need to scan the history file to find a link to the message */
+		res = history_find_article_by_messageid(messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum);
+		if (!res) {
+			build_group_article_path(eff_group, eff_artnum, artpath, sizeof(artpath));
+			/* If article is not in this group, we MUST send an article number of 0
+			 * history_find_article_by_messageid gives us the first link created for the article,
+			 * so even though it's possible the article may have been posted to the current group,
+			 * we may end up returning 0 here anyways.
+			 * The RFC says it's always fine to send 0, no matter what, so this isn't a problem. */
+			resp_artnum = nntp->currentgroup && !strcmp(nntp->currentgroup, eff_group) ? eff_artnum : 0;
+		}
+	} else {
+		res = build_group_article_path(groupname, article_num, artpath, sizeof(artpath));
+		resp_artnum = article_num;
+		/* In this case, we weren't provided the Message-ID, so we need to look that up.
+		 * Use the overview file in this case, since we know the group, and it'll be smaller than the history file. */
+		if (!res) {
+			if (overview_find_messageid(groupname, article_num, found_messageid, sizeof(found_messageid))) {
+				return 1;
+			}
+		}
+	}
+	if (res) {
+		return res;
+	}
+
+	/* If we found it, send the parts requested */
+	if ((filter & SEND_HEADERS) && (filter & SEND_BODY)) {
+		/* Send the whole file (ARTICLE) */
+		if (!bbs_file_exists(artpath)) {
+			return 1;
+		}
+		nntp_send(nntp, 220, "%d %s", resp_artnum, S_OR(messageid, found_messageid));
+		bbs_send_file(artpath, nntp->node->wfd);
+	} else {
+		FILE *fp = fopen(artpath, "r");
+		if (!fp) {
+			if (errno == ENOENT) {
+				if (messageid) {
+					/* If we searched by Message-ID and the history file said such an article exists, then shouldn't it? */
+					bbs_error("Failed to open %s: %s\n", artpath, strerror(errno));
+				}
+				return 1; /* Article doesn't exist */
+			}
+			bbs_error("Failed to open %s: %s\n", artpath, strerror(errno));
+			return -1;
+		}
+
+		if (filter & SEND_HEADERS) {
+			/* HEAD command - send just headers, without empty line at end */
+			nntp_send(nntp, 221, "%d %s", resp_artnum, S_OR(messageid, found_messageid));
+			while ((fgets(buf, sizeof(buf), fp))) {
+				if (!strcmp(buf, "\r\n")) {
+					break;
+				} else if (!strcmp(buf, "\n")) { /* Broken line endings */
+					bbs_error("File %s using LF line endings instead of CR LF?\n", artpath);
+					break;
+				}
+				_nntp_send(nntp, "%s", buf); /* buf already includes CR LF */
+			}
+		} else { /* SEND_BODY only */
+			long int start, end;
+			off_t startoffset;
+			nntp_send(nntp, 220, "%d %s", resp_artnum, S_OR(messageid, found_messageid));
+			while ((fgets(buf, sizeof(buf), fp))) {
+				if (!strcmp(buf, "\r\n")) {
+					break;
+				} else if (!strcmp(buf, "\n")) { /* Broken line endings */
+					bbs_error("File %s using LF line endings instead of CR LF?\n", artpath);
+					break;
+				}
+			}
+			/* End of headers, now send body
+			 * So we don't have to send the body line by line, get the current offset,
+			 * then determine how many bytes we need to send. */
+			start = startoffset = ftell(fp);
+			fseek(fp, 0, SEEK_END);
+			end = ftell(fp);
+			bbs_sendfile(nntp->node->wfd, fileno(fp), &startoffset, (size_t) (end - start));
+		}
+		fclose(fp);
+	}
+	_nntp_send(nntp, ".\r\n"); /* Termination character. */
+	return 0;
+}

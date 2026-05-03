@@ -31,11 +31,17 @@ $(DEPENDS):
 IMAP_SRC = $(wildcard net_imap/*.c)
 IMAP_OBJ = $(patsubst %.c,%.o,$(IMAP_SRC))
 
+NNTP_SRC = $(wildcard net_nntp/*.c)
+NNTP_OBJ = $(patsubst %.c,%.o,$(NNTP_SRC))
+
 # This target ensures that any nets/net_imap/*.c source files including header files in nets/net_imap/
 # also get recompiled if needed. Otherwise, only net_imap.c gets recompiled, which can lead
 # to ABI issues if structs are modified and "make clean" isn't run between builds.
 imap_subtargets:
 	@+$(SUBMAKE) --no-builtin-rules -C net_imap all
+
+nntp_subtargets:
+	@+$(SUBMAKE) --no-builtin-rules -C net_nntp all
 
 # Subdirectory with components for net_imap
 # Since imap_subtargets ensures that any object files in the subdirectory are recompiled if needed,
@@ -48,6 +54,13 @@ net_imap/%.o: imap_subtargets $(IMAP_SRC)
 net_imap.so : net_imap.o $(IMAP_OBJ)
 	@echo "  [LD] $< $(IMAP_OBJ) -> $@"
 	$(CC) $(MOD_LDFLAGS) -o $(basename $<).so $(IMAP_OBJ) $<
+
+net_nntp/%.o: nntp_subtargets $(NNTP_SRC)
+	@+$(SUBMAKE) --no-builtin-rules -C net_nntp $(basename $(notdir $@)).o
+
+net_nntp.so : net_nntp.o $(NNTP_OBJ)
+	@echo "  [LD] $< $(NNTP_OBJ) -> $@"
+	$(CC) $(MOD_LDFLAGS) -o $(basename $<).so $(NNTP_OBJ) $<
 
 # SSHLIB=$(pkg-config --libs libssh)
 net_ssh.so : net_ssh.o
