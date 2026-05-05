@@ -1775,7 +1775,13 @@ int __smtp_filter_write(struct smtp_filter_data *f, const char *file, int line, 
 		return -1;
 	}
 
-	__bbs_log(LOG_DEBUG, 6, file, line, func, "Prepending(%d): %s", len, buf); /* Already ends in CR LF */
+#ifdef EXTRA_DEBUG
+	__bbs_log(LOG_DEBUG, 9, file, line, func, "Prepending(%d): %s", len, buf); /* Already ends in CR LF */
+#else
+	UNUSED(file);
+	UNUSED(line);
+	UNUSED(func);
+#endif
 	if (bbs_str_contains_bare_lf(buf)) {
 		bbs_warning("Appended data that contains bare LFs! Message is not RFC-compliant!\n");
 	}

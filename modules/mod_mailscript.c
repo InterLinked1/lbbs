@@ -99,7 +99,10 @@ static int floatcmp(const char *s, const char *expr, enum match_type matchtype)
 		int count;
 		actual = 0;
 		count = sscanf(s, "%4lf", &actual);
+#ifdef EXTRA_DEBUG
+		/* Don't log this for debugging by default as 's' is the whole header value that will end up being printed */
 		bbs_debug(5, "Threshold: %f, Actual: %f (%s)\n", threshold, actual, s);
+#endif
 		switch (matchtype) {
 			case MATCH_GTE:
 				return count == 1 && actual >= (threshold - DBL_EPSILON);
@@ -698,6 +701,10 @@ static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time
 	char *next;
 
 	REQUIRE_ARG(s);
+
+#ifdef EXTRA_DEBUG
+	bbs_debug(5, "Match true, performing action %s (%s:%d)\n", s, filename, lineno);
+#endif
 
 	next = strsep(&s, " ");
 	if (!strcasecmp(next, "NOOP")) {
