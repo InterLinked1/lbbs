@@ -57,7 +57,7 @@ struct stringlist local_domains;
 struct mailbox {
 	unsigned int id;					/* Mailbox ID. Corresponds with user ID. */
 	unsigned int watchers;				/* Number of watchers for this mailbox. */
-	unsigned long quota;					/* Total quota for this mailbox */
+	unsigned long quota;				/* Total quota for this mailbox */
 	unsigned long quotausage;			/* Cached quota usage calculation */
 	char maildir[266];					/* User's mailbox directory, on disk. */
 	size_t maildirlen;					/* Length of maildir */
@@ -1015,9 +1015,26 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf)
 #pragma GCC diagnostic ignored "-Waggregate-return"
 		tvnow = bbs_tvnow();
 #pragma GCC diagnostic pop
-		suffix = bbs_atomic_fetchadd_int(&maildir_tmp_uniqueid_suffix, +1); /* Use a monotonically increasing unique ID to absolutely guarantee uniqueness */
-		snprintf(buf, len, "%s/tmp/%lu%06lu_%d", path, tvnow.tv_sec, tvnow.tv_usec, suffix);
-		snprintf(newbuf, len, "%s/new/%lu%06lu_%d", path, tvnow.tv_sec, tvnow.tv_usec, suffix);
+
+		/* Use a monotonically increasing unique ID to absolutely guarantee uniqueness.
+		 * This is necessary because if two messages arrive at the same second,
+		 * the epoch value will be the same, and thus when we move them from new to cur later,
+		 * the messages could be in an arbitrary order.
+		 *
+		 * Even the original qmail algorithm for creating unique filenames in a maildir (https://en.wikipedia.org/wiki/Maildir#Technical_operation)
+		 * does not quite work, since this is a single-process mail server.
+		 *
+		 * To preserve the arrival order, we add a monotonically increasing ID to the end
+		 * (which is reset on startup, fine, since the epoch will have changed by then
+		 *  and will be used to sort BEFORE this ID.). And unlike the qmail method,
+		 * this is guaranteed to produce a unique file (unless it existed for some bizarre reason).
+		 *
+		 * Since qmail uses multiple components separated by '.', we use that for consistency,
+		 * though it doesn't really matter too much what it is (as long as it's not ',' in particular). */
+#define MAILDIR_TMPFILE_EPOCH_MONOTONIC_ID_SEP '.'
+		suffix = bbs_atomic_fetchadd_int(&maildir_tmp_uniqueid_suffix, +1);
+		snprintf(buf, len, "%s/tmp/%lu%06lu%c%d", path, tvnow.tv_sec, tvnow.tv_usec, MAILDIR_TMPFILE_EPOCH_MONOTONIC_ID_SEP, suffix);
+		snprintf(newbuf, len, "%s/new/%lu%06lu%c%d", path, tvnow.tv_sec, tvnow.tv_usec, MAILDIR_TMPFILE_EPOCH_MONOTONIC_ID_SEP, suffix);
 		if (stat(buf, &st) == -1 && errno == ENOENT) {
 			/* Error means it doesn't exist. */
 			if (stat(newbuf, &st) == -1 && errno == ENOENT) {
@@ -1576,6 +1593,7 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, struct bbs_node *node, co
 {
 	char oldname[256];
 	char newname[272];
+	char base_filename[64];
 	struct stat st;
 	int bytes;
 	int markseen;
@@ -1639,10 +1657,16 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, struct bbs_node *node, co
 		*uidnext = newuidnext; /* Should be same as uid as well */
 	}
 
+	/* Don't retain the monotonically increasing ID used for uniqueness in the new filename.
+	 * That was necessary to ensure an ordered directory traversal would return the files
+	 * in the order they arrived. Now that we are assigning it a UID, this information
+	 * is redundant and no longer serves a purpose. */
+	bbs_strncpy_until(base_filename, filename, sizeof(base_filename), MAILDIR_TMPFILE_EPOCH_MONOTONIC_ID_SEP);
+
 	/* XXX maildir example shows S= and W= are different,
 	 * but I'm not sure why the number of bytes in the file
 	 * would not be st_size? So just use S= for now and skip W=. */
-	snprintf(newname, sizeof(newname), "%s/%s,S=%d,U=%u,M=%lu:2,%s", curdir, filename, bytes, uid, maildir_max_modseq(mbox, curdir), markseen ? "S" : ""); /* Add no flags now, but anticipate them being added */
+	snprintf(newname, sizeof(newname), "%s/%s,S=%d,U=%u,M=%lu:2,%s", curdir, base_filename, bytes, uid, maildir_max_modseq(mbox, curdir), markseen ? "S" : ""); /* Add no flags now, but anticipate them being added */
 	if (rename(oldname, newname)) {
 		bbs_error("rename %s -> %s failed: %s\n", oldname, newname, strerror(errno));
 		return -1;
