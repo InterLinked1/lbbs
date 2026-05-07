@@ -743,7 +743,11 @@ int tradspool_article_delete_by_number(const char *groupname, int article_num)
 				 * This is a special case, rather than assigning newlow = article_num,
 				 * we instead assign newlow = "last", so that we can have the highest
 				 * low water mark permissible, now that all older articles are deleted
-				 * (and won't be reinstated). */
+				 * (and won't be reinstated).
+				 *
+				 * Note that here we set newlow = last. If MAXIMIZE_LOW_WATERMARK
+				 * is defined, low will be returned as last + 1 to the client,
+				 * but that is handled by FIX_EMPTY_GROUP_STATS, not here. */
 				newlow = last;
 				newhigh = newlow - 1;
 			}

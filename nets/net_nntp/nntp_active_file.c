@@ -369,7 +369,11 @@ int active_file_group_info(const char *groupname, int *last, int *high, int *low
 	FILE *fp;
 
 	/*! \todo A worthwhile optimization here would be to add a hash table with an offset into the active file for each group.
-	 * This way, we can have constant time access to the info in the active file, useful for GROUP, etc. */
+	 * This way, we can have constant time access to the info in the active file, useful for GROUP, etc.
+	 * We could also keep a persistent file handle to the active file open. Since right now we have to parse the whole
+	 * file, each thread opening it on its own allows them to read the file in parallel (since a full scan may be needed);
+	 * after implementing a hash table with offsets, "searches" for single groups should be quick,
+	 * and it would be more worthwhile just having a single handle to it open, with the appropriate locking. */
 
 	fp = fopen(active_file, "r");
 	if (!fp) {

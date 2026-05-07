@@ -2,12 +2,11 @@
 MOD_SRC := $(wildcard test_*.c)
 MOD_SO := $(MOD_SRC:.c=.so)
 ALL_SRC := $(wildcard *.c)
+DEPENDS := $(patsubst %.c,%.d,$(ALL_SRC))
 MAIN_SRC := $(filter-out $(MOD_SRC),$(ALL_SRC))
 MAIN_OBJ = $(MAIN_SRC:.c=.o)
 
 TEST_EXE := test
-
-INCLUDE_FILES := $(wildcard ../include/*.h)
 
 # the include directory is in the parent
 INC = -I..
@@ -24,11 +23,15 @@ endif
 
 all: $(TEST_EXE) $(MOD_SO)
 
+-include $(DEPENDS)
+
+$(DEPENDS):
+
 # This is for all files in the binary, except readline.c
 # A more specific rule matches all of the module files.
-%.o : %.c
-	@echo "  [LD] $^ -> $@"
-	$(CC) $(CFLAGS) -Wno-unused-result -DTEST_IN_CORE -DTEST_DIR=$(CURDIR) $(EXTRA_FLAGS) $(INC) -c $^
+%.o : %.c %.d
+	@echo "  [LD] $< -> $@"
+	$(CC) $(CFLAGS) -Wno-unused-result -DTEST_IN_CORE -DTEST_DIR=$(CURDIR) $(EXTRA_FLAGS) -MMD -MP $(INC) -c $<
 
 readline.o : ../bbs/readline.c
 	cp ../bbs/readline.c .
@@ -37,9 +40,9 @@ readline.o : ../bbs/readline.c
 $(TEST_EXE) : $(MAIN_OBJ) readline.o
 	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(TEST_EXE) $^ -ldl -lpthread -lssl -lcrypto -lz
 
-test_%.o : test_%.c
+test_%.o : test_%.c test_%.d
 	@echo "  [CC] $< -> $@"
-	$(CC) $(CFLAGS) -Wno-unused-result -fPIC -DTEST_MODULE=\"$(basename $^)\" -DTEST_MODULE_SELF_SYM=__internal_$(basename $^)_self $(INC) -c $^
+	$(CC) $(CFLAGS) -Wno-unused-result -fPIC -DTEST_MODULE=\"$(basename $<)\" -DTEST_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) -c $<
 
 test_%.so : test_%.o
 	@echo "  [LD] $^ -> $@"

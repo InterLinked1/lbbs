@@ -25,15 +25,55 @@
 #include <string.h>
 #include <sys/stat.h>
 
+/* Use the same definitions (or lack thereof) of MAXIMIZE_LOW_WATERMARK and EMPTY_LOW_WATERMARK_IS_ZERO from nntp.h
+ * There's nothing else we need from this header file (besides NNTP_MAX_ARTICLE_NUMBER); this just avoids having to duplicate the macro definitions here.
+ * tests/Makefile ensures we get recompiled if nntp.h changes, since it's included here. */
+#include "../nets/net_nntp/nntp.h"
+
+/* These macros are a bit tricky. The C preprocessor wasn't really designed to evaluate expression,
+ * but we need to do that here BEFORE stringifying for the EXPECT macros.
+ * This is a kludge to do that by having a "lookup table" of macros to do literal replacements.
+ * Note that compilation will not fail if the required SUB1_X defines are not available;
+ * however, the tests will as SUB1_X will appear in the expect search string literally, rather than the intended "evaluated" argument.
+ * Ugly, but that way the "test logic" doesn't need to do any math at runtime. */
+#ifndef MAXIMIZE_LOW_WATERMARK
+#define SUB1(x) SUB1_##x
+#define SUB1_1 0
+#define SUB1_2 1
+#define SUB1_3 2
+#define SUB1_4 3
+#define SUB1_5 4
+#define SUB1_2147483645 2147483644
+#define SUB1_2147483646 2147483645
+#define SUB1_2147483647 2147483646
+#endif
+
+/* We start high and subtract, rather than start low and add, so we don't have to worry about exceeding the max article number */
+#ifdef MAXIMIZE_LOW_WATERMARK
+#define EMPTY_LOW_WATERMARK(nominal) nominal
+#define EMPTY_HIGH_WATERMARK(nominal) nominal
+#else
+/* Subtract 1 from whatever would have been the expected value if MAXIMIZE_LOW_WATERMARK were defined */
+#define EMPTY_LOW_WATERMARK(nominal) SUB1(nominal)
+#define EMPTY_HIGH_WATERMARK(nominal) SUB1(nominal)
+#endif
+
+#ifdef EMPTY_LOW_WATERMARK_IS_ZERO
+#define ALWAYS_EMPTY_LOW_WATERMARK 0
+#else
+#define ALWAYS_EMPTY_LOW_WATERMARK 1
+#endif
+
 #define DELETE_ARTICLE(group, article) TEST_CLI_COMMAND("news delarticle " group " " #article)
 
+/* We have to use XSTR instead of just #var since two levels of macros are required to eval the macro before converting to string */
 #define LIST_ACTIVE_EXPECT(fd, group, low, high) \
 	SWRITE(fd, "LIST ACTIVE " group ENDL); \
-	CLIENT_EXPECT_EVENTUALLY(fd, group " " #high " " #low);
+	CLIENT_EXPECT_EVENTUALLY(fd, group " " XSTR(high) " " XSTR(low));
 
 #define GROUP_EXPECT(fd, group, low, high, count) \
 	SWRITE(fd, "GROUP " group ENDL); \
-	CLIENT_EXPECT(fd, "211 " #count " " #low " " #high " " group)
+	CLIENT_EXPECT(fd, "211 " #count " " XSTR(low) " " XSTR(high) " " group)
 
 #define GROUP_AND_LIST_ACTIVE_EXPECT(fd, group, low, high, count) \
 	GROUP_EXPECT(fd, group, low, high, count); \
@@ -116,8 +156,7 @@ static int run(void)
 	/* Ensure the article wasn't accepted and stored */
 	SWRITE(client1, "ARTICLE 1\r\n");
 	CLIENT_EXPECT(client1, "412"); /* No group currently selected */
-	SWRITE(client1, "GROUP misc.test\r\n"); /* Select a group */
-	CLIENT_EXPECT(client1, "211 0 1 0 misc.test");
+	GROUP_EXPECT(client1, "misc.test", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0); /* Select a group. Group is empty and this server responds with all 0s since it has never had articles */
 
 	/* Attempts to fetch nonexistent articles should fail */
 	SWRITE(client1, "ARTICLE 1\r\n");
@@ -133,7 +172,7 @@ static int run(void)
 	SWRITE(client1, "LIST\r\n");
 	CLIENT_EXPECT(client1, "215");
 	/* Should be sorted, so misc.empty should be in the first line. */
-	CLIENT_EXPECT(client1, "misc.empty 0 1 y"); /* Don't also wait for misc.test, etc. since it's probably part of the same read() output and we don't chunk per line */
+	CLIENT_EXPECT(client1, "misc.empty 0 " XSTR(ALWAYS_EMPTY_LOW_WATERMARK) " y"); /* Don't also wait for misc.test, etc. since it's probably part of the same read() output and we don't chunk per line */
 
 	/* Ask for different LIST variants */
 	SWRITE(client1, "LIST ACTIVE\r\n");
@@ -181,7 +220,7 @@ static int run(void)
 	DELETE_ARTICLE("misc.test", 1);
 	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.test", 2, 2, 1);
 	DELETE_ARTICLE("misc.test", 2);
-	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.test", 2, 1, 0);
+	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.test", EMPTY_LOW_WATERMARK(3), EMPTY_HIGH_WATERMARK(2), 0);
 
 	/* Post and delete articles to ensure the water marks are always correct */
 	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.test"); /* Post article 3 */
@@ -191,7 +230,7 @@ static int run(void)
 	DELETE_ARTICLE("misc.test", 4); /* Delete the newest article */
 	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.test", 3, 3, 1); /* High water mark should decrease */
 	DELETE_ARTICLE("misc.test", 3); /* Delete the remaining article */
-	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.test", 4, 3, 0); /* Low water mark should jump up as high as is legal */
+	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.test", EMPTY_LOW_WATERMARK(5), EMPTY_HIGH_WATERMARK(4), 0); /* Low water mark should jump up as high as is legal if MAXIMIZE_LOW_WATERMARK is defined */
 	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.test"); /* Post article 5 */
 	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.test", 5, 5, 1);
 	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.test"); /* Post article 5 */
@@ -292,7 +331,7 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article."); /* Read the rest of the response */
 
 	/* Change groups and re-issue the command, the article number should be 0 since the article isn't in that group */
-	GROUP_EXPECT(client1, "misc.empty", 1, 0, 0);
+	GROUP_EXPECT(client1, "misc.empty", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0);
 	FMT_WRITE(client1, "ARTICLE %s\r\n", xmsgid);
 	CLIENT_EXPECT(client1, "220 0 <");
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article."); /* Read the rest of the response */
@@ -302,7 +341,7 @@ static int run(void)
 	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.test,misc.test"); /* Group duplicated should only result in one post to it */
 	GROUP_EXPECT(client1, "misc.test", 8, 14, 6);
 
-	GROUP_EXPECT(client1, "misc.crossposts", 1, 0, 0);
+	GROUP_EXPECT(client1, "misc.crossposts", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0);
 	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.test,misc.crossposts");
 	GROUP_EXPECT(client1, "misc.crossposts", 1, 1, 1);
 	GROUP_EXPECT(client1, "misc.test", 8, 15, 7);
@@ -333,7 +372,7 @@ static int run(void)
 	CLIENT_EXPECT(client1, "220 1 <");
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article.");
 
-	GROUP_EXPECT(client1, "misc.empty", 1, 0, 0); /* Switch groups to misc.crossposts */
+	GROUP_EXPECT(client1, "misc.empty", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0); /* Switch groups to misc.crossposts */
 	FMT_WRITE(client1, "ARTICLE %s\r\n", xmsgid);
 	CLIENT_EXPECT(client1, "220 0 <"); /* The article isn't in this group, so article number MUST be 0 */
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article.");
@@ -354,7 +393,7 @@ static int run(void)
 
 	/* Now delete it in the other group as well */
 	DELETE_ARTICLE("misc.crossposts", 1);
-	GROUP_EXPECT(client1, "misc.crossposts", 1, 0, 0);
+	GROUP_EXPECT(client1, "misc.crossposts", EMPTY_LOW_WATERMARK(2), EMPTY_HIGH_WATERMARK(1), 0);
 	SWRITE(client1, "ARTICLE 1\r\n");
 	CLIENT_EXPECT(client1, "423");
 
@@ -382,6 +421,30 @@ static int run(void)
 
 	SWRITE(client3, "GROUP misc.test\r\n");
 	CLIENT_EXPECT(client3, "502");
+
+	/* Lastly, "spoof" an almost full group so we can test its behavior.
+	 * Here, we use misc.empty since it has thus far been empty so we know what to replace. */
+
+	/* XXX To do this, we directly modify the active file at runtime, which
+	 * which we can do at the moment because it isn't open persistently
+	 * (and this will probably change in the future, and this will need to be updated;
+	 * likely by adding an article to the group with an explicitly high article number,
+	 * then deleting it.) */
+	system("sed -i 's/misc.empty\t0000000000\t0000000000\t0000000000/misc.empty\t2147483645\t2147483644\t2147483645/' " TEST_NEWS_DIR "/active");
+
+	/* Now, fill up the group and check that the water marks behave correctly. */
+	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.empty", EMPTY_LOW_WATERMARK(2147483646), EMPTY_HIGH_WATERMARK(2147483645), 0);
+	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.empty");
+	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.empty", 2147483646, 2147483646, 1);
+	DELETE_ARTICLE("misc.empty", 2147483646);
+	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.empty", EMPTY_LOW_WATERMARK(2147483647), EMPTY_HIGH_WATERMARK(2147483646), 0);
+	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.empty");
+	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.empty", 2147483647, 2147483647, 1);
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "misc.empty", 441); /* Henceforth, any further posting should fail since group is now full */
+	DELETE_ARTICLE("misc.empty", 2147483647);
+	/* This response doesn't vary, regardless of compilation settings for low water mark.
+	 * But if MAXIMIZE_LOW_WATERMARK is defined, this check ensures we never exceed NNTP_MAX_ARTICLE_NUMBER (2147483647) in our response (as that would overflow). */
+	GROUP_AND_LIST_ACTIVE_EXPECT(client1, "misc.empty", 2147483647, 2147483646, 0);
 
 	res = 0;
 

@@ -535,10 +535,11 @@ static void nntp_destroy(struct nntp_session *nntp)
  *    In most cases, these are the same; however, a rejected erratum to RFC 3977 clarifies this.
  *      The proposed erratum (worth a read): https://www.rfc-editor.org/errata_search.php?rfc=3977&eid=1707
  *      Fix in INN from LOW=HIGH+1 to HIGH=LOW-1: https://github.com/InterNetNews/inn/issues/250
- *    The fix here clarifies that if the highest used article number is N, we should report LOW=N and HIGH=N-1.
- *    It seems the main reason for this has to do with overflow, i.e. if a group fills up to 2147483647, the max allowed article ID.
+ *    The fix here clarifies that if the highest used article number is N, report LOW=N and HIGH=N-1.
+ *    This has to do with overflow, i.e. if a group fills up to 2147483647, the max allowed article ID.
  *    In order to represent this group if it were empty, HIGH=LOW-1 works but LOW=HIGH+1 does not since it causes overflow.
  *    Practically, this means if we have a single article 10, LOW=HIGH=LAST=10, but once it's deleted, LAST=10, LOW=10, and HIGH=9.
+ *    However, we do not always have to do this; see the comments for FIX_EMPTY_GROUP_STATS in nntp.h.
  *
  * Other details:
  * - Currently, we use flat files, but to allow the possibility of a database backend in the future (for the good reasons described above),
@@ -605,7 +606,9 @@ static int group_create(const char *groupname, char status, const char *creator,
 	/* Explicitly initialize all the fields */
 	g.name = groupname;
 	g.last = 0;
-	g.low = 1;
+	/* Initialize low water mark to 0 so we can tell an always empty group apart from a group that had 1 article which expired.
+	 * Even if EMPTY_LOW_WATERMARK_IS_ZERO is not defined, we can floor the low water mark to 1 in FIX_EMPTY_GROUP_STATS. */
+	g.low = 0;
 	g.high = 0;
 	g.count = 0;
 	g.status = status;
