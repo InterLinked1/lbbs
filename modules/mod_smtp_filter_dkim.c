@@ -47,6 +47,23 @@ struct dkim_domain *smtp_get_dkim_domain(const char *name)
 	return NULL;
 }
 
+static int already_signed(const char *s)
+{
+	size_t hdrslen;
+	const char *dkimhdr, *eoh = strstr(s, "\r\n\r\n");
+	if (unlikely(!eoh)) {
+		return 0;
+	}
+	/* Presumably, if it's signed, it's for the same domain for which we would've signed it,
+	 * though we don't check that here. */
+	if (STARTS_WITH(s, "DKIM-Signature:")) {
+		return 1;
+	}
+	hdrslen = (size_t) (eoh - s);
+	dkimhdr = memmem(s, hdrslen, "\r\nDKIM-Signature:", STRLEN("\r\nDKIM-Signature:"));
+	return dkimhdr != NULL;
+}
+
 static int dkim_sign_filter_cb(struct smtp_filter_data *f)
 {
 	DKIM *dkim;
@@ -76,6 +93,15 @@ static int dkim_sign_filter_cb(struct smtp_filter_data *f)
 	body = smtp_message_body(f);
 	if (!body) {
 		bbs_warning("Message is empty?\n");
+		return 0;
+	}
+
+	/* If the message is already signed (for example, a mailing list post that was signed via the DKIM Verify callback, and was reinjected and now running the Sign callback)
+	 * then we shouldn't sign it again.
+	 * This is not true in general, but should be true of messages that we would've signed normally, since they would have been signed the same way.
+	 * A duplicate signature does no harm, but is unnecessary and wastes space, so we avoid doing it for no good reason. */
+	if (already_signed(body)) {
+		bbs_debug(3, "Message is already DKIM signed, not signing again\n");
 		return 0;
 	}
 

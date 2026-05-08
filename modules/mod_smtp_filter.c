@@ -253,9 +253,11 @@ static int load_module(void)
 	/* Run this only after the SPF, DKIM, and DMARC filters have run: */
 	smtp_filter_register(&auth_filter, "Auth", SMTP_FILTER_OTHER, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 6);
 
-	/* This header is typically near the top (i.e. prepended last): */
-	smtp_filter_register(&returnpath_filter, "Return Path", SMTP_FILTER_OTHER, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT, 90);
-
+	/* This header is typically near the top (i.e. prepended last).
+	 * We use individual scope because if a message is received but reinjected into the mail system (e.g. a mailing list exploder),
+	 * then we don't want to track on a Return-Path prematurely.
+	 * Note that net_smtp specially process filters with priorities >= 90. */
+	smtp_filter_register(&returnpath_filter, "Return Path", SMTP_FILTER_OTHER, SMTP_FILTER_PREPEND, SMTP_SCOPE_INDIVIDUAL, SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT, 90);
 	smtp_filter_register(&deliveredto_filter, "Delivered To", SMTP_FILTER_OTHER, SMTP_FILTER_PREPEND, SMTP_SCOPE_INDIVIDUAL, SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT, 99);
 	return 0;
 }

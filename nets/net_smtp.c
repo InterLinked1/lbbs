@@ -1652,7 +1652,7 @@ const char *smtp_message_body(struct smtp_filter_data *f)
 		if (ALLOC_FAILURE(f->body)) {
 			return NULL;
 		}
-		res = read(f->inputfd, f->body, f->size);
+		res = read(f->inputfd, f->body, f->size); /* XXX Couldn't read return before filling the entire buffer? Would've used bbs_read() except it doesn't exist as of now */
 		if (res != (ssize_t) f->size) {
 			bbs_warning("Wanted to read %lu bytes but read %ld?\n", f->size, res);
 			FREE(f->body);
@@ -1870,8 +1870,9 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 		if (fdata->dir == SMTP_DIRECTION_IN && !fdata->node) {
 			/* Something like a Delivery Status Notification or other injected mail without a node... filters don't apply anyways.
 			 * Unless, it's simply adding the Received header, in which case, still do it,
-			 * for things like mailing lists which involve using smtp_inject. */
-			if (f->priority != 0) {
+			 * for things like mailing lists which involve using smtp_inject.
+			 * XXX The filter callback itself should indicate whether it should "always" be processed, rather than hardcoding the exceptions here. */
+			if (f->priority != 0 && f->priority < 90) { /* Allow Received, Return-Path, and Delivered-To headers in these cases */
 #ifdef DEBUG_FILTERS
 				bbs_debug(5, "Ignoring %s SMTP filter %s %s (no node)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f->name);
 #endif
