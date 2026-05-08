@@ -44,6 +44,8 @@ static int discord_started = 0;
 static int discord_ready = 0;
 static int force_unloading = 0;
 static struct discord *discord_client = NULL;
+
+static pthread_t start_thread;
 static pthread_t discord_thread;
 
 static int expose_members = 1;
@@ -1789,16 +1791,9 @@ static int check_curl(void)
 	return 0;
 }
 
-static int load_module(void)
+static void *load_discord(void *varg)
 {
-	/* Reproduce the libcurl compatibility check from concord, since this will cause discord_from_config to fail,
-	 * but it won't be obvious what the issue is, so check proactively here and abort if needed. */
-	if (check_curl()) {
-		return -1;
-	}
-	if (load_config()) {
-		return -1;
-	}
+	UNUSED(varg);
 
 #ifdef CONCORD_DEBUG
 	/* If needed, overwrite user settings */
@@ -1829,11 +1824,36 @@ static int load_module(void)
 	if (!discord_client) {
 		bbs_error("Failed to initialize Discord client using %s\n", !s_strlen_zero(configfile) ? "JSON config" : "token");
 		ccord_global_cleanup();
+	} else {
+		start_discord_relay();
+	}
+	return NULL;
+}
+
+static int load_module(void)
+{
+	/* Reproduce the libcurl compatibility check from concord, since this will cause discord_from_config to fail,
+	 * but it won't be obvious what the issue is, so check proactively here and abort if needed. */
+	if (check_curl()) {
+		return -1;
+	}
+	if (load_config()) {
 		return -1;
 	}
 
+	/* Connect to Discord asynchronously, that way if it fails or has issues, it doesn't hold up the main thread.
+	 * The advantage of this is that sometimes libdiscord can hang, due to no fault of our own,
+	 * and to prevent this from hosing the BBS, we need to launch in a separate thread to mitigate this (LBBS-158),
+	 * as that allows us to return immediately here.
+	 * The disadvantage of this is that previously require=mod_discord.so in modules.conf would cause startup
+	 * to fail if we didn't successfully connect to Discord. Since the connection is done in a separate thread,
+	 * that may now fail later, and we won't abort startup due to that - but this is probably the right thing to do... */
+	if (bbs_pthread_create(&start_thread, NULL, load_discord, NULL)) {
+		list_cleanup();
+		return -1;
+	}
 	bbs_cli_register_multiple(cli_commands_discord);
-	return bbs_run_when_started(start_discord_relay, STARTUP_PRIORITY_DEFAULT);
+	return 0;
 }
 
 static int unload_module(void)
@@ -1842,6 +1862,9 @@ static int unload_module(void)
 	bbs_cli_unregister_multiple(cli_commands_discord);
 	irc_relay_unregister(&relay_callbacks);
 
+	if (start_thread) {
+		bbs_pthread_join(start_thread, NULL);
+	}
 	if (monitor_thread) {
 		if (!force_unloading) {
 			/* If we're forcing a reload,
