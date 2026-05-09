@@ -184,7 +184,7 @@ int tradspool_group_exists(const char *groupname)
 	return res == 0;
 }
 
-static int overview_add(struct article_info *artinfo, const char *group, int article_num)
+static int overview_add(struct article_info *artinfo, const char *group, int article_num, const char *xref)
 {
 	FILE *fp;
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
@@ -201,8 +201,9 @@ static int overview_add(struct article_info *artinfo, const char *group, int art
 		return -1;
 	}
 	/* References is optional (not every article has one), the rest should be present: */
-	fprintf(fp, "%d\t%s\t%s\t%s\t%s\t%s\t%lu\t%d\n", article_num, artinfo->subject, artinfo->from, artinfo->date, artinfo->messageid, S_IF(artinfo->references), artinfo->bytes, artinfo->lines);
-	/*! \todo X-Ref is often included as an optional header. */
+	fprintf(fp, "%d\t%s\t%s\t%s\t%s\t%s\t%lu\t%d\t%s\n",
+		article_num, artinfo->subject, artinfo->from, artinfo->date, artinfo->messageid, S_IF(artinfo->references), artinfo->bytes, artinfo->lines,
+		xref);
 	fclose(fp);
 	bbs_rwlock_unlock(&overviewlock);
 	return 0;
@@ -579,39 +580,95 @@ static int history_find_article_by_messageid(const char *messageid, const char *
 	return found ? 0 : 1;
 }
 
-int tradspool_article_create(struct stringlist *groups, struct article_info *artinfo, int srcfd, size_t len)
+static size_t construct_xref(struct article_groups *groups, char *buf, size_t len)
+{
+	char *xrefpos = buf;
+	size_t xrefleft = len;
+	size_t used_prev_lines = 0;
+	size_t xreftotal = 0;
+	struct article_group *g;
+
+	SAFE_FAST_APPEND(buf, len, xrefpos, xrefleft, "Xref: %s", newsname); /* SAFE_FAST_APPEND automatically adds spaces between items */
+	BBS_LIST_TRAVERSE(groups, g, entry) {
+		SAFE_FAST_APPEND(buf, len, xrefpos, xrefleft, "%s:%d", g->name, g->article_num);
+		xreftotal = (size_t) (xrefpos - buf);
+		/* If there are a lot of groups, it could be more than we'll fit in a single line. */
+		if (xreftotal - used_prev_lines > NNTP_MAX_LINE_LENGTH - 11) {
+			SAFE_FAST_APPEND_NOSPACE(buf, len, xrefpos, xrefleft, "\r\n");
+			xreftotal += 2; /* CR LF */
+			used_prev_lines = xreftotal;
+		}
+	}
+	if (xreftotal - used_prev_lines > 0) {
+		SAFE_FAST_APPEND_NOSPACE(buf, len, xrefpos, xrefleft, "\r\n");
+		xreftotal += 2; /* CR LF */
+	}
+	return xreftotal;
+}
+
+/*! \brief Transform Xref header into format suitable for overview file */
+static void xref_reformat(char *restrict xref)
+{
+	char *restrict s = xref;
+	/* In case there are multiple lines, remove any line endings so it will all be on a single line */
+	while (*s) {
+		if (*s == '\r' || *s == '\n') {
+			*s = ' ';
+		}
+		s++;
+	}
+	s--;
+	/* Trim last two spaces (formerly the last line ending) */
+	while (s > xref && *s == ' ') {
+		*s-- = '\0';
+	}
+}
+
+int tradspool_article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t len)
 {
 	char hardpath[NNTP_MAX_PATH_LENGTH];
 	char links[4 * NNTP_MAX_PATH_LENGTH];
+	char xref[10 * NNTP_MAX_LINE_LENGTH]; /* If there are a lot of groups, it could be more than we'll fit in a single line */
+	size_t articlesize, xrefbytes;
 	char expiresbuf[32] = "-"; /* - indicates no expiration */
 	char *linkspos = links;
 	size_t linksleft = sizeof(links);
-	char *group;
-	int delivered = 0;
-	int groups_full = 0;
+	struct article_group *g;
+	int attempting = 0, delivered = 0;
 	time_t arrival_time;
 
 	arrival_time = time(NULL);
 
-	/* Add the article to the spool.
+	/* At this point, we've already verified the groups exist.
+	 * First, assign the article numbers for all the groups. This way we can add the Xref header before actually adding the article to the spool. */
+	BBS_LIST_TRAVERSE(groups, g, entry) {
+		if (group_assign_article_number_locked(g->name, &g->article_num) || !g->article_num) {
+			continue; /* Group is full! */
+		}
+		/* Since we assigned the article number in this group for this article,
+		 * we sure hope that everything succeeds past this point for the article,
+		 * there's no "undoing" the assignment... */
+		attempting++;
+	}
+	if (!attempting) {
+		errno = ERANGE; /* All groups are full (that is the only reason we would have failed at this point) */
+		return 0;
+	}
+
+	/* Construct the Xref header. While not technically mandatory, this is standard practice. */
+	xrefbytes = construct_xref(groups, xref, sizeof(xref));
+	if (!xrefbytes) {
+		return 0; /* Something went wrong if we had no groups to add to Xref header */
+	}
+	articlesize = len + xrefbytes;
+
+	/* Finally, actually add the article to the spool.
 	 * For the first group, we'll actually create a file in the spool;
 	 * subsequent groups (cross-posts) will just get a link to the file, to save space. */
-	while ((group = stringlist_pop(groups))) {
+	BBS_LIST_TRAVERSE(groups, g, entry) {
 		char articlepath[NNTP_MAX_PATH_LENGTH];
-		int article_num;
-		if (group_assign_article_number_locked(group, &article_num)) {
-			free(group);
-			continue;
-		}
-		if (!article_num) {
-			/* Group is full! */
-			groups_full++;
-			free(group);
-			continue;
-		}
 		/* Shouldn't fail, as group was already verified to exist, but it will return -1 so we need to check errno */
-		if (!build_group_article_path(group, article_num, articlepath, sizeof(articlepath)) || errno != ENOENT) {
-			free(group);
+		if (!build_group_article_path(g->name, g->article_num, articlepath, sizeof(articlepath)) || errno != ENOENT) {
 			continue;
 		}
 		if (delivered) {
@@ -627,7 +684,6 @@ int tradspool_article_create(struct stringlist *groups, struct article_info *art
 			if (link(hardpath, articlepath)) {
 				bbs_error("Failed to symlink %s -> %s: %s\n", articlepath, hardpath, strerror(errno));
 				/* We already delivered one article, so don't fail overall at this point */
-				free(group);
 				continue;
 			}
 		} else {
@@ -635,20 +691,26 @@ int tradspool_article_create(struct stringlist *groups, struct article_info *art
 			int destfd = open(articlepath, O_CREAT | O_WRONLY, 0600);
 			if (destfd < 0) {
 				bbs_warning("open(%s) failed: %s\n", articlepath, strerror(errno));
-				free(group);
 				return -1; /* Caller will free the rest of the list */
 			}
-			bbs_copy_file(srcfd, destfd, 0, (int) len);
+
+			/* Copy the entire article to the file.
+			 * Would be nice to use iovec to reduce number of system calls,
+			 * but we are combining write() with copy_file_range or sendfile, so not sure if that is possible. */
+			bbs_copy_file(srcfd, destfd, 0, (int) artinfo->headerslen); /* Copy original headers, not including empty line */
+			bbs_write(destfd, xref, xrefbytes); /* Add the Xref header */
+			bbs_copy_file(srcfd, destfd, (int) artinfo->headerslen, (int) (len - artinfo->headerslen)); /* Copy blank line and the body */
+
 			close(destfd);
 			safe_strncpy(hardpath, articlepath, sizeof(hardpath)); /* Save the filename so we can create links to this for further groups */
 		}
 		/* links are space-separated and relative to the root newsdir */
-		SAFE_FAST_APPEND(links, sizeof(links), linkspos, linksleft, "%s/%d", group, article_num);
+		SAFE_FAST_APPEND(links, sizeof(links), linkspos, linksleft, "%s/%d", g->name, g->article_num);
 		/* Add article to overview */
-		overview_add(artinfo, group, article_num);
+		xref_reformat(xref + STRLEN("Xref: ")); /* xref has been written to the file so we can now mutate it; replace CR LF with spaces and rtrim */
+		overview_add(artinfo, g->name, g->article_num, xref); /* We include the header name itself (Xref:), this is why LIST OVERVIEW.FMT returns Xref:full (includes header name itself) */
 		delivered++;
-		bbs_debug(6, "Successfully delivered article to %s (article %d)\n", group, article_num);
-		free(group);
+		bbs_debug(6, "Successfully delivered article to %s (article %d)\n", g->name, g->article_num);
 	}
 
 	if (delivered) {
@@ -656,9 +718,9 @@ int tradspool_article_create(struct stringlist *groups, struct article_info *art
 		if (artinfo->expires) {
 			/*! \todo If article has an Expires header, we would include that in expiresbuf instead - need to convert string to epoch time */
 		}
-		history_add(artinfo->messageid, arrival_time, expiresbuf, len, links);
+		history_add(artinfo->messageid, arrival_time, expiresbuf, articlesize, links);
 	} else {
-		errno = groups_full ? ERANGE : 0;
+		errno = 0;
 	}
 	return delivered;
 }

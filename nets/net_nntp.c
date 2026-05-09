@@ -75,8 +75,10 @@ static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
 static bbs_rwlock_t nntp_lock;
 
 /* General settings */
+char newsname[256] = ""; /* Non-static so other files can access it extern */
 char newsdir[256] = ""; /* Non-static so other files can access it extern */
 static unsigned int max_post_size = 100000; /* 100 KB should be plenty */
+static unsigned int max_groups = 100;
 
 /* Relay in */
 static int requirerelaytls = 1;
@@ -88,6 +90,7 @@ static unsigned int relaymaxage = 86400;
 /* Reader settings */
 static int require_secure_login = 0;
 static int check_identity = 1;
+static unsigned int max_post_groups = 25;
 
 static struct stringlist outpeers;
 
@@ -957,19 +960,51 @@ static int identity_allowed_for_posting(struct nntp_session *nntp, const char *f
 	return nntp->node->user && userid == nntp->node->user->id;
 }
 
+static void free_article_groups(struct article_groups *groups)
+{
+	struct article_group *g;
+	while ((g = BBS_LIST_REMOVE_HEAD(groups, entry))) {
+		free(g);
+	}
+}
+
+static int article_groups_contains(struct article_groups *groups, const char *name)
+{
+	struct article_group *g;
+	BBS_LIST_TRAVERSE(groups, g, entry) {
+		if (!strcasecmp(g->name, name)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int article_groups_add(struct article_groups *groups, const char *name)
+{
+	struct article_group *g = calloc(1, sizeof(*g) + strlen(name) + 1);
+	if (ALLOC_FAILURE(g)) {
+		return -1;
+	}
+	strcpy(g->data, name); /* Safe */
+	g->name = g->data;
+	BBS_LIST_INSERT_TAIL(groups, g, entry);
+	return 0;
+}
+
 /*! \brief Final processing of POST/IHAVE */
 static int do_post(struct nntp_session *nntp, const char *srcfilename, size_t postlen)
 {
 	char *newsgroup, *newsgroups = NULL;
 	char *uuid = NULL;
 	int delivered = 0;
-	char articleidbuf[128];
+	char articleidbuf[259];
 	int total_errors = 0, permission_errors = 0;
-	struct stringlist groups;
 	struct article_info *artinfo = &nntp->artinfo;
 	int srcfd;
+	unsigned int groupcount = 0;
+	struct article_groups groups;
 
-	stringlist_init(&groups);
+	memset(&groups, 0, sizeof(groups));
 
 #define REQUIRE_ARTINFO_FIELD(field) \
 	if (!artinfo->field) { \
@@ -1005,9 +1040,9 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename, size_t po
 			goto cleanup;
 		}
 		/* We need to generate an article ID for this article, since this is its entry point into the news network */
-		snprintf(articleidbuf, sizeof(articleidbuf), "<%s@%s>", uuid, bbs_hostname());
+		snprintf(articleidbuf, sizeof(articleidbuf), "<%s@%s>", uuid, newsname);
 		artinfo->messageid = articleidbuf;
-		/*! \todo Do we need to inject the header into the file? snprintf(msgid, sizeof(msgid), "Message-ID: <%s@%s>", uuid, bbs_hostname()); */
+		/*! \todo Do we need to inject the header into the file? snprintf(msgid, sizeof(msgid), "Message-ID: <%s@%s>", uuid, newsname); */
 	} else { /* else if TRANSIT, just trust what the other end says (presumably the original server validated the identity). */
 		/* Could be a race condition, maybe we didn't have the article when the client said IHAVE,
 		 * but now we do (possibly from some other server). Check again. */
@@ -1034,14 +1069,24 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename, size_t po
 			total_errors++;
 			continue;
 		}
-		if (stringlist_contains(&groups, newsgroup)) {
+		if (article_groups_contains(&groups, newsgroup)) {
 			bbs_debug(3, "Group '%s' is duplicated in Newsgroups list\n", newsgroup);
 			total_errors++; /* The non-duplicated one may still succeed, so this doesn't necessarily mean we'll return failure */
 			continue;
 		}
-		stringlist_push_tail(&groups, newsgroup);
+		if (groupcount++ < max_post_groups || (nntp->mode == NNTP_MODE_TRANSIT && groupcount < max_groups)) {
+			article_groups_add(&groups, newsgroup);
+		}
 	}
 	ACL_UNLOCK(nntp);
+
+	if (nntp->mode == NNTP_MODE_READER && groupcount > max_post_groups) {
+		bbs_notice("Rejected post with %u groups (max allowed: %u)\n", groupcount, max_post_groups);
+		goto cleanup;
+	} else if (groupcount > max_groups) {
+		bbs_notice("Rejected article with %u groups (max allowed: %u)\n", groupcount, max_groups);
+		goto cleanup;
+	}
 
 	/* Actually add message to groups */
 	srcfd = open(srcfilename, O_RDONLY);
@@ -1078,7 +1123,7 @@ cleanup:
 cleanup2:
 	free_if(uuid);
 	free_if(newsgroups);
-	stringlist_empty(&groups);
+	free_article_groups(&groups);
 	return 0;
 }
 
@@ -1109,6 +1154,8 @@ static enum list_category parse_list_category(const char *s)
 		return LIST_NEWSGROUPS | LIST_PER_NEWSGROUP;
 	} else if (!strcasecmp(s, "DISTRIB.PATS")) {
 		return LIST_DISTRIB_PATS;
+	} else if (!strcasecmp(s, "OVERVIEW.FMT")) {
+		return LIST_OVERVIEW_FMT;
 	} else {
 		/*! \todo Add additional categories as specified in RFC 2980 and RFC 6048 */
 		bbs_warning("Unknown LIST category '%s'\n", s);
@@ -1152,6 +1199,22 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		}
 		return 0;
 	} /* else, not newsgroup-based: */
+
+	/* Technically, this could depend on the spool implementation as to what overview stores.
+	 * If there are other spool/overview implementations in the future, we may need to do this differently. */
+	if (listcat & LIST_OVERVIEW_FMT) {
+		nntp_send(nntp, 215, "Order of fields in overview database.");
+		_nntp_send(nntp, "Subject:\r\n");
+		_nntp_send(nntp, "From:\r\n");
+		_nntp_send(nntp, "Date:\r\n");
+		_nntp_send(nntp, "Message-ID:\r\n");
+		_nntp_send(nntp, "References:\r\n");
+		_nntp_send(nntp, ":bytes:\r\n");
+		_nntp_send(nntp, ":lines\r\n");
+		_nntp_send(nntp, "Xref:full\r\n");
+		_nntp_send(nntp, ".\r\n");
+		return 0;
+	}
 
 	if (listcat & LIST_DISTRIB_PATS) {
 		/* distrib.pats list assists clients to choose a value for the Distribution header of an article being posted.
@@ -1287,7 +1350,12 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 			continue; /* Corruption already happened, just ignore the rest of the message for now. */
 		} else if (inheaders) {
 			if (!len) {
+				artinfo->headerslen = postlen;
 				inheaders = 0; /* Got CR LF, end of headers */
+			} else if (STARTS_WITH(s, "Xref:")) {
+				/* Ignore any incoming Xref article, since we create our own rather than reuse.
+				 * The only exception to this would be when using a suck feed where we want to slave our article numbers off the feeder's. */
+				continue;
 			}
 			/*! \todo Need to properly parse any multi-line headers */
 			else SAVE_HEADER("Newsgroups", artinfo->newsgroups)
@@ -1432,9 +1500,10 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		/* Strip the domain, if present,
 		 * but the domain must match our domain, if present. */
 		domain = strchr(user, '@');
+#define improper_auth_hostname(domain) (strlen_zero(domain) || !(!strcasecmp(domain, newsname) || !strcasecmp(domain, bbs_hostname())))
 		if (domain) {
 			*domain++ = '\0';
-			if (strlen_zero(domain) || strcmp(domain, bbs_hostname())) {
+			if (improper_auth_hostname(domain)) {
 				nntp_send(nntp, 452, "Authorization rejected"); /*! \todo right code? */
 				return 0;
 			}
@@ -1480,7 +1549,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			domain = strchr(nntp->user, '@');
 			if (domain) {
 				*domain++ = '\0';
-				if (strlen_zero(domain) || strcmp(domain, bbs_hostname())) {
+				if (improper_auth_hostname(domain)) {
 					nntp_send(nntp, 452, "Authorization rejected"); /*! \todo right code? */
 					return 0;
 				}
@@ -1698,7 +1767,7 @@ static void handle_client(struct nntp_session *nntp)
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 	/* 200 means client can post, 201 means not, but this is not a perfect distinction (see RFC) */
-	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", bbs_hostname());
+	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", newsname);
 
 	SET_BITFIELD(nntp->inpeer_any, authorized_inpeer_for_any_groups(nntp)); /* Cache whether this client has an inpeer ACL */
 
@@ -1777,21 +1846,32 @@ static int load_config(void)
 		return -1;
 	}
 
+	if (bbs_config_val_set_str(cfg, "general", "newsname", newsname, sizeof(newsname))) {
+		if (strlen_zero(bbs_hostname())) {
+			bbs_config_unlock(cfg);
+			bbs_error("A BBS hostname in nodes.conf or newsname in net_nntp.conf is required for newsgroup services\n");
+			return -1;
+		}
+		safe_strncpy(newsname, bbs_hostname(), sizeof(newsname));
+	}
 	if (bbs_config_val_set_path(cfg, "general", "newsdir", newsdir, sizeof(newsdir))) {
 		bbs_config_unlock(cfg);
 		return -1;
 	}
 
 	if (active_init() || spool_init()) {
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 
 	/* Remaining general settings */
 	bbs_config_val_set_uint(cfg, "readers", "maxpostsize", &max_post_size);
+	bbs_config_val_set_uint(cfg, "readers", "maxgroups", &max_groups);
 
 	/* Reader settings */
 	bbs_config_val_set_true(cfg, "readers", "requiresecurelogin", &require_secure_login);
 	bbs_config_val_set_true(cfg, "readers", "checkidentity", &check_identity);
+	bbs_config_val_set_uint(cfg, "readers", "maxpostgroups", &max_post_groups);
 
 	/* NNTP */
 	bbs_config_val_set_true(cfg, "nntp", "enabled", &nntp_enabled);
@@ -1910,10 +1990,6 @@ static int load_module(void)
 	}
 	if (nntps_enabled && !ssl_available()) {
 		bbs_error("TLS is not available, NNTPS may not be used\n");
-		goto cleanup;
-	}
-	if (strlen_zero(bbs_hostname())) {
-		bbs_error("A BBS hostname in nodes.conf is required for newsgroup services\n");
 		goto cleanup;
 	}
 

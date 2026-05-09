@@ -128,6 +128,8 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define ENDL "\r\n"
 
 /* NNTP test specific: */
+#define TEST_NEWS_HOSTNAME "news.example.com"
+
 #define NEW_NEWSGROUP(sockfd, name, desc, creator, posting) \
 	CLI_SWRITE(sockfd, "/news newgroup" CLI_EOL); \
 	CLI_SWRITE(sockfd, name CLI_EOL); \
@@ -141,6 +143,7 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 		"Message-ID: " messageid ENDL \
 		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
 		"Subject: I am just a test article" ENDL \
+		"Xref: peer.example.org " newsgroup ":1" ENDL \
 		ENDL \
 		"This is just a test article." ENDL \
 		"." ENDL; \

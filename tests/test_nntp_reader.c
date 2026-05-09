@@ -135,7 +135,7 @@ static int run(void)
 	REQUIRE_FD(client1);
 
 	/* Initial connection */
-	CLIENT_EXPECT(client1, "200 " TEST_HOSTNAME);
+	CLIENT_EXPECT(client1, "200 " TEST_NEWS_HOSTNAME);
 	SWRITE(client1, "CAPABILITIES\r\n");
 	CLIENT_EXPECT(client1, "101");
 	CLIENT_EXPECT_EVENTUALLY(client1, "POST");
@@ -292,6 +292,10 @@ static int run(void)
 	SWRITE(client1, "BODY 10\r\n");
 	CLIENT_EXPECT(client1, "423");
 
+	/* Check format of overview */
+	SWRITE(client1, "LIST OVERVIEW.FMT\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "Xref:full"); /* should be near the end */
+
 	SWRITE(client1, "XOVER 9\r\n");
 	/* Ensure overview for remaining articles is still intact
 	 * Save the response into a custom buffer so we can use it later. */
@@ -324,6 +328,8 @@ static int run(void)
 	TEST_EXPECT(atoi(xfield) > 50); /* Has to be at least 50 bytes! Probably more */
 	xfield = strsep(&xfields, "\t"); /* Field 8 = Lines */
 	TEST_EXPECT(atoi(xfield) == 1);
+	xfield = strsep(&xfields, "\t"); /* Field 9 = Xref */
+	TEST_EXPECT_STRING(xfield, "Xref: news.example.com misc.test:9");
 
 	/* Request article by Message-ID in the current group */
 	FMT_WRITE(client1, "ARTICLE %s\r\n", xmsgid);
@@ -345,6 +351,10 @@ static int run(void)
 	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.test,misc.crossposts");
 	GROUP_EXPECT(client1, "misc.crossposts", 1, 1, 1);
 	GROUP_EXPECT(client1, "misc.test", 8, 15, 7);
+
+	/* Ensure Xref header is correct: */
+	SWRITE(client1, "HEAD 15\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "Xref: news.example.com misc.test:15 misc.crossposts:1");
 
 	/* Ask for the cross-posted article by article ID */
 	SWRITE(client1, "XOVER 15\r\n");
@@ -408,9 +418,9 @@ static int run(void)
 	/* User 3 isn't allowed to do anything, since he has no matching ACL */
 	client3 = test_make_socket(119);
 	REQUIRE_FD(client3);
-	CLIENT_EXPECT(client3, "200 " TEST_HOSTNAME);
+	CLIENT_EXPECT(client3, "200 " TEST_NEWS_HOSTNAME);
 
-	SWRITE(client3, "AUTHINFO USER " TEST_USER3 "@" TEST_HOSTNAME "\r\n");
+	SWRITE(client3, "AUTHINFO USER " TEST_USER3 "@" TEST_NEWS_HOSTNAME "\r\n");
 	CLIENT_EXPECT(client3, "381");
 	SWRITE(client3, "AUTHINFO PASS " TEST_PASS3 "\r\n");
 	CLIENT_EXPECT(client3, "281");

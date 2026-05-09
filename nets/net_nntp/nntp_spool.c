@@ -55,7 +55,7 @@ int spool_group_overview(struct nntp_session *nntp, const char *groupname, int m
 	return tradspool_group_overview(nntp, groupname, min, max);
 }
 
-int spool_article_create(struct stringlist *groups, struct article_info *artinfo, int srcfd, size_t len)
+int spool_article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t len)
 {
 	return tradspool_article_create(groups, artinfo, srcfd, len);
 }

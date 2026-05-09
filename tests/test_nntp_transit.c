@@ -69,10 +69,10 @@ static int run(void)
 	clientfd = test_make_socket(433);
 	REQUIRE_FD(clientfd);
 
-#define TEST_MESSAGE_ID "<test.message@" TEST_HOSTNAME ">"
+#define TEST_MESSAGE_ID "<test.message@" TEST_NEWS_HOSTNAME ">"
 
 	/* Initial connection */
-	CLIENT_EXPECT(clientfd, "200 " TEST_HOSTNAME);
+	CLIENT_EXPECT(clientfd, "200 " TEST_NEWS_HOSTNAME);
 	SWRITE(clientfd, "CAPABILITIES\r\n");
 	CLIENT_EXPECT(clientfd, "101");
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "IHAVE");

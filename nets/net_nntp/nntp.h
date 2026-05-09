@@ -17,6 +17,8 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
+#include "include/linkedlists.h"
+
 #define NNTP_MAX_PATH_LENGTH 1024
 
 #define NNTP_MAX_LINE_LENGTH 512 /* RFC 3977 3.1. Includes CR LF (but not NUL) */
@@ -45,10 +47,20 @@ struct group_info {
 	const char *description; /*!< Group description */
 };
 
+struct article_group {
+	const char *name; /*!< The newsgroup name */
+	int article_num; /*!< To be assigned when assigning the article number */
+	BBS_LIST_ENTRY(article_group) entry;
+	char data[];
+};
+
+BBS_LIST_HEAD_NOLOCK(article_groups, article_group);
+
 /*! \brief Article overview metadata */
 struct article_info {
 	char *newsgroups;
 	char *expires;
+	/* As ordered for overview (fields 2-8) */
 	char *subject;
 	char *from;
 	char *date;
@@ -56,6 +68,8 @@ struct article_info {
 	char *references;
 	size_t bytes;
 	int lines;
+	/* Other */
+	size_t headerslen; /* Length of headers, not including empty line separating headers/body */
 };
 
 struct bbs_node;
@@ -72,6 +86,7 @@ struct nntp_session {
 };
 
 #ifndef MAIN_NNTP_FILE
+extern char newsname[256];
 extern char newsdir[256];
 #endif
 
@@ -220,6 +235,7 @@ enum list_category {
 	LIST_ACTIVE_TIMES = (1U << 1), /* active.times list provides creation information: <name> <epoch time of creation> <creator, i.e. email address> */
 	LIST_NEWSGROUPS = (1U << 2), /* <name> <short description about purpose of the group> (groups for which information is unavailable may be omitted, i.e. may miss groups included in LIST ACTIVE) */
 	LIST_DISTRIB_PATS = (1U << 3), /* distrib.pats list assists clients to choose a value for the Distribution header of an article being posted. */
+	LIST_OVERVIEW_FMT = (1U << 4), /* format of overview file */
 	LIST_PER_NEWSGROUP = (1U << 15), /* This LIST command is per-newsgroup */
 };
 
@@ -270,7 +286,7 @@ struct stringlist;
 
 /*!
  * \brief Add an article to the spool for a particular group
- * \param groups List of groups to which to add the article
+ * \param groups List of groups to which to add the article. Caller is responsible for freeing the list's contents afterwards.
  * \param articleid The Message-ID
  * \param srcfd File descriptor from which to read article
  * \param len Length of article (number of bytes to read from srcfd)
@@ -278,7 +294,7 @@ struct stringlist;
  * \returns Number of groups to which the article was added. Can be 0 (in particular, if delivery to all groups failed, and a group was full, errno will be set to ERANGE)
  * \note It's possible not all items in groups will be consumed, caller should call stringlist_empty afterwards
  */
-int spool_article_create(struct stringlist *groups, struct article_info *artinfo, int srcfd, size_t len);
+int spool_article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t len);
 
 int spool_article_delete_by_number(const char *groupname, int article_num);
 
