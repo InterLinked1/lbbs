@@ -48,7 +48,7 @@ int bbs_smtp_client_connect(struct bbs_smtp_client *smtpclient, const char *helo
 	return 0;
 }
 
-static void process_capabilities(int *restrict caps, int *restrict maxsendsize, const char *capname)
+static void process_capabilities(int *restrict caps, size_t *restrict maxsendsize, const char *capname)
 {
 	if (strlen_zero(capname) || !isupper(*capname)) { /* Capabilities are all uppercase XXX but is that required by the RFC? */
 		return;
@@ -86,7 +86,7 @@ static void process_capabilities(int *restrict caps, int *restrict maxsendsize, 
 			/* If there's a limit provided in the capabilities, store it and abort early if message length exceeds this */
 			size++;
 			if (!strlen_zero(size)) {
-				*maxsendsize = atoi(size);
+				*maxsendsize = (size_t) atol(size);
 			}
 		}
 	} else if (!strcasecmp(capname, "CHUNKING") || !strcasecmp(capname, "SMTPUTF8") || !strcasecmp(capname, "BINARYMIME")

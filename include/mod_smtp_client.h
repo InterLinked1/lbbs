@@ -39,7 +39,7 @@ struct bbs_smtp_client {
 	const char *helohost;	/*!< Hostname to use for HELO/EHLO */
 	const char *hostname;	/*!< Hostname of remote SMTP server */
 	int caps;				/*!< Capabilities supported by remote SMTP server */
-	int maxsendsize;		/*!< Maximum size of messages accepted by remote SMTP server */
+	size_t maxsendsize;		/*!< Maximum size of messages accepted by remote SMTP server */
 	unsigned int secure:1;	/*!< Connection is secure */
 };
 

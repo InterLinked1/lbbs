@@ -589,11 +589,11 @@ static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session 
 		}
 	}
 
-	if (smtpclient.maxsendsize && (int) (prependlen + writelen) > smtpclient.maxsendsize) {
+	if (smtpclient.maxsendsize && (prependlen + writelen) > smtpclient.maxsendsize) {
 		/* We know the message we're trying to send is larger than the max message size the server will accept.
 		 * Just abort now. */
-		bbs_warning("Total message size (%lu) is larger than server accepts (%d)\n", prependlen + writelen, smtpclient.maxsendsize);
-		snprintf(buf, len, "Message too large (%lu bytes, maximum is %d)", prependlen + writelen, smtpclient.maxsendsize);
+		bbs_warning("Total message size (%lu) is larger than server accepts (%lu)\n", prependlen + writelen, smtpclient.maxsendsize);
+		snprintf(buf, len, "Message too large (%lu bytes, maximum is %lu)", prependlen + writelen, smtpclient.maxsendsize);
 		res = 1;
 		goto cleanup;
 	}
