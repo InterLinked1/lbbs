@@ -22,6 +22,27 @@
 #ifndef _LINKEDLISTS_H
 #define _LINKEDLISTS_H
 
+/* No lock variants
+ * These are prefixed BBS_LIST instead of simply LIST,
+ * as LIST_ENTRY is already defined on FreeBSD in /usr/include/sys/queue.h
+ * The RWLIST macros are not prefixed with BBS for brevity */
+#define BBS_LIST_HEAD_NOLOCK(name, type)	\
+struct name {							\
+	struct type *first;					\
+	struct type *last;					\
+}
+
+#define BBS_LIST_HEAD_NOLOCK_INIT_VALUE	{	\
+	.first = NULL,						\
+	.last = NULL,						\
+}
+
+#define BBS_LIST_HEAD_NOLOCK_STATIC(name, type)	\
+struct name {								\
+	struct type *first;						\
+	struct type *last;						\
+} name = BBS_LIST_HEAD_NOLOCK_INIT_VALUE
+
 /*!
  * \brief Write locks a list.
  * \param head This is a pointer to the list head structure
@@ -141,30 +162,35 @@ struct name {                                                   \
  *
  * The field name \a list here is arbitrary, and can be anything you wish.
  */
-#define RWLIST_ENTRY(type)						\
+#define BBS_LIST_ENTRY(type)						\
 struct {								\
 	struct type *next;						\
 }
+
+#define RWLIST_ENTRY BBS_LIST_ENTRY
 
 /*!
  * \brief Returns the first entry contained in a list.
  * \param head This is a pointer to the list head structure
  */
-#define RWLIST_FIRST(head)	((head)->first)
+#define BBS_LIST_FIRST(head) ((head)->first)
+#define RWLIST_FIRST BBS_LIST_FIRST
 
 /*!
  * \brief Returns the last entry contained in a list.
  * \param head This is a pointer to the list head structure
  */
-#define RWLIST_LAST(head)	((head)->last)
+#define BBS_LIST_LAST(head) ((head)->last)
+#define RWLIST_LAST BBS_LIST_LAST
 
 /*!
  * \brief Returns the next entry in the list after the given entry.
  * \param elm This is a pointer to the current entry.
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  */
-#define RWLIST_NEXT(elm, field)	((elm)->field.next)
+#define BBS_LIST_NEXT(elm, field) ((elm)->field.next)
+#define RWLIST_NEXT BBS_LIST_NEXT
 
 /*!
  * \brief Checks whether the specified list contains any entries.
@@ -173,7 +199,8 @@ struct {								\
  * \return zero if the list has entries
  * \return non-zero if not.
  */
-#define RWLIST_EMPTY(head)	(RWLIST_FIRST(head) == NULL)
+#define BBS_LIST_EMPTY(head) (BBS_LIST_FIRST(head) == NULL)
+#define RWLIST_EMPTY BBS_LIST_EMPTY
 
 /*!
  * \brief Returns the number of elements in the list
@@ -181,16 +208,17 @@ struct {								\
  * \param var This is the name of the variable that will hold a pointer to the
  * current list entry on each iteration. It must be declared before calling
  * this macro.
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  *
  * \return Number of elements in list
  */
-#define RWLIST_SIZE(head,var,field) ({ \
+#define BBS_LIST_SIZE(head,var,field) ({ \
 	int __rwlist_count = 0; \
 	for((var) = (head)->first; (var); (var) = (var)->field.next, __rwlist_count++); \
 	__rwlist_count; \
 })
+#define RWLIST_SIZE BBS_LIST_SIZE
 
 /*!
  * \brief Loops over (traverses) the entries in a list.
@@ -198,14 +226,15 @@ struct {								\
  * \param var This is the name of the variable that will hold a pointer to the
  * current list entry on each iteration. It must be declared before calling
  * this macro.
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  *
  * This macro is use to loop over (traverse) the entries in a list. It uses a
  * \a for loop, and supplies the enclosed code with a pointer to each list
  * entry as it loops.
  */
-#define RWLIST_TRAVERSE(head,var,field) for((var) = (head)->first; (var); (var) = (var)->field.next)
+#define BBS_LIST_TRAVERSE(head,var,field) for((var) = (head)->first; (var); (var) = (var)->field.next)
+#define RWLIST_TRAVERSE BBS_LIST_TRAVERSE
 
 /*!
  * \brief Loops safely over (traverses) the entries in a list.
@@ -213,18 +242,18 @@ struct {								\
  * \param var This is the name of the variable that will hold a pointer to the
  * current list entry on each iteration. It must be declared before calling
  * this macro.
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  *
  * This macro is used to safely loop over (traverse) the entries in a list. It
  * uses a \a for loop, and supplies the enclosed code with a pointer to each list
  * entry as it loops.
  *
- * It differs from RWLIST_TRAVERSE() in that the code inside the loop can modify
- * (or even free, after calling RWLIST_REMOVE_CURRENT()) the entry pointed to by
+ * It differs from BBS_LIST_TRAVERSE() in that the code inside the loop can modify
+ * (or even free, after calling BBS_LIST_REMOVE_CURRENT()) the entry pointed to by
  * the \a current pointer without affecting the loop traversal.
  */
-#define RWLIST_TRAVERSE_SAFE_BEGIN(head, var, field) {				\
+#define BBS_LIST_TRAVERSE_SAFE_BEGIN(head, var, field) {				\
 	typeof((head)) __list_head = head;									\
 	typeof(__list_head->first) __list_next;								\
 	typeof(__list_head->first) __list_prev = NULL;						\
@@ -239,18 +268,19 @@ struct {								\
 		__list_next = (var) ? (var)->field.next : NULL,					\
 		(void) __list_prev /* To quiet compiler? */						\
 		)
+#define RWLIST_TRAVERSE_SAFE_BEGIN BBS_LIST_TRAVERSE_SAFE_BEGIN
 
 /*!
  * \brief Removes the \a current entry from a list during a traversal.
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  *
- * \note This macro can \b only be used inside an RWLIST_TRAVERSE_SAFE_BEGIN()
+ * \note This macro can \b only be used inside an BBS_LIST_TRAVERSE_SAFE_BEGIN()
  * block; it is used to unlink the current entry from the list without affecting
  * the list traversal (and without having to re-traverse the list to modify the
  * previous entry, if any).
  */
-#define RWLIST_REMOVE_CURRENT(field) do { 							\
+#define BBS_LIST_REMOVE_CURRENT(field) do { 							\
 		__list_current->field.next = NULL;								\
 		__list_current = __list_prev;									\
 		if (__list_prev) {												\
@@ -262,11 +292,13 @@ struct {								\
 			__list_head->last = __list_prev;							\
 		}																\
 	} while (0)
+#define RWLIST_REMOVE_CURRENT BBS_LIST_REMOVE_CURRENT
 
 /*!
  * \brief Closes a safe loop traversal block.
  */
-#define RWLIST_TRAVERSE_SAFE_END  }
+#define BBS_LIST_TRAVERSE_SAFE_END }
+#define RWLIST_TRAVERSE_SAFE_END BBS_LIST_TRAVERSE_SAFE_END
 
 /*!
  * \brief Inserts a list entry after a given entry.
@@ -274,42 +306,44 @@ struct {								\
  * \param listelm This is a pointer to the entry after which the new entry should
  * be inserted.
  * \param elm This is a pointer to the entry to be inserted.
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  */
-#define RWLIST_INSERT_AFTER(head, listelm, elm, field) do {		\
+#define BBS_LIST_INSERT_AFTER(head, listelm, elm, field) do {		\
 	(elm)->field.next = (listelm)->field.next;			\
 	(listelm)->field.next = (elm);					\
 	if ((head)->last == (listelm))					\
 		(head)->last = (elm);					\
 } while (0)
+#define RWLIST_INSERT_AFTER BBS_LIST_INSERT_AFTER
 
 /*!
  * \brief Inserts a list entry at the head of a list.
  * \param head This is a pointer to the list head structure
  * \param elm This is a pointer to the entry to be inserted.
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  */
-#define RWLIST_INSERT_HEAD(head, elm, field) do {			\
+#define BBS_LIST_INSERT_HEAD(head, elm, field) do {			\
 		(elm)->field.next = (head)->first;			\
 		(head)->first = (elm);					\
 		if (!(head)->last)					\
 			(head)->last = (elm);				\
 } while (0)
+#define RWLIST_INSERT_HEAD BBS_LIST_INSERT_HEAD
 
 /*!
  * \brief Appends a list entry to the tail of a list.
  * \param head This is a pointer to the list head structure
  * \param elm This is a pointer to the entry to be appended.
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  *
  * Note: The link field in the appended entry is \b not modified, so if it is
  * actually the head of a list itself, the entire list will be appended
- * temporarily (until the next RWLIST_INSERT_TAIL is performed).
+ * temporarily (until the next BBS_LIST_INSERT_TAIL is performed).
  */
-#define RWLIST_INSERT_TAIL(head, elm, field) do {			\
+#define BBS_LIST_INSERT_TAIL(head, elm, field) do {			\
 	if (!(head)->first) {						\
 		(head)->first = (elm);					\
 		(head)->last = (elm);					\
@@ -318,38 +352,40 @@ struct {								\
 		(head)->last = (elm);					\
 	}									\
 } while (0)
+#define RWLIST_INSERT_TAIL BBS_LIST_INSERT_TAIL
 
 /*!
  * \brief Insert a list entry such that the list remains sorted in ascending order
  * \param head This is a pointer to the list head structure
  * \param elm This is a pointer to the entry to be inserted.
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  * \param attr This is the name of the struct field that will be compared
  */
-#define RWLIST_INSERT_SORTED(head, elm, field, attr) {	\
+#define BBS_LIST_INSERT_SORTED(head, elm, field, attr) {	\
 	typeof((head)->first) __prev = NULL, __cur;			\
-	RWLIST_TRAVERSE(head, __cur, field) { 				\
+	BBS_LIST_TRAVERSE(head, __cur, field) { 				\
 		if (__cur->attr > elm->attr) { 					\
 			break; 										\
 		} 												\
 		__prev = __cur; 								\
 	} 													\
 	if (__prev) { 										\
-		RWLIST_INSERT_AFTER(head, __prev, elm, field); 	\
+		BBS_LIST_INSERT_AFTER(head, __prev, elm, field); 	\
 	} else { 											\
-		RWLIST_INSERT_HEAD(head, elm, field); /* List was empty, or it should go at beginning. */ \
+		BBS_LIST_INSERT_HEAD(head, elm, field); /* List was empty, or it should go at beginning. */ \
 	}													\
 }
+#define RWLIST_INSERT_SORTED BBS_LIST_INSERT_SORTED
 
 /*!
  * \brief Inserts a list entry into a alphabetically sorted list
  * \param head Pointer to the list head structure
  * \param elm Pointer to the entry to be inserted
- * \param field Name of the list entry field (declared using RWLIST_ENTRY())
+ * \param field Name of the list entry field (declared using BBS_LIST_ENTRY())
  * \param sortfield Name of the field on which the list is sorted
  */
-#define RWLIST_INSERT_SORTALPHA(head, elm, field, sortfield) {          \
+#define BBS_LIST_INSERT_SORTALPHA(head, elm, field, sortfield) {          \
 	if (!(head)->first) {                                               \
 		(head)->first = (elm);                                          \
 		(head)->last = (elm);                                           \
@@ -360,25 +396,26 @@ struct {								\
 			__cur = __cur->field.next;                                  \
 		}                                                               \
 		if (!__prev) {                                                  \
-			RWLIST_INSERT_HEAD(head, elm, field);                       \
+			BBS_LIST_INSERT_HEAD(head, elm, field);                       \
 		} else if (!__cur) {                                            \
-			RWLIST_INSERT_TAIL(head, elm, field);                       \
+			BBS_LIST_INSERT_TAIL(head, elm, field);                       \
 		} else {                                                        \
-			RWLIST_INSERT_AFTER(head, __prev, elm, field);              \
+			BBS_LIST_INSERT_AFTER(head, __prev, elm, field);              \
 		}                                                               \
 	}                                                                   \
 }
+#define RWLIST_INSERT_SORTALPHA BBS_LIST_INSERT_SORTALPHA
 
 /*!
  * \brief Removes and returns the head entry from a list.
  * \param head This is a pointer to the list head structure
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  *
  * Removes the head entry from the list, and returns a pointer to it.
  * This macro is safe to call on an empty list.
  */
-#define RWLIST_REMOVE_HEAD(head, field) ({				\
+#define BBS_LIST_REMOVE_HEAD(head, field) ({				\
 		typeof((head)->first) __cur = (head)->first;		\
 		if (__cur) {						\
 			(head)->first = __cur->field.next;		\
@@ -388,18 +425,19 @@ struct {								\
 		}							\
 		__cur;							\
 	})
+#define RWLIST_REMOVE_HEAD BBS_LIST_REMOVE_HEAD
 
 /*!
  * \brief Removes a specific entry from a list.
  * \param head This is a pointer to the list head structure
  * \param elm This is a pointer to the entry to be removed.
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  * \retval elm if elm was in the list.
  * \retval NULL if elm was not in the list or elm was NULL.
  * \warning The removed entry is \b not freed.
  */
-#define RWLIST_REMOVE(head, elm, field)						\
+#define BBS_LIST_REMOVE(head, elm, field)						\
 	({															\
 		typeof(elm) __elm = (elm);								\
 		if (__elm) {											\
@@ -427,19 +465,20 @@ struct {								\
 		}														\
 		__elm;													\
 	})
+#define RWLIST_REMOVE BBS_LIST_REMOVE
 
 /*!
  * \brief Removes a specific entry from a list, by an attribute match.
  * \param head This is a pointer to the list head structure
  * \param attribute The attribute by which to look for a match
  * \param value The value that the attribute must have to match
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  * \retval Removed element
  * \retval NULL if no matching element was found.
  * \warning The removed entry is \b not freed.
  */
-#define RWLIST_REMOVE_BY_FIELD(head, attribute, value, field)	\
+#define BBS_LIST_REMOVE_BY_FIELD(head, attribute, value, field)	\
 	({															\
 		typeof((head)->first) __elm = NULL;						\
 		if ((head)->first && (head)->first->attribute == value) {		\
@@ -469,6 +508,7 @@ struct {								\
 		}													\
 		__elm;												\
 	})
+#define RWLIST_REMOVE_BY_FIELD BBS_LIST_REMOVE_BY_FIELD
 
 #define RWLIST_WRLOCK_REMOVE_BY_FIELD(head, attribute, value, field) ({ \
 	typeof((head)->first) __elm_outer = NULL; \
@@ -483,13 +523,13 @@ struct {								\
  * \param head This is a pointer to the list head structure
  * \param attribute The attribute by which to look for a match via string comparison
  * \param value The value that the attribute must have to match
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  * \retval Removed element
  * \retval NULL if no matching element was found.
  * \warning The removed entry is \b not freed.
  */
-#define RWLIST_REMOVE_BY_STRING_FIELD(head, attribute, value, field)	\
+#define BBS_LIST_REMOVE_BY_STRING_FIELD(head, attribute, value, field)	\
 	({															\
 		typeof((head)->first) __elm = NULL;						\
 		if ((head)->first && !strcmp((head)->first->attribute, value)) {		\
@@ -519,6 +559,7 @@ struct {								\
 		}													\
 		__elm;												\
 	})
+#define RWLIST_REMOVE_BY_STRING_FIELD BBS_LIST_REMOVE_BY_STRING_FIELD
 
 #define RWLIST_WRLOCK_REMOVE_BY_STRING_FIELD(head, attribute, value, field) ({ \
 	typeof((head)->first) __elm_outer = NULL; \
@@ -531,19 +572,20 @@ struct {								\
 /*!
  * \brief Removes all the entries from a list and invokes a destructor on each entry
  * \param head This is a pointer to the list head structure
- * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * \param field This is the name of the field (declared using BBS_LIST_ENTRY())
  * used to link entries of this list together.
  * \param destructor A destructor function to call on each element (e.g. free)
  *
  * This macro is safe to call on an empty list.
  */
-#define RWLIST_REMOVE_ALL(head, field, destructor) { \
+#define BBS_LIST_REMOVE_ALL(head, field, destructor) { \
 	typeof((head)) __list_head = head; \
 	typeof(__list_head->first) __list_current; \
-	while ((__list_current = RWLIST_REMOVE_HEAD(head, field))) { \
+	while ((__list_current = BBS_LIST_REMOVE_HEAD(head, field))) { \
 		destructor(__list_current); \
 	} \
 }
+#define RWLIST_REMOVE_ALL BBS_LIST_REMOVE_ALL
 
 /*! \brief Same as RWLIST_REMOVE_ALL, but WRLOCK list beforehand and UNLOCK afterwards */
 #define RWLIST_WRLOCK_REMOVE_ALL(head, field, destructor) \
