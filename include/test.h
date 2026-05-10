@@ -15,6 +15,7 @@
 
 #define bbs_test_assert(x) if (!(x)) { bbs_warning("Test assertion failed: %s\n", #x); goto cleanup; }
 #define bbs_test_assert_equals(x, y) if (!((x) == (y))) { bbs_warning("Test assertion failed: (%d != %d)\n", (x), (y)); goto cleanup; }
+#define bbs_test_assert_long_equals(x, y) if (!((x) == (y))) { bbs_warning("Test assertion failed: (%ld != %ld)\n", (x), (y)); goto cleanup; }
 #define bbs_test_assert_size_equals(x, y) if (!((x) == (y))) { bbs_warning("Test assertion failed: (%lu != %lu)\n", (x), (y)); goto cleanup; }
 #define bbs_test_assert_exists(x) if ((x) == NULL) { bbs_warning("Test assertion failed: (%s != NULL)\n", #x); goto cleanup; }
 #define bbs_test_assert_null(x) if (!((x) == NULL)) { bbs_warning("Test assertion failed: (%p == NULL)\n", (x)); goto cleanup; }

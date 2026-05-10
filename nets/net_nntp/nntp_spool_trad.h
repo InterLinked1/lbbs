@@ -22,6 +22,7 @@ void tradspool_cleanup(void);
 int tradspool_group_create(const char *groupname);
 int tradspool_group_delete(const char *groupname);
 int tradspool_group_exists(const char *groupname);
+int tradspool_newnews(struct nntp_session *nntp, const char *wildmat, time_t newerthan);
 int tradspool_group_seek(const char *groupname, int cur_artnum, int *new_artnum, int direction, char *msgidbuf, size_t msgidlen);
 int tradspool_group_list_articles(struct nntp_session *nntp, const char *groupname, int min, int max);
 int tradspool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max);

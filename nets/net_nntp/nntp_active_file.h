@@ -22,3 +22,4 @@ int active_file_group_delete(const char *groupname);
 int active_file_group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, char status, const char *description);
 int active_file_group_info(const char *groupname, int *last, int *high, int *low, int *count, char *status, time_t *created, char *creator, size_t creatorlen, char *description, size_t descriplen);
 int active_file_group_list(struct nntp_session *nntp, enum list_category listcat, const char *wildmat);
+int active_file_group_list_newgroups(struct nntp_session *nntp, time_t newerthan);

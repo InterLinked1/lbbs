@@ -249,12 +249,30 @@ enum list_category {
  */
 int active_group_list(struct nntp_session *nntp, enum list_category listcat, const char *wildmat);
 
+/*!
+ * \brief Send a NEWGROUPS response to a client
+ * \param nntp
+ * \param newerthan Time filter - only groups newer than this time will be sent
+ * \retval 0 on success (response sent)
+ * \retval nonzero on error (response not sent)
+ */
+int active_group_list_newgroups(struct nntp_session *nntp, time_t newerthan);
+
 /* News spool */
 int spool_init(void);
 void spool_cleanup(void);
 int spool_group_create(const char *groupname);
 int spool_group_delete(const char *groupname);
 int spool_group_exists(const char *groupname);
+
+/*!
+ * \brief Send NEWNEWS response (excluding 230 response line)
+ * \param nntp
+ * \param wildmat Wildmat filter for groups to match
+ * \param newerthan Only send articles newer than this timestamp
+ * \retval 0 on success (including if no articles matched), -1 on failure
+ */
+int spool_newnews(struct nntp_session *nntp, const char *wildmat, time_t newerthan);
 
 /*!
  * \brief Find the NEXT or LAST (previous) article in a newsgroup, using the spool (or its metadata)

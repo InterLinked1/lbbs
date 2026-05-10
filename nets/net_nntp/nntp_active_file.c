@@ -178,7 +178,11 @@ static int regenerate_active_file(enum group_mod_type modtype, struct group_info
 
 	if (oldfp) {
 		/* Copy over each line from the old file to the new, updating the line of interest when we find it.
-		 * If we are inserting a new group, we make sure to keep the list sorted. */
+		 * If we are inserting a new group, we make sure to keep the list sorted by group name.
+		 * Traditionally, an active file is sorted by when groups were added (e.g. LIST ACTIVE.TIMES),
+		 * which would make this operation easy (append at the end), but there don't seem to be any
+		 * requirements on ordering for either LIST ACTIVE or LIST ACTIVE.TIMES, so keeping the groups
+		 * sorted alphabetically seems more useful to a client... */
 		char oldline[NNTP_MAX_LINE_LENGTH];
 		char lastgrp[sizeof(oldline)];
 
@@ -424,7 +428,7 @@ int active_file_group_info(const char *groupname, int *last, int *high, int *low
 	return 1;
 }
 
-int active_file_group_list(struct nntp_session *nntp, enum list_category listcat, const char *wildmat)
+static int active_file_group_list_full(struct nntp_session *nntp, enum list_category listcat, const char *wildmat, time_t newerthan, int newgroups)
 {
 	FILE *fp;
 	char *group, buf[NNTP_MAX_LINE_LENGTH + 1];
@@ -438,7 +442,7 @@ int active_file_group_list(struct nntp_session *nntp, enum list_category listcat
 
 	switch (listcat) {
 		case LIST_ACTIVE:
-			nntp_send(nntp, 215, "Newsgroup listing follows in form \"group high low status\"");
+			nntp_send(nntp, newgroups ? 231 : 215, "Newsgroup listing follows in form \"group high low status\"");
 			break;
 		case LIST_ACTIVE_TIMES:
 			nntp_send(nntp, 215, "Newsgroup creation times follow in form \"group time who\"");
@@ -471,6 +475,9 @@ int active_file_group_list(struct nntp_session *nntp, enum list_category listcat
 		if (parse_active_line(line, &g)) {
 			continue;
 		}
+		if (newgroups && g.created < newerthan) {
+			continue;
+		}
 		/* This involves slightly more parsing than most news servers have to do.
 		 * Traditional news servers use separate files for each of the LIST responses.
 		 * Since we use one great big extended file for all of this,
@@ -497,4 +504,14 @@ int active_file_group_list(struct nntp_session *nntp, enum list_category listcat
 	fclose(fp);
 	_nntp_send(nntp, ".\r\n");
 	return 0;
+}
+
+int active_file_group_list(struct nntp_session *nntp, enum list_category listcat, const char *wildmat)
+{
+	return active_file_group_list_full(nntp, listcat, wildmat, 0, 0);
+}
+
+int active_file_group_list_newgroups(struct nntp_session *nntp, time_t newerthan)
+{
+	return active_file_group_list_full(nntp, LIST_ACTIVE, NULL, newerthan, 1); /* LIST ACTIVE response lines for matching groups, with 231 response */
 }

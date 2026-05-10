@@ -409,6 +409,12 @@ static void nntp_destroy(struct nntp_session *nntp)
 		return 0; \
 	}
 
+#define REQUIRE_NO_ARGS(s) \
+	if (!strlen_zero(s)) { \
+		nntp_send(nntp, 501, "Syntax is: %s (no argument allowed)\r\n", command); \
+		return 0; \
+	}
+
 /* =============== Begin Group Metadata Operations =============== */
 
 /*! \note
@@ -1417,11 +1423,90 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 	}
 }
 
+static time_t parse_datetime(const char *date, const char *hour, int utc)
+{
+	time_t epoch;
+	struct tm tm;
+	char datestr[15];
+	size_t datelen = strlen(date);
+	size_t timelen = strlen(hour);
+
+	if (datelen != 6 && datelen != 8) {
+		bbs_debug(3, "Invalid date '%s'\n", date);
+		return -1;
+	}
+	if (timelen != 6) {
+		bbs_debug(3, "Invalid time '%s'\n", hour);
+		return -1;
+	}
+
+	/* Date, either yymmdd or yyyymmdd
+	 * If we only have a 2-digit year, figure out what the first two digits should be first. */
+	if (datelen == 6) {
+		time_t now;
+		int cur_yy, cur_yyyy, arg_yy;
+		struct tm nowdate;
+
+		/* RFC 3977 7.3.2
+		 * First two digits are from current century if yy <= current year, previous century otherwise */
+		now = time(NULL);
+		utc ? gmtime_r(&now, &nowdate) : localtime_r(&now, &nowdate);
+		cur_yyyy = nowdate.tm_year + 1900; /* Current year */
+		cur_yy = cur_yyyy % 100; /* last 2 digits of the current year */
+		strcpy(datestr + 2, date);
+		arg_yy = 10 * (date[0] - '0') + (date[1] - '0'); /* Get user provided yy */
+		if (arg_yy > cur_yy) {
+			/* Previous century, e.g. arg is 95 > 26 */
+			cur_yyyy -= 100;
+		} /* else, current century, e.g. arg is 11 <= 26 */
+		/* Faster than formatting cur_yy for printing just to get the first two digits: */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+		datestr[0] = '0' + (char) (cur_yyyy / 1000);
+		datestr[1] = '0' + (char) ((cur_yyyy % 1000) / 100);
+#pragma GCC diagnostic pop
+	} else {
+		strcpy(datestr, date); /* Safe */
+	}
+	strcpy(datestr + 8, hour); /* Safe */
+
+	memset(&tm, 0, sizeof(tm));
+	if (!strptime(datestr, "%Y%m%d%H%M%S", &tm)) {
+		bbs_debug(3, "strptime failed for '%s'\n", datestr);
+		return -1;
+	}
+
+	errno = 0;
+	epoch = utc ? timegm(&tm) : mktime(&tm);
+	if (epoch <= 0) {
+		if (epoch == -1 && errno) {
+			bbs_error("Conversion failed: %s\n", strerror(errno));
+		}
+	}
+	bbs_debug(5, "strptime(%s) = %ld\n", datestr, epoch);
+	return epoch;
+}
+
+static int test_dateparsing(void)
+{
+	/* Note: The 6-digit tests will need to be updated every ~100 years when the correct epoch moves forward one century */
+	bbs_test_assert_long_equals(-82739L, parse_datetime("691231", "010101", 1)); /* the day before epoch 0 */
+	bbs_test_assert_long_equals(946684799L, parse_datetime("991231", "235959", 1)); /* last second of 1999 */
+	bbs_test_assert_long_equals(1767961859L, parse_datetime("260109", "123059", 1)); /* 2026-01-09 */
+	bbs_test_assert_long_equals(1767961859L, parse_datetime("20260109", "123059", 1));
+	bbs_test_assert_long_equals(17514840225L, parse_datetime("25250109", "012345", 1));
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata, char *s)
 {
 	char *command = strsep(&s, " ");
 
 	if (!strcasecmp(command, "QUIT")) {
+		REQUIRE_NO_ARGS(s);
 		nntp_send(nntp, 205, "Bye!");
 		return -1;
 	} else if (!strcasecmp(command, "MODE")) {
@@ -1437,6 +1522,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		/* This is very reminiscent of the POP3 CAPABILITIES command: */
 		nntp_send(nntp, 101, "Capability list:");
 		_nntp_send(nntp, "VERSION 2\r\n"); /* Must be first */
+		_nntp_send(nntp, "IMPLEMENTATION %s\r\n", BBS_SHORTNAME);
 		/* Don't advertise MODE-READER, just READER */
 		if (!nntp->node->secure) {
 			_nntp_send(nntp, "STARTTLS\r\n");
@@ -1448,16 +1534,16 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			_nntp_send(nntp, "IHAVE\r\n");
 			_nntp_send(nntp, "MODE-READER\r\n");
 		}
-		_nntp_send(nntp, "LIST ACTIVE NEWSGROUPS ACTIVE.TIMES\r\n");
+		_nntp_send(nntp, "LIST ACTIVE NEWSGROUPS ACTIVE.TIMES OVERVIEW.FMT\r\n");
 		_nntp_send(nntp, "OVER MSGID\r\n");
 		_nntp_send(nntp, "XSECRET\r\n");
 		if ((nntp->node->secure || !require_secure_login) && !bbs_user_is_registered(nntp->node->user)) {
 			_nntp_send(nntp, "AUTHINFO USER\r\n");
 			_nntp_send(nntp, "SASL PLAIN\r\n");
 		}
-		_nntp_send(nntp, "IMPLEMENTATION %s\r\n", BBS_SHORTNAME);
 		_nntp_send(nntp, ".\r\n");
 	} else if (!strcasecmp(command, "STARTTLS")) {
+		REQUIRE_NO_ARGS(s);
 		if (!ssl_available()) {
 			nntp_send(nntp, 580, "STARTTLS may not be used");
 		} else if (!nntp->node->secure) {
@@ -1477,34 +1563,37 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		char datestr[15];
 		time_t timenow;
 		struct tm nowtime;
+		REQUIRE_NO_ARGS(s);
 		timenow = time(NULL);
 		gmtime_r(&timenow, &nowtime);
 		strftime(datestr, sizeof(datestr), "%Y%m%d%H%M%S", &nowtime); /* yyyymmddhhmmss */
 		nntp_send(nntp, 111, "%s", datestr);
 	} else if (!strcasecmp(command, "HELP")) {
-		nntp_send(nntp, 100, "Help text follows");
-		/* XXX Could add descriptions too */
-		_nntp_send(nntp, "QUIT\r\n");
-		_nntp_send(nntp, "MODE\r\n");
-		_nntp_send(nntp, "DATE\r\n");
-		_nntp_send(nntp, "HELP\r\n");
-		_nntp_send(nntp, "CAPABILITIES\r\n");
-		_nntp_send(nntp, "STARTTLS\r\n");
-		_nntp_send(nntp, "XSECRET\r\n");
-		_nntp_send(nntp, "AUTHINFO\r\n");
-		_nntp_send(nntp, "USER\r\n");
-		_nntp_send(nntp, "PASS\r\n");
-		_nntp_send(nntp, "SASL\r\n");
-		_nntp_send(nntp, "LIST, LIST.ACTIVE\r\n");
-		_nntp_send(nntp, "GROUP\r\n");
-		_nntp_send(nntp, "XOVER\r\n");
-		_nntp_send(nntp, "HEAD\r\n");
-		_nntp_send(nntp, "ARTICLE\r\n");
-		_nntp_send(nntp, "BODY\r\n");
-		_nntp_send(nntp, "LAST\r\n");
-		_nntp_send(nntp, "NEXT\r\n");
-		_nntp_send(nntp, "POST\r\n");
-		_nntp_send(nntp, "IHAVE\r\n");
+		REQUIRE_NO_ARGS(s);
+		nntp_send(nntp, 100, "Legal commands");
+		/* Alphabetically sorted list of commands: */
+		_nntp_send(nntp, " ARTICLE [message-ID|number]\r\n");
+		_nntp_send(nntp, " AUTHINFO USER name|PASS password\r\n");
+		_nntp_send(nntp, " BODY [message-ID|number]\r\n");
+		_nntp_send(nntp, " CAPABILITIES\r\n");
+		_nntp_send(nntp, " DATE\r\n");
+		_nntp_send(nntp, " GROUP newsgroup\r\n");
+		_nntp_send(nntp, " HEAD [message-ID|number]\r\n");
+		_nntp_send(nntp, " HELP\r\n");
+		_nntp_send(nntp, " IHAVE message-ID\r\n");
+		_nntp_send(nntp, " LAST\r\n");
+		_nntp_send(nntp, " LIST [ACTIVE [wildmat]|ACTIVE.TIMES [wildmat]|DISTRIB.PATS|NEWSGROUPS [wildmat]|OVERVIEW.FMT\r\n");
+		_nntp_send(nntp, " LISTGROUP [newsgroup [range]]\r\n");
+		_nntp_send(nntp, " MODE READER\r\n");
+		_nntp_send(nntp, " NEWGROUPS [yy]yymmdd hhmmss [GMT]\r\n");
+		_nntp_send(nntp, " NEWNEWS wildmat [yy]yymmdd hhmmss [GMT]\r\n");
+		_nntp_send(nntp, " NEXT\r\n");
+		_nntp_send(nntp, " OVER [range]\r\n");
+		_nntp_send(nntp, " POST\r\n");
+		_nntp_send(nntp, " QUIT\r\n");
+		_nntp_send(nntp, " STARTTLS\r\n");
+		_nntp_send(nntp, " STAT [message-ID|number]\r\n");
+		_nntp_send(nntp, " XOVER [range]\r\n");
 		_nntp_send(nntp, ".\r\n");
 	} else if (!strcasecmp(command, "XSECRET")) {
 		/* XSECRET appears in RFC 3977, in passing, but there is no actual documentation anywhere of it that I can find.
@@ -1677,6 +1766,46 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			_nntp_send(nntp, ".\r\n"); /* On success, we send the trailing ., on failure we do not, so we do it here */
 		}
 		nntp->currentarticle = low; /* Always the first article, even if not in the provided range */
+	} else if (!strcasecmp(command, "NEWGROUPS")) {
+		time_t epoch;
+		int res;
+		char *date, *time, *gmt;
+		date = strsep(&s, " ");
+		time = strsep(&s, " ");
+		gmt = s;
+		REQUIRE_ARGS(date);
+		REQUIRE_ARGS(time);
+		epoch = parse_datetime(date, time, !strlen_zero(gmt) && !strcmp(gmt, "GMT"));
+		if (epoch <= 0) {
+			nntp_send(nntp, 501, "Invalid time argument");
+			return 0;
+		}
+		ACL_RDLOCK(nntp);
+		res = active_group_list_newgroups(nntp, epoch);
+		ACL_UNLOCK(nntp);
+		if (res) {
+			nntp_send(nntp, 503, "Data item not available");
+			return 0;
+		}
+	} else if (!strcasecmp(command, "NEWNEWS")) {
+		time_t epoch;
+		char *wildmat, *date, *time, *gmt;
+		wildmat = strsep(&s, " ");
+		date = strsep(&s, " ");
+		time = strsep(&s, " ");
+		gmt = s;
+		REQUIRE_ARGS(wildmat);
+		REQUIRE_ARGS(date);
+		REQUIRE_ARGS(time);
+		epoch = parse_datetime(date, time, !strlen_zero(gmt) && !strcmp(gmt, "GMT"));
+		if (epoch <= 0) {
+			nntp_send(nntp, 501, "Invalid time argument");
+			return 0;
+		}
+		nntp_send(nntp, 230, "List of new articles by message-ID follows");
+		ACL_RDLOCK(nntp);
+		spool_newnews(nntp, wildmat, epoch);
+		ACL_UNLOCK(nntp);
 	} else if (!strcasecmp(command, "XOVER")) {
 		/* RFC 2980 XOVER */
 		/* Mozilla-based clients prefer XOVER to HEAD, and will only issue a HEAD if XOVER is not available. */
@@ -1922,6 +2051,7 @@ static void *__nntp_handler(void *varg)
 static struct bbs_unit_test tests[] =
 {
 	{ "NNTP Wildmats", test_wildmats },
+	{ "NNTP Date Parsing", test_dateparsing },
 };
 
 static struct bbs_cli_entry cli_commands_nntp[] = {

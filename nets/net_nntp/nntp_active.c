@@ -56,3 +56,8 @@ int active_group_list(struct nntp_session *nntp, enum list_category listcat, con
 {
 	return active_file_group_list(nntp, listcat, wildmat);
 }
+
+int active_group_list_newgroups(struct nntp_session *nntp, time_t newerthan)
+{
+	return active_file_group_list_newgroups(nntp, newerthan);
+}

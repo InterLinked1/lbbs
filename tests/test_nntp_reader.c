@@ -154,6 +154,28 @@ static int run(void)
 	SWRITE(client1, "LISTGROUP\r\n");
 	CLIENT_EXPECT(client1, "412");
 
+	SWRITE(client1, "HELP\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "." ENDL);
+	SWRITE(client1, "DATE\r\n");
+	CLIENT_EXPECT(client1, "111 2"); /* This test will work until the year 3000... good enough? */
+	SWRITE(client1, "NEWGROUPS\r\n");
+	CLIENT_EXPECT(client1, "501");
+	SWRITE(client1, "NEWGROUPS 260109 123059\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test");
+	SWRITE(client1, "NEWGROUPS 20260109 123059\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test");
+	SWRITE(client1, "NEWGROUPS 20260109 123059 GMT\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test");
+	SWRITE(client1, "NEWGROUPS 20260109 123059 GMT\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "." ENDL); /* 231 response with several groups */
+	SWRITE(client1, "NEWGROUPS 30000109 123059 GMT\r\n"); /* Some date far in the future */
+	CLIENT_EXPECT(client1, "231");
+	CLIENT_EXPECT(client1, "." ENDL);
+
+	SWRITE(client1, "NEWNEWS * 19990101 123059 GMT\r\n");
+	CLIENT_EXPECT(client1, "230");
+	CLIENT_EXPECT(client1, "." ENDL); /* no articles yet, so no new news */
+
 	/* Try posting an article under an unauthorized identity */
 	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL_UNAUTHORIZED, "misc.test", 441);
 
@@ -200,6 +222,14 @@ static int run(void)
 	SWRITE(client1, "HEAD 1\r\n");
 	CLIENT_EXPECT(client1, "221");
 	CLIENT_EXPECT(client1, TEST_EMAIL); /* Our email should be in the response data */
+
+	SWRITE(client1, "NEWNEWS misc.* 29990101 123059 GMT\r\n");
+	CLIENT_EXPECT(client1, "230");
+	CLIENT_EXPECT(client1, "."); /* No articles newer than the provided timestamp */
+
+	SWRITE(client1, "NEWNEWS misc.* 19990101 123059 GMT\r\n"); /* Repeat, but now it should include the article */
+	CLIENT_EXPECT_EVENTUALLY(client1, TEST_NEWS_HOSTNAME ">"); /* Should have some message ID */
+
 	SWRITE(client1, "ARTICLE 1\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, ".\r\n");
 	SWRITE(client1, "STAT 1\r\n");
@@ -374,6 +404,11 @@ static int run(void)
 	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.test,misc.crossposts");
 	GROUP_EXPECT(client1, "misc.crossposts", 1, 1, 1);
 	GROUP_EXPECT(client1, "misc.test", 8, 15, 7);
+
+	/* NEWNEWS should contain articles in the response (many articles, but we don't have a good way to test for that here)
+	 * At least the last message-ID we knew about should be present */
+	SWRITE(client1, "NEWNEWS * 19990101 123059 GMT\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, xmsgid);
 
 	SWRITE(client1, "LISTGROUP\r\n"); /* List articles for current group */
 	CLIENT_EXPECT_EVENTUALLY(client1, "13"); /* This is one of them */

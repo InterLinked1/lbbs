@@ -45,6 +45,11 @@ int spool_group_exists(const char *groupname)
 	return tradspool_group_exists(groupname);
 }
 
+int spool_newnews(struct nntp_session *nntp, const char *wildmat, time_t newerthan)
+{
+	return tradspool_newnews(nntp, wildmat, newerthan);
+}
+
 int spool_group_seek(const char *groupname, int cur_artnum, int *new_artnum, int direction, char *msgidbuf, size_t msgidlen)
 {
 	return tradspool_group_seek(groupname, cur_artnum, new_artnum, direction, msgidbuf, msgidlen);

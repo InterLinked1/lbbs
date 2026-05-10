@@ -193,6 +193,68 @@ static int history_add(const char *messageid, time_t arrival_time, const char *e
 	return 0;
 }
 
+int tradspool_newnews(struct nntp_session *nntp, const char *wildmat, time_t newerthan)
+{
+	char buf[NNTP_BUFSIZ];
+	int line = 0;
+
+	bbs_mutex_lock(&histlock);
+	/* Seek to the beginning of the file */
+	if (fseek(histfp, 0, SEEK_SET)) {
+		bbs_error("fseek failed: %s\n", strerror(errno));
+		bbs_mutex_unlock(&histlock);
+		return -1;
+	}
+	while ((fgets(buf, sizeof(buf), histfp))) {
+		int sendmsg = 0;
+		time_t epoch;
+		char *grp, *middle, *artnumstr, *restofline = buf;
+		char *msgid = strsep(&restofline, "\t");
+		line++;
+		if (!msgid) {
+			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+			continue;
+		}
+		middle = strsep(&restofline, "\t"); /* This is the complex middle, restofline now is just the links */
+		epoch = atol(middle); /* Will stop at ~ */
+		/* We check the time first since that will be faster than matching the wildmat, and most of the time, we'll only want the most recent articles */
+		if (epoch <= newerthan) {
+			continue;
+		}
+		if (strlen_zero(restofline)) {
+			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+			continue;
+		}
+
+		/* Check if the wildmat matches any of the groups containing this article */
+		while ((artnumstr = strsep(&restofline, " "))) {
+			grp = strsep(&artnumstr, "/"); /* Parse out the group name */
+			if (!grp) {
+				bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+				break;
+			}
+			if (!uwildmat(grp, wildmat)) {
+				continue;
+			}
+			if (!ACL_ALLOWED_LOCKED(nntp, grp, NNTP_ACL_READ)) {
+				continue;
+			}
+			sendmsg = 1;
+			break; /* No need to check the other groups, one group is enough */
+		}
+		if (sendmsg) {
+			_nntp_send(nntp, "%s\r\n", msgid);
+		}
+	}
+	/* When we're done, seek back to the end of the file for appends */
+	if (fseek(histfp, 0, SEEK_END)) {
+		bbs_error("fseek failed: %s\n", strerror(errno));
+	}
+	bbs_mutex_unlock(&histlock);
+	_nntp_send(nntp, ".\r\n");
+	return 0;
+}
+
 static int history_find_article_by_messageid(const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum)
 {
 	int found = 0;
