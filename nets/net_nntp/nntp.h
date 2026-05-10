@@ -273,14 +273,15 @@ int spool_group_seek(const char *groupname, int cur_artnum, int *new_artnum, int
 /*!
  * \brief Send a client matching entries from the overview database (for XOVER, OVER)
  * \param nntp
- * \param groupname
+ * \param messageid Message-ID of article, if searching by message-ID
+ * \param groupname Group name, required if searching by article number. May also be provided to indicate the currently selected group.
  * \param min Minimum article number to match
  * \param max Maximum article number to match
  * \retval 0 on success (response sent to client)
  * \retval -1 on error (response not sent)
  * \retval 1 if group is empty (response not sent)
  */
-int spool_group_overview(struct nntp_session *nntp, const char *groupname, int min, int max);
+int spool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max);
 
 struct stringlist;
 

@@ -184,6 +184,76 @@ int tradspool_group_exists(const char *groupname)
 	return res == 0;
 }
 
+static int history_add(const char *messageid, time_t arrival_time, const char *expires, size_t len, const char *links)
+{
+	bbs_mutex_lock(&histlock); /* The write will be atomic, but other threads may want to read the hist file */
+	fprintf(histfp, "%s\t%ld~%s~%lu\t%s\n", messageid, arrival_time, expires, len, links);
+	fflush(histfp);
+	bbs_mutex_unlock(&histlock);
+	return 0;
+}
+
+static int history_find_article_by_messageid(const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum)
+{
+	int found = 0;
+	char buf[NNTP_BUFSIZ];
+	int line = 0;
+
+	bbs_mutex_lock(&histlock);
+	/* Seek to the beginning of the file */
+	if (fseek(histfp, 0, SEEK_SET)) {
+		bbs_error("fseek failed: %s\n", strerror(errno));
+		bbs_mutex_unlock(&histlock);
+		return -1;
+	}
+	while ((fgets(buf, sizeof(buf), histfp))) {
+		char *grp, *artnumstr, *restofline = buf;
+		char *msgid = strsep(&restofline, "\t");
+		line++;
+		if (!msgid) {
+			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+			continue;
+		}
+		if (strcmp(msgid, messageid)) {
+			continue;
+		}
+		/* Found the article */
+		strsep(&restofline, "\t"); /* This is the complex middle, restofline now is just the links */
+		if (strlen_zero(restofline)) {
+			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+			continue;
+		}
+
+		/* If prefgroup was provided, then return that group/article number if it's present in the list of links.
+		 * If we don't care (no preference), just use the first one. If we do but don't find it, we'll end up using the last one.
+		 * Note we do this as a courtesy; the RFC allows 0 to be returned for the article number in any case;
+		 * however, we aim to provide the article number in the current group if it actually exists there, to be as helpful as we can. */
+		while ((artnumstr = strsep(&restofline, " "))) {
+			grp = strsep(&artnumstr, "/"); /* Parse out the group name */
+			if (!grp) {
+				bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+				continue;
+			}
+			/* If !prefgroup, we don't care, just pick the first one.
+			 * If we do, we'll prefer the group if it exists in the list.
+			 * If we get to the end and there weren't any matches, use the last one. */
+			if (!prefgroup || !strcmp(grp, prefgroup) || strlen_zero(restofline)) {
+				safe_strncpy(group, grp, len);
+				*artnum = atoi(artnumstr);
+				break;
+			}
+		}
+		found = 1;
+		break;
+	}
+	/* When we're done, seek back to the end of the file for appends */
+	if (fseek(histfp, 0, SEEK_END)) {
+		bbs_error("fseek failed: %s\n", strerror(errno));
+	}
+	bbs_mutex_unlock(&histlock);
+	return found ? 0 : 1;
+}
+
 static int overview_add(struct article_info *artinfo, const char *group, int article_num, const char *xref)
 {
 	FILE *fp;
@@ -470,16 +540,35 @@ int tradspool_group_seek(const char *groupname, int cur_artnum, int *new_artnum,
 	return 0;
 }
 
-int tradspool_group_overview(struct nntp_session *nntp, const char *groupname, int min, int max)
+int tradspool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max)
 {
 	FILE *fp;
 	char buf[NNTP_BUFSIZ];
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
+	char eff_group[NNTP_BUFSIZ];
+	int eff_artnum = 0;
 	int matches = 0;
 
-	if (build_overview_path(groupname, overviewfile, sizeof(overviewfile))) {
-		return -1;
+	if (messageid) {
+		/* First, we need to find some group that contains this article.
+		 * (Preferably groupname, if it's non NULL and the article exists in that group.) */
+		/* If we just have a Message-ID, we need to scan the history file to find a link to the message */
+		if (history_find_article_by_messageid(messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum)) {
+			return 1; /* No such article */
+		}
+		if (build_overview_path(eff_group, overviewfile, sizeof(overviewfile))) {
+			return -1;
+		}
+		min = max = eff_artnum;
+		if (!nntp->currentgroup || strcmp(eff_group, groupname)) {
+			eff_artnum = 0; /* If article exists in current group, use its article number; otherwise, 0 */
+		}
+	} else {
+		if (build_overview_path(groupname, overviewfile, sizeof(overviewfile))) {
+			return -1;
+		}
 	}
+
 	bbs_rwlock_rdlock(&overviewlock);
 	fp = fopen(overviewfile, "r");
 	if (!fp) {
@@ -498,7 +587,14 @@ int tradspool_group_overview(struct nntp_session *nntp, const char *groupname, i
 			if (!matches++) {
 				nntp_send(nntp, 224, "Overview information follows");
 			}
-			_nntp_send(nntp, "%s", buf); /* msgbuf already includes CR LF */
+			if (messageid && !eff_artnum) {
+				/* Need to respond with article number 0 instead */
+				char *rest = buf;
+				strsep(&rest, "\t");
+				_nntp_send(nntp, "%d\t%s", 0, rest); /* msgbuf already includes CR LF */
+			} else {
+				_nntp_send(nntp, "%s", buf); /* msgbuf already includes CR LF */
+			}
 		}
 	}
 	fclose(fp);
@@ -508,76 +604,6 @@ int tradspool_group_overview(struct nntp_session *nntp, const char *groupname, i
 	}
 	_nntp_send(nntp, ".\r\n");
 	return 0;
-}
-
-static int history_add(const char *messageid, time_t arrival_time, const char *expires, size_t len, const char *links)
-{
-	bbs_mutex_lock(&histlock); /* The write will be atomic, but other threads may want to read the hist file */
-	fprintf(histfp, "%s\t%ld~%s~%lu\t%s\n", messageid, arrival_time, expires, len, links);
-	fflush(histfp);
-	bbs_mutex_unlock(&histlock);
-	return 0;
-}
-
-static int history_find_article_by_messageid(const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum)
-{
-	int found = 0;
-	char buf[NNTP_BUFSIZ];
-	int line = 0;
-
-	bbs_mutex_lock(&histlock);
-	/* Seek to the beginning of the file */
-	if (fseek(histfp, 0, SEEK_SET)) {
-		bbs_error("fseek failed: %s\n", strerror(errno));
-		bbs_mutex_unlock(&histlock);
-		return -1;
-	}
-	while ((fgets(buf, sizeof(buf), histfp))) {
-		char *grp, *artnumstr, *restofline = buf;
-		char *msgid = strsep(&restofline, "\t");
-		line++;
-		if (!msgid) {
-			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
-			continue;
-		}
-		if (strcmp(msgid, messageid)) {
-			continue;
-		}
-		/* Found the article */
-		strsep(&restofline, "\t"); /* This is the complex middle, restofline now is just the links */
-		if (strlen_zero(restofline)) {
-			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
-			continue;
-		}
-
-		/* If prefgroup was provided, then return that group/article number if it's present in the list of links.
-		 * If we don't care (no preference), just use the first one. If we do but don't find it, we'll end up using the last one.
-		 * Note we do this as a courtesy; the RFC allows 0 to be returned for the article number in any case;
-		 * however, we aim to provide the article number in the current group if it actually exists there, to be as helpful as we can. */
-		while ((artnumstr = strsep(&restofline, " "))) {
-			grp = strsep(&artnumstr, "/"); /* Parse out the group name */
-			if (!grp) {
-				bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
-				continue;
-			}
-			/* If !prefgroup, we don't care, just pick the first one.
-			 * If we do, we'll prefer the group if it exists in the list.
-			 * If we get to the end and there weren't any matches, use the last one. */
-			if (!prefgroup || !strcmp(grp, prefgroup) || strlen_zero(restofline)) {
-				safe_strncpy(group, grp, len);
-				*artnum = atoi(artnumstr);
-				break;
-			}
-		}
-		found = 1;
-		break;
-	}
-	/* When we're done, seek back to the end of the file for appends */
-	if (fseek(histfp, 0, SEEK_END)) {
-		bbs_error("fseek failed: %s\n", strerror(errno));
-	}
-	bbs_mutex_unlock(&histlock);
-	return found ? 0 : 1;
 }
 
 static size_t construct_xref(struct article_groups *groups, char *buf, size_t len)
@@ -857,11 +883,7 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 		res = history_find_article_by_messageid(messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum);
 		if (!res) {
 			build_group_article_path(eff_group, eff_artnum, artpath, sizeof(artpath));
-			/* If article is not in this group, we MUST send an article number of 0
-			 * history_find_article_by_messageid gives us the first link created for the article,
-			 * so even though it's possible the article may have been posted to the current group,
-			 * we may end up returning 0 here anyways.
-			 * The RFC says it's always fine to send 0, no matter what, so this isn't a problem. */
+			/* If article is not in this group, we MUST send an article number of 0 */
 			resp_artnum = nntp->currentgroup && !strcmp(nntp->currentgroup, eff_group) ? eff_artnum : 0;
 		}
 	} else {

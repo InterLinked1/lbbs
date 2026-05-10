@@ -50,9 +50,9 @@ int spool_group_seek(const char *groupname, int cur_artnum, int *new_artnum, int
 	return tradspool_group_seek(groupname, cur_artnum, new_artnum, direction, msgidbuf, msgidlen);
 }
 
-int spool_group_overview(struct nntp_session *nntp, const char *groupname, int min, int max)
+int spool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max)
 {
-	return tradspool_group_overview(nntp, groupname, min, max);
+	return tradspool_group_overview(nntp, messageid, groupname, min, max);
 }
 
 int spool_article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t len)

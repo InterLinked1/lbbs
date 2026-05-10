@@ -356,6 +356,16 @@ static int run(void)
 	SWRITE(client1, "HEAD 15\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "Xref: news.example.com misc.test:15 misc.crossposts:1");
 
+	/* Use OVER to get overview for a range of articles */
+	SWRITE(client1, "OVER <nonexistent.message>\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "430");
+
+	FMT_WRITE(client1, "OVER %s\r\n", xmsgid);
+	CLIENT_EXPECT_EVENTUALLY(client1, "9\t");
+
+	SWRITE(client1, "OVER 13-\r\n"); /* 13-15 */
+	CLIENT_EXPECT_EVENTUALLY(client1, "15\t");
+
 	/* Ask for the cross-posted article by article ID */
 	SWRITE(client1, "XOVER 15\r\n");
 	if (test_client_expect_eventually_buf(client1, SEC_MS(2), TEST_EMAIL, __LINE__, xoverresp, sizeof(xoverresp))) {
@@ -386,6 +396,9 @@ static int run(void)
 	FMT_WRITE(client1, "ARTICLE %s\r\n", xmsgid);
 	CLIENT_EXPECT(client1, "220 0 <"); /* The article isn't in this group, so article number MUST be 0 */
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article.");
+
+	FMT_WRITE(client1, "OVER %s\r\n", xmsgid); /* Ditto with OVER MSGID */
+	CLIENT_EXPECT_EVENTUALLY(client1, "0\t");
 
 	/* Now, delete the article from one group. It should still remain in the other. */
 	DELETE_ARTICLE("misc.test", 15);

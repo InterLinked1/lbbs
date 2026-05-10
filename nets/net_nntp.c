@@ -14,6 +14,8 @@
  *
  * \brief RFC 3977 Network News Transfer Protocol (NNTP)
  *
+ * \note Supports RFC 2980 XOVER
+ * \note Supports RFC 3977 OVER (including MSGID)
  * \note Supports RFC 4642 STARTTLS
  * \note Supports RFC 4643 AUTHINFO
  *
@@ -1357,7 +1359,12 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 				 * The only exception to this would be when using a suck feed where we want to slave our article numbers off the feeder's. */
 				continue;
 			}
-			/*! \todo Need to properly parse any multi-line headers */
+			/*! \todo Need to properly parse any multi-line headers
+			 * Most of these fields will make their way into the overview file, which requires:
+			 * - CR LF be removed (multi-line headers)
+			 * - tabs be replaced with a single space
+			 * - Any lingering CR or LF is replaced with a single space (their presence is not legal, but for robustness, check/replace, RFC 3977 8.3.2)
+			 */
 			else SAVE_HEADER("Newsgroups", artinfo->newsgroups)
 			else SAVE_HEADER("Expires", artinfo->expires)
 			else SAVE_HEADER("Subject", artinfo->subject)
@@ -1427,6 +1434,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			_nntp_send(nntp, "MODE-READER\r\n");
 		}
 		_nntp_send(nntp, "LIST ACTIVE NEWSGROUPS ACTIVE.TIMES\r\n");
+		_nntp_send(nntp, "OVER MSGID\r\n");
 		_nntp_send(nntp, "XSECRET\r\n");
 		if ((nntp->node->secure || !require_secure_login) && !bbs_user_is_registered(nntp->node->user)) {
 			_nntp_send(nntp, "AUTHINFO USER\r\n");
@@ -1632,8 +1640,38 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			}
 			min = max = nntp->currentarticle;
 		}
-		if (spool_group_overview(nntp, nntp->currentgroup, min, max)) {
+		if (spool_group_overview(nntp, NULL, nntp->currentgroup, min, max)) {
 			nntp_send(nntp, 420, "No article(s) selected");
+		}
+	} else if (!strcasecmp(command, "OVER")) {
+		/* RFC 3977 OVER */
+		int min = 0, max = 0;
+		const char *msgid = NULL;
+		REQUIRE_READER();
+		if (!strlen_zero(s)) {
+			if (*s == '<') {
+				msgid = s;
+			} else {
+				REQUIRE_GROUP();
+				parse_min_max(s, &min, &max, '-');
+				if (!max) {
+					if (!min) {
+						nntp_send(nntp, 420, "No article(s) selected"); /* 0-0 or invalid? */
+						return 0;
+					}
+					max = NNTP_MAX_ARTICLE_NUMBER; /* e.g. 10- (all articles >= 10) */
+				}
+			}
+		} else {
+			REQUIRE_GROUP();
+			if (!nntp->currentarticle) {
+				nntp_send(nntp, 420, "Current article number is invalid");
+				return 0;
+			}
+			min = max = nntp->currentarticle;
+		}
+		if (spool_group_overview(nntp, msgid, nntp->currentgroup, min, max)) {
+			nntp_send(nntp, msgid ? 430 : 423, "%s", msgid ? "No article with that Message-ID" : "No articles in that range");
 		}
 	} else if (!strcasecmp(command, "ARTICLE")) {
 #define PARSE_ARTICLENUM_MSGID() \
@@ -1646,13 +1684,15 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 	}
 		int artnum;
 		REQUIRE_READER();
-		REQUIRE_GROUP();
 		REQUIRE_ARGS(s);
 		PARSE_ARTICLENUM_MSGID();
 		/* We pass in the current group, even if searching by message ID.
 		 * This way, if an article is linked in multiple groups,
 		 * we can return the article number for the current group
 		 * (the default is otherwise to use the first group to which the article was linked). */
+		if (artnum) {
+			REQUIRE_GROUP();
+		}
 		if (spool_article_send(nntp, SEND_HEADERS | SEND_BODY, artnum ? NULL : s, nntp->currentgroup, artnum)) {
 			nntp_send(nntp, artnum ? 423 : 430, "No Such Article Found"); /* Only on failure, do we need to send a response here */
 		} else {
@@ -1663,9 +1703,11 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 	} else if (!strcasecmp(command, "HEAD")) {
 		int artnum;
 		REQUIRE_READER();
-		REQUIRE_GROUP();
 		REQUIRE_ARGS(s);
 		PARSE_ARTICLENUM_MSGID();
+		if (artnum) {
+			REQUIRE_GROUP();
+		}
 		if (spool_article_send(nntp, SEND_HEADERS, artnum ? NULL : s, nntp->currentgroup, artnum)) {
 			nntp_send(nntp, artnum ? 423 : 430, "No Such Article Found"); /* Only on failure, do we need to send a response here */
 		} else {
@@ -1676,9 +1718,11 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 	} else if (!strcasecmp(command, "BODY")) {
 		int artnum;
 		REQUIRE_READER();
-		REQUIRE_GROUP();
 		REQUIRE_ARGS(s);
 		PARSE_ARTICLENUM_MSGID();
+		if (artnum) {
+			REQUIRE_GROUP();
+		}
 		if (spool_article_send(nntp, SEND_BODY, artnum ? NULL : s, nntp->currentgroup, artnum)) {
 			nntp_send(nntp, artnum ? 423 : 430, "No Such Article Found"); /* Only on failure, do we need to send a response here */
 		} else {
