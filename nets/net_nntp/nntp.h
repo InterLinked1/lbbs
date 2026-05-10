@@ -271,6 +271,18 @@ int spool_group_exists(const char *groupname);
 int spool_group_seek(const char *groupname, int cur_artnum, int *new_artnum, int direction, char *msgidbuf, size_t msgidlen);
 
 /*!
+ * \brief Send a client a list of article numbers within the group
+ * \param nntp
+ * \param groupname Group name
+ * \param min Minimum article number to match
+ * \param max Maximum article number to match
+ * \retval 0 on success (response sent to client, including trailing . on its own line)
+ * \retval -1 on error (response not sent)
+ * \retval 1 if group is empty (response not sent)
+ */
+int spool_group_list_articles(struct nntp_session *nntp, const char *groupname, int min, int max);
+
+/*!
  * \brief Send a client matching entries from the overview database (for XOVER, OVER)
  * \param nntp
  * \param messageid Message-ID of article, if searching by message-ID
@@ -301,11 +313,20 @@ int spool_article_delete_by_number(const char *groupname, int article_num);
 
 /*!
  * \brief Whether any message with this Message-ID exists in any group
- * \param messageid Message-ID
+ * \param messageid Message-ID of article, if searching by message-ID
  * \retval 0 if no message exists
- * \retval 1 if message exists in some group
+ * \retval 1 if article exists in some group
  */
 int spool_article_exists(const char *messageid);
+
+/*!
+ * \brief Whether any message with this Message-ID exists in any group
+ * \param messageid Message-ID of article, if searching by message-ID
+ * \param groupname Group name, required if searching by article number.
+ * \param article_num Article number, if searching by article number
+ * \retval 0 on success (article exists), -1 on error, 1 if article does not exist
+ */
+int spool_article_stat(struct nntp_session *nntp, const char *messageid, const char *groupname, int article_num);
 
 enum article_part_filter {
 	SEND_HEADERS = (1 << 0),

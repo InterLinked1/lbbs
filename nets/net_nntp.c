@@ -1144,6 +1144,21 @@ static int parse_min_max(char *s, int *min, int *max, char sep)
 	return 0;
 }
 
+static int parse_min_max_extended(char *s, int *min, int *max, char sep)
+{
+	int res = parse_min_max(s, min, max, sep);
+	if (res) {
+		return res;
+	}
+	if (!*max) {
+		if (!*min) {
+			return 1; /* 0-0 or invalid? */
+		}
+		*max = NNTP_MAX_ARTICLE_NUMBER; /* e.g. 10- (all articles >= 10) */
+	}
+	return 0;
+}
+
 static enum list_category parse_list_category(const char *s)
 {
 	if (strlen_zero(s)) {
@@ -1625,6 +1640,43 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		REPLACE(nntp->currentgroup, s);
 		nntp_send(nntp, 211, "%d %d %d %s", count, low, high, s);
 		nntp->currentarticle = low;
+	} else if (!strcasecmp(command, "LISTGROUP")) {
+		int low, high, count;
+		int min = 1, max = NNTP_MAX_ARTICLE_NUMBER;
+		const char *groupname;
+		if (!strlen_zero(s)) {
+			groupname = strsep(&s, " ");
+			if (!strlen_zero(s)) {
+				parse_min_max_extended(s, &min, &max, '-'); /* Even if it fails, we return an empty 211 response */
+			}
+		} else {
+			REQUIRE_GROUP();
+			groupname = nntp->currentgroup;
+		}
+		if (strlen_zero(groupname) || !group_exists(groupname)) {
+			nntp_send(nntp, 411, "%s is unknown", groupname);
+			return 0;
+		}
+		/* For future commands which require a group, we don't check read ACL since we check it here, before changing the group */
+		if (!ACL_ALLOWED(nntp, groupname, NNTP_ACL_READ)) {
+			nntp_send(nntp, 502, "Read access denied");
+			return 0;
+		}
+		if (group_get_stats(groupname, &high, &low, &count)) {
+			nntp_send(nntp, 403, "Error changing group");
+			return 0;
+		}
+		/* If the group didn't change, no need to free/strdup.
+		 * This optimization also allows us to use groupname after the REPLACE call,
+		 * as if we had replaced when it wasn't necessary, groupname would no longer be valid memory. */
+		if (!nntp->currentgroup || strcmp(nntp->currentgroup, groupname)) {
+			REPLACE(nntp->currentgroup, groupname); /* We still change the group (as with GROUP) */
+		}
+		nntp_send(nntp, 211, "%d %d %d %s list follows", count, low, high, groupname);
+		if (spool_group_list_articles(nntp, groupname, min, max)) {
+			_nntp_send(nntp, ".\r\n"); /* On success, we send the trailing ., on failure we do not, so we do it here */
+		}
+		nntp->currentarticle = low; /* Always the first article, even if not in the provided range */
 	} else if (!strcasecmp(command, "XOVER")) {
 		/* RFC 2980 XOVER */
 		/* Mozilla-based clients prefer XOVER to HEAD, and will only issue a HEAD if XOVER is not available. */
@@ -1653,13 +1705,9 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 				msgid = s;
 			} else {
 				REQUIRE_GROUP();
-				parse_min_max(s, &min, &max, '-');
-				if (!max) {
-					if (!min) {
-						nntp_send(nntp, 420, "No article(s) selected"); /* 0-0 or invalid? */
-						return 0;
-					}
-					max = NNTP_MAX_ARTICLE_NUMBER; /* e.g. 10- (all articles >= 10) */
+				if (parse_min_max_extended(s, &min, &max, '-')) {
+					nntp_send(nntp, 423, "Invalid range");
+					return 0;
 				}
 			}
 		} else {
@@ -1678,57 +1726,61 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 	artnum = atoi(s); \
 	if (!artnum) { \
 		if (*s != '<') { \
-			nntp_send(nntp, 423, "No Such Article Found"); \
+			nntp_send(nntp, 423, "No such article"); \
 			return 0; \
 		} \
 	}
+
+/* Parse args for ARTICLE, HEAD, BODY, and STAT */
+#define PARSE_ARTICLE_ARGS() \
+	REQUIRE_READER(); \
+	if (!nntp->currentgroup) { \
+		REQUIRE_ARGS(s); \
+	} \
+	if (!strlen_zero(s)) { \
+		PARSE_ARTICLENUM_MSGID(); \
+		if (artnum) { /* If we specify an article number, must have a group selected */ \
+			REQUIRE_GROUP(); \
+		} \
+	} else { /* If no arguments at all, current article (must have a group selected) */ \
+		REQUIRE_GROUP(); \
+		artnum = nntp->currentarticle; \
+	}
+
 		int artnum;
-		REQUIRE_READER();
-		REQUIRE_ARGS(s);
-		PARSE_ARTICLENUM_MSGID();
+		PARSE_ARTICLE_ARGS();
 		/* We pass in the current group, even if searching by message ID.
 		 * This way, if an article is linked in multiple groups,
 		 * we can return the article number for the current group
 		 * (the default is otherwise to use the first group to which the article was linked). */
-		if (artnum) {
-			REQUIRE_GROUP();
-		}
 		if (spool_article_send(nntp, SEND_HEADERS | SEND_BODY, artnum ? NULL : s, nntp->currentgroup, artnum)) {
-			nntp_send(nntp, artnum ? 423 : 430, "No Such Article Found"); /* Only on failure, do we need to send a response here */
-		} else {
-			if (artnum) {
-				nntp->currentarticle = artnum;
-			}
+			nntp_send(nntp, artnum ? 423 : 430, "No such article"); /* Only on failure, do we need to send a response here */
+		} else if (artnum) {
+			nntp->currentarticle = artnum; /* If we explicitly specified an article number (not with Message-ID) and it exists, update current article number */
 		}
 	} else if (!strcasecmp(command, "HEAD")) {
 		int artnum;
-		REQUIRE_READER();
-		REQUIRE_ARGS(s);
-		PARSE_ARTICLENUM_MSGID();
-		if (artnum) {
-			REQUIRE_GROUP();
-		}
+		PARSE_ARTICLE_ARGS();
 		if (spool_article_send(nntp, SEND_HEADERS, artnum ? NULL : s, nntp->currentgroup, artnum)) {
-			nntp_send(nntp, artnum ? 423 : 430, "No Such Article Found"); /* Only on failure, do we need to send a response here */
-		} else {
-			if (artnum) {
-				nntp->currentarticle = artnum;
-			}
+			nntp_send(nntp, artnum ? 423 : 430, "No such article");
+		} else if (artnum) {
+			nntp->currentarticle = artnum;
 		}
 	} else if (!strcasecmp(command, "BODY")) {
 		int artnum;
-		REQUIRE_READER();
-		REQUIRE_ARGS(s);
-		PARSE_ARTICLENUM_MSGID();
-		if (artnum) {
-			REQUIRE_GROUP();
-		}
+		PARSE_ARTICLE_ARGS();
 		if (spool_article_send(nntp, SEND_BODY, artnum ? NULL : s, nntp->currentgroup, artnum)) {
-			nntp_send(nntp, artnum ? 423 : 430, "No Such Article Found"); /* Only on failure, do we need to send a response here */
-		} else {
-			if (artnum) {
-				nntp->currentarticle = artnum;
-			}
+			nntp_send(nntp, artnum ? 423 : 430, "No such article");
+		} else if (artnum) {
+			nntp->currentarticle = artnum;
+		}
+	} else if (!strcasecmp(command, "STAT")) {
+		int artnum;
+		PARSE_ARTICLE_ARGS();
+		if (spool_article_stat(nntp, artnum ? NULL : s, nntp->currentgroup, artnum)) {
+			nntp_send(nntp, artnum ? 423 : 430, "No such article");
+		} else if (artnum) {
+			nntp->currentarticle = artnum;
 		}
 	} else if (!strcasecmp(command, "LAST")) {
 		int last;

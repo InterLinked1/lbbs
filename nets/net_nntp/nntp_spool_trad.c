@@ -540,6 +540,44 @@ int tradspool_group_seek(const char *groupname, int cur_artnum, int *new_artnum,
 	return 0;
 }
 
+int tradspool_group_list_articles(struct nntp_session *nntp, const char *groupname, int min, int max)
+{
+	FILE *fp;
+	char buf[NNTP_BUFSIZ];
+	char overviewfile[NNTP_MAX_PATH_LENGTH];
+	int matches = 0;
+
+	if (build_overview_path(groupname, overviewfile, sizeof(overviewfile))) {
+		return -1;
+	}
+
+	bbs_rwlock_rdlock(&overviewlock);
+	fp = fopen(overviewfile, "r");
+	if (!fp) {
+		/* If the group is empty, the overview file may not exist yet */
+		bbs_rwlock_unlock(&overviewlock);
+		return 1;
+	}
+	while ((fgets(buf, sizeof(buf), fp))) {
+		int artnum = atoi(buf); /* Should automatically stop at the tab */
+		if (artnum < min) {
+			continue;
+		} else if (artnum > max) {
+			break; /* Since file is in ascending order of articles, there will be no more matches at this point */
+		} else {
+			_nntp_send(nntp, "%d\r\n", artnum);
+			matches++;
+		}
+	}
+	fclose(fp);
+	bbs_rwlock_unlock(&overviewlock);
+	if (!matches) {
+		return 1;
+	}
+	_nntp_send(nntp, ".\r\n");
+	return 0;
+}
+
 int tradspool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max)
 {
 	FILE *fp;
@@ -863,6 +901,33 @@ int tradspool_article_exists(const char *messageid)
 	/* Scan the history file for any messages matching this Message-ID */
 	if (history_find_article_by_messageid(messageid, NULL, eff_group, sizeof(eff_group), &eff_artnum)) {
 		return 0;
+	}
+	return 1;
+}
+
+int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, const char *groupname, int article_num)
+{
+	if (messageid) {
+		char eff_group[NNTP_BUFSIZ];
+		int eff_artnum;
+		/* Scan the history file for any messages matching this Message-ID */
+		if (!history_find_article_by_messageid(messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum)) {
+			if (!nntp->currentgroup || strcmp(nntp->currentgroup, eff_group)) {
+				eff_artnum = 0;
+			}
+			nntp_send(nntp, 223, "%d %s", eff_artnum, messageid);
+			return 0;
+		}
+	} else {
+		char artpath[NNTP_MAX_PATH_LENGTH];
+		char found_messageid[NNTP_BUFSIZ];
+		if (!build_group_article_path(groupname, article_num, artpath, sizeof(artpath))) {
+			/* Need to look up Message-ID from overview */
+			if (!overview_find_messageid(groupname, article_num, found_messageid, sizeof(found_messageid))) {
+				nntp_send(nntp, 223, "%d %s", article_num, found_messageid);
+				return 0;
+			}
+		}
 	}
 	return 1;
 }

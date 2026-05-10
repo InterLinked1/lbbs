@@ -50,6 +50,11 @@ int spool_group_seek(const char *groupname, int cur_artnum, int *new_artnum, int
 	return tradspool_group_seek(groupname, cur_artnum, new_artnum, direction, msgidbuf, msgidlen);
 }
 
+int spool_group_list_articles(struct nntp_session *nntp, const char *groupname, int min, int max)
+{
+	return tradspool_group_list_articles(nntp, groupname, min, max);
+}
+
 int spool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max)
 {
 	return tradspool_group_overview(nntp, messageid, groupname, min, max);
@@ -68,6 +73,11 @@ int spool_article_delete_by_number(const char *groupname, int article_num)
 int spool_article_exists(const char *messageid)
 {
 	return tradspool_article_exists(messageid);
+}
+
+int spool_article_stat(struct nntp_session *nntp, const char *messageid, const char *groupname, int article_num)
+{
+	return tradspool_article_stat(nntp, messageid, groupname, article_num);
 }
 
 int spool_article_send(struct nntp_session *nntp, enum article_part_filter filter, const char *messageid, const char *groupname, int article_num)

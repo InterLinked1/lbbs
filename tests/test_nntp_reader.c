@@ -150,6 +150,10 @@ static int run(void)
 	SWRITE(client1, "AUTHINFO PASS " TEST_PASS "\r\n");
 	CLIENT_EXPECT(client1, "281");
 
+	/* LISTGROUP without arguments should fail since no group is selected yet */
+	SWRITE(client1, "LISTGROUP\r\n");
+	CLIENT_EXPECT(client1, "412");
+
 	/* Try posting an article under an unauthorized identity */
 	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL_UNAUTHORIZED, "misc.test", 441);
 
@@ -198,6 +202,8 @@ static int run(void)
 	CLIENT_EXPECT(client1, TEST_EMAIL); /* Our email should be in the response data */
 	SWRITE(client1, "ARTICLE 1\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, ".\r\n");
+	SWRITE(client1, "STAT 1\r\n");
+	CLIENT_EXPECT(client1, "223");
 
 	/* No previous */
 	SWRITE(client1, "LAST\r\n");
@@ -282,6 +288,9 @@ static int run(void)
 	SWRITE(client1, "LAST\r\n");
 	CLIENT_EXPECT(client1, "223 9"); /* Should jump right back to 9 */
 
+	SWRITE(client1, "HEAD\r\n"); /* HEAD 9 (without args) */
+	CLIENT_EXPECT_EVENTUALLY(client1, "." ENDL);
+
 	/* Article doesn't exist anymore, all these commands should fail: */
 	SWRITE(client1, "XOVER 10\r\n");
 	CLIENT_EXPECT(client1, "420"); /* Article shouldn't be in overview anymore */
@@ -290,6 +299,8 @@ static int run(void)
 	SWRITE(client1, "HEAD 10\r\n");
 	CLIENT_EXPECT(client1, "423");
 	SWRITE(client1, "BODY 10\r\n");
+	CLIENT_EXPECT(client1, "423");
+	SWRITE(client1, "STAT 10\r\n");
 	CLIENT_EXPECT(client1, "423");
 
 	/* Check format of overview */
@@ -307,6 +318,12 @@ static int run(void)
 	SWRITE(client1, "BODY 13\r\n");
 	CLIENT_EXPECT(client1, "220");
 	CLIENT_EXPECT(client1, "This is just a test article");
+	SWRITE(client1, "LAST\r\n");
+	CLIENT_EXPECT(client1, "12");
+	SWRITE(client1, "STAT 13\r\n");
+	CLIENT_EXPECT(client1, "223 13");
+	SWRITE(client1, "STAT\r\n"); /* Repeat without arguments, for current article (13) */
+	CLIENT_EXPECT(client1, "223 13");
 	SWRITE(client1, "LAST\r\n");
 	CLIENT_EXPECT(client1, "12");
 
@@ -336,11 +353,17 @@ static int run(void)
 	CLIENT_EXPECT(client1, "220 9 <"); /* We know this is article number 9 in the current group, and although the RFC allows this to be 0, it should fill in the article number in this case */
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article."); /* Read the rest of the response */
 
+	FMT_WRITE(client1, "STAT %s\r\n", xmsgid);
+	CLIENT_EXPECT(client1, "223 9 <");
+
 	/* Change groups and re-issue the command, the article number should be 0 since the article isn't in that group */
 	GROUP_EXPECT(client1, "misc.empty", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0);
 	FMT_WRITE(client1, "ARTICLE %s\r\n", xmsgid);
 	CLIENT_EXPECT(client1, "220 0 <");
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article."); /* Read the rest of the response */
+
+	FMT_WRITE(client1, "STAT %s\r\n", xmsgid);
+	CLIENT_EXPECT(client1, "223 0 <");
 
 	/* Test behavior of cross-posted articles */
 	GROUP_EXPECT(client1, "misc.test", 8, 13, 5); /* 11 was deleted, rest are still there */
@@ -352,6 +375,12 @@ static int run(void)
 	GROUP_EXPECT(client1, "misc.crossposts", 1, 1, 1);
 	GROUP_EXPECT(client1, "misc.test", 8, 15, 7);
 
+	SWRITE(client1, "LISTGROUP\r\n"); /* List articles for current group */
+	CLIENT_EXPECT_EVENTUALLY(client1, "13"); /* This is one of them */
+
+	SWRITE(client1, "LISTGROUP misc.test\r\n"); /* Repeat for same group, explicitly specified this time */
+	CLIENT_EXPECT_EVENTUALLY(client1, "12");
+
 	/* Ensure Xref header is correct: */
 	SWRITE(client1, "HEAD 15\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "Xref: news.example.com misc.test:15 misc.crossposts:1");
@@ -359,6 +388,9 @@ static int run(void)
 	/* Use OVER to get overview for a range of articles */
 	SWRITE(client1, "OVER <nonexistent.message>\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "430");
+
+	SWRITE(client1, "OVER 13-12\r\n");
+	CLIENT_EXPECT(client1, "423");
 
 	FMT_WRITE(client1, "OVER %s\r\n", xmsgid);
 	CLIENT_EXPECT_EVENTUALLY(client1, "9\t");
