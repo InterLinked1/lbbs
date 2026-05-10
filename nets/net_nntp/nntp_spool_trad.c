@@ -184,6 +184,8 @@ int tradspool_group_exists(const char *groupname)
 	return res == 0;
 }
 
+/* Note: Technically, these few functions for history aren't part of the spool implementation,
+ * but they are mostly only used here (static functions), so all the history stuff is here for now. */
 static int history_add(const char *messageid, time_t arrival_time, const char *expires, size_t len, const char *links)
 {
 	bbs_mutex_lock(&histlock); /* The write will be atomic, but other threads may want to read the hist file */
@@ -316,7 +318,13 @@ static int history_find_article_by_messageid(const char *messageid, const char *
 	return found ? 0 : 1;
 }
 
-static int overview_add(struct article_info *artinfo, const char *group, int article_num, const char *xref)
+/* Note: Technically, history is not coupled to the spool implementation, so that could be moved elsewhere.
+ * In theory, overview isn't coupled to the spool implementation either.
+ * However, the current overview uses a file inside each group's directory,
+ * and some spool implementations (e.g. CNFS) may not entail a directory per each group,
+ * so to that extent, the overview implementation is included here at the moment too
+ * as it's not easily separable at the moment. */
+static int overview_add(struct article_info *artinfo, const char *group, int article_num)
 {
 	FILE *fp;
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
@@ -335,9 +343,35 @@ static int overview_add(struct article_info *artinfo, const char *group, int art
 	/* References is optional (not every article has one), the rest should be present: */
 	fprintf(fp, "%d\t%s\t%s\t%s\t%s\t%s\t%lu\t%d\t%s\n",
 		article_num, artinfo->subject, artinfo->from, artinfo->date, artinfo->messageid, S_IF(artinfo->references), artinfo->bytes, artinfo->lines,
-		xref);
+		artinfo->xref);
 	fclose(fp);
 	bbs_rwlock_unlock(&overviewlock);
+	return 0;
+}
+
+static inline int parse_overview_line(struct article_info *artinfo, char *s)
+{
+	char *tmp;
+	artinfo->subject = strsep(&s, "\t");
+	artinfo->from = strsep(&s, "\t");
+	artinfo->date = strsep(&s, "\t");
+	artinfo->messageid = strsep(&s, "\t");
+	artinfo->references = strsep(&s, "\t");
+	tmp = strsep(&s, "\t");
+	if (!tmp) {
+		return -1;
+	}
+	artinfo->bytes = (size_t) atol(tmp);
+	tmp = strsep(&s, "\t");
+	if (!tmp) {
+		return -1;
+	}
+	artinfo->lines = atoi(tmp);
+	artinfo->xref = s; /* This is the last field */
+	if (!s) {
+		return -1;
+	}
+	bbs_term_line(s); /* Trim trailing LF */
 	return 0;
 }
 
@@ -640,7 +674,43 @@ int tradspool_group_list_articles(struct nntp_session *nntp, const char *groupna
 	return 0;
 }
 
-int tradspool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max)
+enum overview_field {
+	OVERVIEW_UNSUPPORTED,
+	OVERVIEW_ALL,
+	OVERVIEW_SUBJECT,
+	OVERVIEW_FROM,
+	OVERVIEW_DATE,
+	OVERVIEW_MESSAGEID,
+	OVERVIEW_REFERENCES,
+	OVERVIEW_METADATA_BYTES,
+	OVERVIEW_METADATA_LINES,
+	OVERVIEW_XREF,
+};
+
+static enum overview_field parse_overview_item(const char *s)
+{
+	if (!strcasecmp(s, "Subject")) {
+		return OVERVIEW_SUBJECT;
+	} else if (!strcasecmp(s, "From")) {
+		return OVERVIEW_FROM;
+	} else if (!strcasecmp(s, "Date")) {
+		return OVERVIEW_DATE;
+	} else if (!strcasecmp(s, "Message-ID")) {
+		return OVERVIEW_MESSAGEID;
+	} else if (!strcasecmp(s, "References")) {
+		return OVERVIEW_REFERENCES;
+	} else if (!strcasecmp(s, ":bytes")) {
+		return OVERVIEW_METADATA_BYTES;
+	} else if (!strcasecmp(s, ":lines")) {
+		return OVERVIEW_METADATA_LINES;
+	} else if (!strcasecmp(s, "Xref")) {
+		return OVERVIEW_XREF;
+	} else {
+		return OVERVIEW_UNSUPPORTED;
+	}
+}
+
+static int tradspool_group_overview_full(struct nntp_session *nntp, enum overview_field field, const char *messageid, const char *groupname, int min, int max)
 {
 	FILE *fp;
 	char buf[NNTP_BUFSIZ];
@@ -657,6 +727,9 @@ int tradspool_group_overview(struct nntp_session *nntp, const char *messageid, c
 			return 1; /* No such article */
 		}
 		if (build_overview_path(eff_group, overviewfile, sizeof(overviewfile))) {
+			return -1;
+		}
+		if (!ACL_ALLOWED_LOCKED(nntp, eff_group, NNTP_ACL_READ)) {
 			return -1;
 		}
 		min = max = eff_artnum;
@@ -685,15 +758,63 @@ int tradspool_group_overview(struct nntp_session *nntp, const char *messageid, c
 		} else {
 			/* It matches the range filter, dump the line */
 			if (!matches++) {
-				nntp_send(nntp, 224, "Overview information follows");
+				if (field != OVERVIEW_ALL) {
+					nntp_send(nntp, 225, "Header information follows");
+				} else {
+					nntp_send(nntp, 224, "Overview information follows");
+				}
 			}
-			if (messageid && !eff_artnum) {
-				/* Need to respond with article number 0 instead */
+			if (field != OVERVIEW_ALL) {
+				/* HDR responses */
+				struct article_info artinfo;
 				char *rest = buf;
-				strsep(&rest, "\t");
-				_nntp_send(nntp, "%d\t%s", 0, rest); /* msgbuf already includes CR LF */
+				int myartnum;
+				strsep(&rest, "\t"); /* Eat article number */
+				if (parse_overview_line(&artinfo, rest)) {
+					continue;
+				}
+				myartnum = artnum;
+				if (messageid && !eff_artnum) {
+					myartnum = 0;
+				}
+				switch (field) {
+					case OVERVIEW_SUBJECT:
+						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.subject));
+						break;
+					case OVERVIEW_FROM:
+						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.from));
+						break;
+					case OVERVIEW_DATE:
+						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.date));
+						break;
+					case OVERVIEW_MESSAGEID:
+						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.messageid));
+						break;
+					case OVERVIEW_REFERENCES:
+						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.references));
+						break;
+					case OVERVIEW_METADATA_BYTES:
+						_nntp_send(nntp, "%d %lu\r\n", myartnum, artinfo.bytes);
+						break;
+					case OVERVIEW_METADATA_LINES:
+						_nntp_send(nntp, "%d %d\r\n", myartnum, artinfo.lines);
+						break;
+					case OVERVIEW_XREF:
+						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.xref));
+						break;
+					default:
+						bbs_assert(0);
+				}
 			} else {
-				_nntp_send(nntp, "%s", buf); /* msgbuf already includes CR LF */
+				/* OVER and XOVER responses */
+				if (messageid && !eff_artnum) {
+					/* Need to respond with article number 0 instead */
+					char *rest = buf;
+					strsep(&rest, "\t");
+					_nntp_send(nntp, "%d\t%s", 0, rest); /* msgbuf already includes CR LF */
+				} else {
+					_nntp_send(nntp, "%s", buf); /* msgbuf already includes CR LF */
+				}
 			}
 		}
 	}
@@ -701,6 +822,52 @@ int tradspool_group_overview(struct nntp_session *nntp, const char *messageid, c
 	bbs_rwlock_unlock(&overviewlock);
 	if (!matches) {
 		return 1;
+	}
+	_nntp_send(nntp, ".\r\n");
+	return 0;
+}
+
+int tradspool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max)
+{
+	return tradspool_group_overview_full(nntp, OVERVIEW_ALL, messageid, groupname, min, max);
+}
+
+int tradspool_group_overview_header(struct nntp_session *nntp, const char *field, const char *messageid, const char *groupname, int min, int max)
+{
+	enum overview_field fld = parse_overview_item(field);
+	if (fld == OVERVIEW_UNSUPPORTED) {
+		return 2;
+	}
+	return tradspool_group_overview_full(nntp, fld, messageid, groupname, min, max);
+}
+
+int tradspool_overview_header_list(struct nntp_session *nntp, enum list_category listcat, const char *argument)
+{
+	if (listcat & LIST_HEADERS) {
+		/* With LIST_HEADERS, type is either MSGID or RANGE or NULL.
+		 * At the moment, we respond identically for all variants of the command, so we make no distinction. */
+		UNUSED(argument);
+
+		nntp_send(nntp, 215, "Headers and metadata items supported");
+		/* If we supported any arbitrary header, we would return ':' instead */
+		_nntp_send(nntp, "Subject\r\n");
+		_nntp_send(nntp, "From\r\n");
+		_nntp_send(nntp, "Date\r\n");
+		_nntp_send(nntp, "Message-ID\r\n");
+		_nntp_send(nntp, "References\r\n");
+		_nntp_send(nntp, ":bytes\r\n");
+		_nntp_send(nntp, ":lines\r\n");
+		_nntp_send(nntp, "Xref\r\n");
+	} else { /* LIST_OVERVIEW_FMT */
+		nntp_send(nntp, 215, "Order of fields in overview database");
+		_nntp_send(nntp, "Subject:\r\n");
+		_nntp_send(nntp, "From:\r\n");
+		_nntp_send(nntp, "Date:\r\n");
+		_nntp_send(nntp, "Message-ID:\r\n");
+		_nntp_send(nntp, "References:\r\n");
+		_nntp_send(nntp, ":bytes:\r\n");
+		_nntp_send(nntp, ":lines\r\n");
+		_nntp_send(nntp, "Xref:full\r\n");
 	}
 	_nntp_send(nntp, ".\r\n");
 	return 0;
@@ -834,7 +1001,8 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 		SAFE_FAST_APPEND(links, sizeof(links), linkspos, linksleft, "%s/%d", g->name, g->article_num);
 		/* Add article to overview */
 		xref_reformat(xref + STRLEN("Xref: ")); /* xref has been written to the file so we can now mutate it; replace CR LF with spaces and rtrim */
-		overview_add(artinfo, g->name, g->article_num, xref); /* We include the header name itself (Xref:), this is why LIST OVERVIEW.FMT returns Xref:full (includes header name itself) */
+		artinfo->xref = xref; /* We include the header name itself (Xref:), this is why LIST OVERVIEW.FMT returns Xref:full (includes header name itself) */
+		overview_add(artinfo, g->name, g->article_num);
 		delivered++;
 		bbs_debug(6, "Successfully delivered article to %s (article %d)\n", g->name, g->article_num);
 	}
@@ -977,6 +1145,9 @@ int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, con
 			if (!nntp->currentgroup || strcmp(nntp->currentgroup, eff_group)) {
 				eff_artnum = 0;
 			}
+			if (!ACL_ALLOWED_LOCKED(nntp, eff_group, NNTP_ACL_READ)) {
+				return 1;
+			}
 			nntp_send(nntp, 223, "%d %s", eff_artnum, messageid);
 			return 0;
 		}
@@ -1001,7 +1172,7 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 	char buf[NNTP_BUFSIZ];
 	int eff_artnum;
 	char found_messageid[NNTP_BUFSIZ];
-	int resp_artnum;
+	int resp_artnum = 0; /* can't be used uninitialized, but silence older versions of gcc */
 	int res;
 
 	/* First, find the article, if it even exists */
@@ -1012,6 +1183,9 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 			build_group_article_path(eff_group, eff_artnum, artpath, sizeof(artpath));
 			/* If article is not in this group, we MUST send an article number of 0 */
 			resp_artnum = nntp->currentgroup && !strcmp(nntp->currentgroup, eff_group) ? eff_artnum : 0;
+		}
+		if (!ACL_ALLOWED_LOCKED(nntp, eff_group, NNTP_ACL_READ)) {
+			return 1;
 		}
 	} else {
 		res = build_group_article_path(groupname, article_num, artpath, sizeof(artpath));

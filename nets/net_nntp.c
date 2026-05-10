@@ -1179,6 +1179,8 @@ static enum list_category parse_list_category(const char *s)
 		return LIST_DISTRIB_PATS;
 	} else if (!strcasecmp(s, "OVERVIEW.FMT")) {
 		return LIST_OVERVIEW_FMT;
+	} else if (!strcasecmp(s, "HEADERS")) {
+		return LIST_HEADERS;
 	} else {
 		/*! \todo Add additional categories as specified in RFC 2980 and RFC 6048 */
 		bbs_warning("Unknown LIST category '%s'\n", s);
@@ -1205,7 +1207,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		nntp_send(nntp, 501, "Unknown LIST keyword");
 		return 1;
 	}
-	if (!strlen_zero(argument) && !(listcat & LIST_PER_NEWSGROUP)) {
+	if (!strlen_zero(argument) && !(listcat & LIST_PER_NEWSGROUP) && !(listcat & LIST_HEADERS)) {
 		/* We have an argument, but we don't consume one */
 		nntp_send(nntp, 501, "This command is not newsgroup-based and does not accept an argument");
 		return 1;
@@ -1223,20 +1225,24 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		return 0;
 	} /* else, not newsgroup-based: */
 
-	/* Technically, this could depend on the spool implementation as to what overview stores.
-	 * If there are other spool/overview implementations in the future, we may need to do this differently. */
-	if (listcat & LIST_OVERVIEW_FMT) {
-		nntp_send(nntp, 215, "Order of fields in overview database.");
-		_nntp_send(nntp, "Subject:\r\n");
-		_nntp_send(nntp, "From:\r\n");
-		_nntp_send(nntp, "Date:\r\n");
-		_nntp_send(nntp, "Message-ID:\r\n");
-		_nntp_send(nntp, "References:\r\n");
-		_nntp_send(nntp, ":bytes:\r\n");
-		_nntp_send(nntp, ":lines\r\n");
-		_nntp_send(nntp, "Xref:full\r\n");
-		_nntp_send(nntp, ".\r\n");
-		return 0;
+	if (listcat & (LIST_OVERVIEW_FMT | LIST_HEADERS)) {
+		if (listcat & LIST_HEADERS) {
+			/* With LIST_HEADERS, type is either MSGID or RANGE or NULL.
+			 * Here, we only check that any provided argument is valid. */
+			if (!strlen_zero(argument)) {
+				if (strcasecmp(argument, "MSGID") && strcasecmp(argument, "RANGE")) {
+					nntp_send(nntp, 501, "Syntax error in argument");
+					return 0;
+				}
+			}
+		} else {
+			if (!strlen_zero(argument)) {
+				/* This command takes no arguments */
+				nntp_send(nntp, 501, "Unexpected wildmat or argument");
+				return 0;
+			}
+		}
+		return spool_overview_header_list(nntp, listcat, argument);
 	}
 
 	if (listcat & LIST_DISTRIB_PATS) {
@@ -1523,10 +1529,10 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		nntp_send(nntp, 101, "Capability list:");
 		_nntp_send(nntp, "VERSION 2\r\n"); /* Must be first */
 		_nntp_send(nntp, "IMPLEMENTATION %s\r\n", BBS_SHORTNAME);
-		/* Don't advertise MODE-READER, just READER */
 		if (!nntp->node->secure) {
 			_nntp_send(nntp, "STARTTLS\r\n");
 		}
+		/* Don't advertise MODE-READER, just READER */
 		if (nntp->mode == NNTP_MODE_READER) { /* Reader mode */
 			_nntp_send(nntp, "READER\r\n");
 			_nntp_send(nntp, "POST\r\n");
@@ -1534,7 +1540,8 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			_nntp_send(nntp, "IHAVE\r\n");
 			_nntp_send(nntp, "MODE-READER\r\n");
 		}
-		_nntp_send(nntp, "LIST ACTIVE NEWSGROUPS ACTIVE.TIMES OVERVIEW.FMT\r\n");
+		_nntp_send(nntp, "HDR\r\n");
+		_nntp_send(nntp, "LIST ACTIVE ACTIVE.TIMES DISTRIB.PATS HEADERS NEWSGROUPS OVERVIEW.FMT\r\n");
 		_nntp_send(nntp, "OVER MSGID\r\n");
 		_nntp_send(nntp, "XSECRET\r\n");
 		if ((nntp->node->secure || !require_secure_login) && !bbs_user_is_registered(nntp->node->user)) {
@@ -1578,11 +1585,12 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		_nntp_send(nntp, " CAPABILITIES\r\n");
 		_nntp_send(nntp, " DATE\r\n");
 		_nntp_send(nntp, " GROUP newsgroup\r\n");
+		_nntp_send(nntp, " HDR header [message-ID|range]\r\n");
 		_nntp_send(nntp, " HEAD [message-ID|number]\r\n");
 		_nntp_send(nntp, " HELP\r\n");
 		_nntp_send(nntp, " IHAVE message-ID\r\n");
 		_nntp_send(nntp, " LAST\r\n");
-		_nntp_send(nntp, " LIST [ACTIVE [wildmat]|ACTIVE.TIMES [wildmat]|DISTRIB.PATS|NEWSGROUPS [wildmat]|OVERVIEW.FMT\r\n");
+		_nntp_send(nntp, " LIST [ACTIVE [wildmat]|ACTIVE.TIMES [wildmat]|DISTRIB.PATS|NEWSGROUPS [wildmat]|HEADERS [MSGID|RANGE]|OVERVIEW.FMT\r\n");
 		_nntp_send(nntp, " LISTGROUP [newsgroup [range]]\r\n");
 		_nntp_send(nntp, " MODE READER\r\n");
 		_nntp_send(nntp, " NEWGROUPS [yy]yymmdd hhmmss [GMT]\r\n");
@@ -1821,12 +1829,16 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			}
 			min = max = nntp->currentarticle;
 		}
+		/* ACL not needed here, since XOVER can only be used with currently selected group */
 		if (spool_group_overview(nntp, NULL, nntp->currentgroup, min, max)) {
 			nntp_send(nntp, 420, "No article(s) selected");
 		}
 	} else if (!strcasecmp(command, "OVER")) {
+/* If we are using a Message-ID instead of an article number, the spool will need to query ACLs for the group containing the article */
+#define OVER_ACL_RDLOCK(nntp) if (msgid) { ACL_RDLOCK(nntp); }
+#define OVER_ACL_UNLOCK(nntp) if (msgid) { ACL_UNLOCK(nntp); }
 		/* RFC 3977 OVER */
-		int min = 0, max = 0;
+		int res, min = 0, max = 0;
 		const char *msgid = NULL;
 		REQUIRE_READER();
 		if (!strlen_zero(s)) {
@@ -1847,8 +1859,49 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			}
 			min = max = nntp->currentarticle;
 		}
-		if (spool_group_overview(nntp, msgid, nntp->currentgroup, min, max)) {
+		OVER_ACL_RDLOCK(nntp);
+		res = spool_group_overview(nntp, msgid, nntp->currentgroup, min, max);
+		OVER_ACL_UNLOCK(nntp);
+		if (res) {
 			nntp_send(nntp, msgid ? 430 : 423, "%s", msgid ? "No article with that Message-ID" : "No articles in that range");
+		}
+	} else if (!strcasecmp(command, "HDR")) {
+		/* RFC 3977 OVER */
+		int res, min = 0, max = 0;
+		char *hdr;
+		const char *msgid = NULL;
+		REQUIRE_READER();
+		hdr = strsep(&s, " ");
+		REQUIRE_ARGS(hdr);
+		if (!strlen_zero(s)) {
+			if (*s == '<') {
+				msgid = s;
+			} else {
+				REQUIRE_GROUP();
+				if (parse_min_max_extended(s, &min, &max, '-')) {
+					nntp_send(nntp, 423, "Invalid range");
+					return 0;
+				}
+			}
+		} else {
+			REQUIRE_GROUP();
+			if (!nntp->currentarticle) {
+				nntp_send(nntp, 420, "Current article number is invalid");
+				return 0;
+			}
+			min = max = nntp->currentarticle;
+		}
+
+		OVER_ACL_RDLOCK(nntp);
+		res = spool_group_overview_header(nntp, hdr, msgid, nntp->currentgroup, min, max);
+		OVER_ACL_UNLOCK(nntp);
+		if (res) {
+			if (res == 2) {
+				/* We only use overview to satisfy HDR requests, so if it's not a field available in overview, we reject it */
+				nntp_send(nntp, 503, "HDR not permitted on %s", hdr);
+			} else {
+				nntp_send(nntp, msgid ? 430 : 423, "%s", msgid ? "No article with that Message-ID" : "No articles in that range");
+			}
 		}
 	} else if (!strcasecmp(command, "ARTICLE")) {
 #define PARSE_ARTICLENUM_MSGID() \
@@ -1876,37 +1929,53 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		artnum = nntp->currentarticle; \
 	}
 
-		int artnum;
+#define ARTICLE_ACL_RDLOCK(nntp) if (!artnum) { ACL_RDLOCK(nntp); }
+#define ARTICLE_ACL_UNLOCK(nntp) if (!artnum) { ACL_UNLOCK(nntp); }
+
+		int res, artnum;
 		PARSE_ARTICLE_ARGS();
 		/* We pass in the current group, even if searching by message ID.
 		 * This way, if an article is linked in multiple groups,
 		 * we can return the article number for the current group
 		 * (the default is otherwise to use the first group to which the article was linked). */
-		if (spool_article_send(nntp, SEND_HEADERS | SEND_BODY, artnum ? NULL : s, nntp->currentgroup, artnum)) {
+		
+		ARTICLE_ACL_RDLOCK(nntp);
+		res = spool_article_send(nntp, SEND_HEADERS | SEND_BODY, artnum ? NULL : s, nntp->currentgroup, artnum);
+		ARTICLE_ACL_UNLOCK(nntp);
+		if (res) {
 			nntp_send(nntp, artnum ? 423 : 430, "No such article"); /* Only on failure, do we need to send a response here */
 		} else if (artnum) {
 			nntp->currentarticle = artnum; /* If we explicitly specified an article number (not with Message-ID) and it exists, update current article number */
 		}
 	} else if (!strcasecmp(command, "HEAD")) {
-		int artnum;
+		int res, artnum;
 		PARSE_ARTICLE_ARGS();
-		if (spool_article_send(nntp, SEND_HEADERS, artnum ? NULL : s, nntp->currentgroup, artnum)) {
+		ARTICLE_ACL_RDLOCK(nntp);
+		res = spool_article_send(nntp, SEND_HEADERS, artnum ? NULL : s, nntp->currentgroup, artnum);
+		ARTICLE_ACL_UNLOCK(nntp);
+		if (res) {
 			nntp_send(nntp, artnum ? 423 : 430, "No such article");
 		} else if (artnum) {
 			nntp->currentarticle = artnum;
 		}
 	} else if (!strcasecmp(command, "BODY")) {
-		int artnum;
+		int res, artnum;
 		PARSE_ARTICLE_ARGS();
-		if (spool_article_send(nntp, SEND_BODY, artnum ? NULL : s, nntp->currentgroup, artnum)) {
+		ARTICLE_ACL_RDLOCK(nntp);
+		res = spool_article_send(nntp, SEND_BODY, artnum ? NULL : s, nntp->currentgroup, artnum);
+		ARTICLE_ACL_UNLOCK(nntp);
+		if (res) {
 			nntp_send(nntp, artnum ? 423 : 430, "No such article");
 		} else if (artnum) {
 			nntp->currentarticle = artnum;
 		}
 	} else if (!strcasecmp(command, "STAT")) {
-		int artnum;
+		int res, artnum;
 		PARSE_ARTICLE_ARGS();
-		if (spool_article_stat(nntp, artnum ? NULL : s, nntp->currentgroup, artnum)) {
+		ARTICLE_ACL_RDLOCK(nntp);
+		res = spool_article_stat(nntp, artnum ? NULL : s, nntp->currentgroup, artnum);
+		ARTICLE_ACL_UNLOCK(nntp);
+		if (res) {
 			nntp_send(nntp, artnum ? 423 : 430, "No such article");
 		} else if (artnum) {
 			nntp->currentarticle = artnum;

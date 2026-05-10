@@ -337,6 +337,11 @@ static int run(void)
 	SWRITE(client1, "LIST OVERVIEW.FMT\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "Xref:full"); /* should be near the end */
 
+	SWRITE(client1, "LIST HEADERS\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "Xref" ENDL);
+	SWRITE(client1, "LIST HEADERS MSGID\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "Xref" ENDL);
+
 	SWRITE(client1, "XOVER 9\r\n");
 	/* Ensure overview for remaining articles is still intact
 	 * Save the response into a custom buffer so we can use it later. */
@@ -424,11 +429,23 @@ static int run(void)
 	SWRITE(client1, "OVER <nonexistent.message>\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "430");
 
+	SWRITE(client1, "HDR Subject <nonexistent.message>\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "430");
+
 	SWRITE(client1, "OVER 13-12\r\n");
 	CLIENT_EXPECT(client1, "423");
 
 	FMT_WRITE(client1, "OVER %s\r\n", xmsgid);
 	CLIENT_EXPECT_EVENTUALLY(client1, "9\t");
+
+	FMT_WRITE(client1, "HDR Content-Type %s\r\n", xmsgid);
+	CLIENT_EXPECT_EVENTUALLY(client1, "503"); /* Not supported for HDR */
+
+	FMT_WRITE(client1, "HDR Subject %s\r\n", xmsgid);
+	CLIENT_EXPECT_EVENTUALLY(client1, "9 I am just a test article" ENDL);
+
+	SWRITE(client1, "HDR Subject 8-9\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "9 I am just a test article" ENDL);
 
 	SWRITE(client1, "OVER 13-\r\n"); /* 13-15 */
 	CLIENT_EXPECT_EVENTUALLY(client1, "15\t");
@@ -511,6 +528,14 @@ static int run(void)
 
 	SWRITE(client3, "GROUP misc.test\r\n");
 	CLIENT_EXPECT(client3, "502");
+
+	/* Permission should be denied if performing operations directly with Message-ID since not authorized for containing group */
+	FMT_WRITE(client3, "OVER %s\r\n", xmsgid);
+	CLIENT_EXPECT_EVENTUALLY(client3, "430");
+	FMT_WRITE(client3, "STAT %s\r\n", xmsgid);
+	CLIENT_EXPECT_EVENTUALLY(client3, "430");
+	FMT_WRITE(client3, "HDR Subject %s\r\n", xmsgid);
+	CLIENT_EXPECT_EVENTUALLY(client3, "430");
 
 	/* Lastly, "spoof" an almost full group so we can test its behavior.
 	 * Here, we use misc.empty since it has thus far been empty so we know what to replace. */

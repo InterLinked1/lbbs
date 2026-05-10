@@ -68,6 +68,8 @@ struct article_info {
 	char *references;
 	size_t bytes;
 	int lines;
+	/* Optional fields */
+	char *xref;
 	/* Other */
 	size_t headerslen; /* Length of headers, not including empty line separating headers/body */
 };
@@ -236,6 +238,7 @@ enum list_category {
 	LIST_NEWSGROUPS = (1U << 2), /* <name> <short description about purpose of the group> (groups for which information is unavailable may be omitted, i.e. may miss groups included in LIST ACTIVE) */
 	LIST_DISTRIB_PATS = (1U << 3), /* distrib.pats list assists clients to choose a value for the Distribution header of an article being posted. */
 	LIST_OVERVIEW_FMT = (1U << 4), /* format of overview file */
+	LIST_HEADERS = (1U << 5), /* list headers supported for HDR */
 	LIST_PER_NEWSGROUP = (1U << 15), /* This LIST command is per-newsgroup */
 };
 
@@ -312,6 +315,30 @@ int spool_group_list_articles(struct nntp_session *nntp, const char *groupname, 
  * \retval 1 if group is empty (response not sent)
  */
 int spool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max);
+
+/*!
+ * \brief Send a client matching entries from the overview database (for HDR)
+ * \param nntp
+ * \param field Header or metadata field to send
+ * \param messageid Message-ID of article, if searching by message-ID
+ * \param groupname Group name, required if searching by article number. May also be provided to indicate the currently selected group.
+ * \param min Minimum article number to match
+ * \param max Maximum article number to match
+ * \retval 0 on success (response sent to client)
+ * \retval -1 on error (response not sent)
+ * \retval 1 if group is empty (response not sent)
+ * \retval 2 if field is invalid (response not sent)
+ */
+int spool_group_overview_header(struct nntp_session *nntp, const char *field, const char *messageid, const char *groupname, int min, int max);
+
+/*!
+ * \brief Send LIST OVERVIEW.FMT or LIST HEADERS response
+ * \param nntp
+ * \param listcat The response to send
+ * \param argument The optional third argument (only used for LIST HEADERS, should be MSGID, RANGE, or NULL)
+ * \retval 0
+ */
+int spool_overview_header_list(struct nntp_session *nntp, enum list_category listcat, const char *argument);
 
 struct stringlist;
 
