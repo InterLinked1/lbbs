@@ -173,15 +173,20 @@ static int sender_authorized(struct mailing_list *l, struct smtp_session *smtp, 
 {
 	struct stringlist *s;
 
-	if (strlen_zero(from)) {
-		/* Don't accept bounces to this list */
-		bbs_debug(1, "Rejecting empty sender from posting to %s%s%s\n", l->user, l->domain ? "@" : "", S_IF(l->domain));
-		return 0;
-	}
-
 	bbs_debug(4, "Checking if %s has permission to post to %s%s%s\n", from, l->user, l->domain ? "@" : "", S_IF(l->domain));
 
 	s = l->samesenders ? &l->recipients : &l->senders;
+
+	if (strlen_zero(from)) {
+		/* Don't accept bounces to this list, unless any sender is allowed */
+		if (stringlist_is_empty(s)) {
+			bbs_debug(1, "Implicitly authorizing empty sender since no authorized senders are defined\n");
+			return 1;
+		} else {
+			bbs_debug(1, "Rejecting empty sender from posting to %s%s%s\n", l->user, l->domain ? "@" : "", S_IF(l->domain));
+			return 0;
+		}
+	}
 
 	if (bbs_user_is_registered(smtp_node(smtp)->user)) {
 		if (stringlist_contains(s, "*")) {
