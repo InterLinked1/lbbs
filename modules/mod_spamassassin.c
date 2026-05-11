@@ -20,13 +20,20 @@
 #include "include/bbs.h"
 
 #include <sys/wait.h>
+#include <semaphore.h>
 
 #include "include/module.h"
+#include "include/config.h"
 #include "include/utils.h"
 #include "include/system.h"
 #include "include/node.h" /* for childpid */
 
 #include "include/net_smtp.h"
+
+/* Should be suitable even for smaller systems. Can be overridden using the config value. */
+#define DEFAULT_CONCURRENT_SPAM_EXEC 5
+
+static unsigned int max_concurrent_spam_exec = DEFAULT_CONCURRENT_SPAM_EXEC;
 
 /*! \todo
  * Make CONFIG_FILE and SPAM_CMD configurable,
@@ -64,12 +71,14 @@
 
 #define MAX_SPAM_SIZE SIZE_KB(768) /* About 3/4 MB */
 
+static sem_t spamsem; /* Semaphore to control max concurrency */
+
 /* There are a few ways SpamAssassin can be used by an MTA.
  * Some approaches rely on a spamd daemon, e.g. milter, spamc.
  * This approach doesn't rely on a daemon, but it won't perform
  * as well on high-traffic servers. */
 
-static int spam_filter_cb(struct smtp_filter_data *f)
+static int spam_filter_run(struct smtp_filter_data *f)
 {
 	char *argv[16];
 	char args[64];
@@ -210,7 +219,6 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 		if (rres < 0) {
 			/* Timeout */
 			bbs_warning("Timeout waiting for SpamAssassin\n");
-			res = -1;
 			break;
 		} else if (rres == 0) {
 			/* End of headers (CR LF). */
@@ -233,9 +241,10 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 
 	if (!headers_written) {
 		bbs_warning("No X-Spam headers prepended?\n");
+		res = -1;
+	} else {
+		res = 0;
 	}
-
-	res = 0;
 
 cleanup:
 	PIPE_CLOSE(input);
@@ -243,12 +252,44 @@ cleanup:
 	return res;
 }
 
+static int spam_filter_cb(struct smtp_filter_data *f)
+{
+	int res;
+
+	while (sem_wait(&spamsem) == -1 && errno == EINTR);
+	res = spam_filter_run(f);
+	sem_post(&spamsem);
+
+	return res;
+}
+
 struct smtp_filter_provider spam_filter = {
 	.on_body = spam_filter_cb,
 };
 
+static int load_config(void)
+{
+	struct bbs_config *cfg = bbs_config_load("mod_spamassassin.conf", 1);
+	if (cfg) {
+		if (bbs_config_val_set_uint(cfg, "general", "max_concurrent_spam_exec", &max_concurrent_spam_exec)) {
+			max_concurrent_spam_exec = DEFAULT_CONCURRENT_SPAM_EXEC;
+		} else {
+			if (max_concurrent_spam_exec < 1) { /* Can't be 0 */
+				bbs_error("Invalid setting for max_concurrent_spam_exec (%d), defaulting to %d\n", max_concurrent_spam_exec, DEFAULT_CONCURRENT_SPAM_EXEC);
+				max_concurrent_spam_exec = DEFAULT_CONCURRENT_SPAM_EXEC;
+			}
+		}
+		bbs_config_unlock(cfg);
+	}
+	return 0;
+}
+
 static int load_module(void)
 {
+	if (load_config()) {
+		return -1;
+	}
+
 	/* This module has no hard prerequisites (i.e. for compiling or linking).
 	 * However, it's obviously not useful without SpamAssassin.
 	 * The spamassassin binary could potentially be in a few different directories.
@@ -258,6 +299,11 @@ static int load_module(void)
 		bbs_error("%s doesn't exist, declining to load\n", CONFIG_FILE);
 		return -1;
 	}
+
+	if (sem_init(&spamsem, 0, max_concurrent_spam_exec)) {
+		bbs_error("Failed to initialize semaphore: %s\n", strerror(errno));
+		return -1;
+	}
 	smtp_filter_register(&spam_filter, "SpamAssassin", SMTP_FILTER_SPAM_FILTER, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 10);
 	return 0;
 }
@@ -265,6 +311,9 @@ static int load_module(void)
 static int unload_module(void)
 {
 	smtp_filter_unregister(&spam_filter);
+	if (sem_destroy(&spamsem)) {
+		bbs_error("Failed to destroy semaphore: %s\n", strerror(errno));
+	}
 	return 0;
 }
 
