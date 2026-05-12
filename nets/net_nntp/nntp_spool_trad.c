@@ -710,7 +710,7 @@ static enum overview_field parse_overview_item(const char *s)
 	}
 }
 
-static int tradspool_group_overview_full(struct nntp_session *nntp, enum overview_field field, const char *messageid, const char *groupname, int min, int max)
+static int tradspool_group_overview_full(struct nntp_session *nntp, enum overview_field field, enum nntp_hdr_cmd cmd, const char *pattern, const char *messageid, const char *groupname, int min, int max)
 {
 	FILE *fp;
 	char buf[NNTP_BUFSIZ];
@@ -759,13 +759,14 @@ static int tradspool_group_overview_full(struct nntp_session *nntp, enum overvie
 			/* It matches the range filter, dump the line */
 			if (!matches++) {
 				if (field != OVERVIEW_ALL) {
-					nntp_send(nntp, 225, "Header information follows");
+					nntp_send(nntp, cmd != NNTP_HDR ? 221 : 225, "Header information follows");
 				} else {
 					nntp_send(nntp, 224, "Overview information follows");
 				}
 			}
 			if (field != OVERVIEW_ALL) {
-				/* HDR responses */
+				/* HDR/XHDR/XPAT responses */
+				const char *hdrval = NULL;
 				struct article_info artinfo;
 				char *rest = buf;
 				int myartnum;
@@ -779,31 +780,39 @@ static int tradspool_group_overview_full(struct nntp_session *nntp, enum overvie
 				}
 				switch (field) {
 					case OVERVIEW_SUBJECT:
-						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.subject));
+						hdrval = artinfo.subject;
 						break;
 					case OVERVIEW_FROM:
-						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.from));
+						hdrval = artinfo.from;
 						break;
 					case OVERVIEW_DATE:
-						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.date));
+						hdrval = artinfo.date;
 						break;
 					case OVERVIEW_MESSAGEID:
-						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.messageid));
+						hdrval = artinfo.messageid;
 						break;
 					case OVERVIEW_REFERENCES:
-						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.references));
-						break;
-					case OVERVIEW_METADATA_BYTES:
-						_nntp_send(nntp, "%d %lu\r\n", myartnum, artinfo.bytes);
-						break;
-					case OVERVIEW_METADATA_LINES:
-						_nntp_send(nntp, "%d %d\r\n", myartnum, artinfo.lines);
+						hdrval = artinfo.references;
 						break;
 					case OVERVIEW_XREF:
-						_nntp_send(nntp, "%d %s\r\n", myartnum, S_IF(artinfo.xref));
+						hdrval = artinfo.xref;
 						break;
+					/* These last two only apply to HDR, not XHDR or XPAT
+					 * We continue since we don't apply the string logic after the switch. */
+					case OVERVIEW_METADATA_BYTES:
+						_nntp_send(nntp, "%d %lu\r\n", myartnum, artinfo.bytes);
+						continue;
+					case OVERVIEW_METADATA_LINES:
+						_nntp_send(nntp, "%d %d\r\n", myartnum, artinfo.lines);
+						continue;
 					default:
 						bbs_assert(0);
+				}
+				hdrval = S_IF(hdrval);
+				if (!pattern || uwildmat_simple(hdrval, pattern)) {
+					/* RFC 3977 8.5.2: For HDR, even if the header is not present, so long as the article exists,
+					 * we must still send a line for that article (space after article number is optional). */
+					_nntp_send(nntp, "%d %s\r\n", myartnum, hdrval);
 				}
 			} else {
 				/* OVER and XOVER responses */
@@ -829,16 +838,21 @@ static int tradspool_group_overview_full(struct nntp_session *nntp, enum overvie
 
 int tradspool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max)
 {
-	return tradspool_group_overview_full(nntp, OVERVIEW_ALL, messageid, groupname, min, max);
+	return tradspool_group_overview_full(nntp, OVERVIEW_ALL, NNTP_HDR, NULL, messageid, groupname, min, max);
 }
 
-int tradspool_group_overview_header(struct nntp_session *nntp, const char *field, const char *messageid, const char *groupname, int min, int max)
+int tradspool_group_overview_header(struct nntp_session *nntp, const char *field, const char *messageid, const char *groupname, int min, int max, enum nntp_hdr_cmd cmd, const char *pattern)
 {
 	enum overview_field fld = parse_overview_item(field);
 	if (fld == OVERVIEW_UNSUPPORTED) {
 		return 2;
+	} else if (cmd != NNTP_HDR && (fld == OVERVIEW_METADATA_BYTES || fld == OVERVIEW_METADATA_LINES)) {
+		return 2; /* Metadata only supported for HDR, not XHDR/XPAT */
 	}
-	return tradspool_group_overview_full(nntp, fld, messageid, groupname, min, max);
+	/*! \todo Right now, only headers in overview are supported for HDR/XHDR/XPAT.
+	 * While not required, we could be more flexible and also support any arbitrary header
+	 * by pulling the header from the article itself if the header isn't in overview. */
+	return tradspool_group_overview_full(nntp, fld, cmd, pattern, messageid, groupname, min, max);
 }
 
 int tradspool_overview_header_list(struct nntp_session *nntp, enum list_category listcat, const char *argument)

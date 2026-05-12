@@ -14,7 +14,7 @@
  *
  * \brief RFC 3977 Network News Transfer Protocol (NNTP)
  *
- * \note Supports RFC 2980 XOVER
+ * \note Supports RFC 2980 XHDR, XOVER, XPAT
  * \note Supports RFC 3977 OVER (including MSGID)
  * \note Supports RFC 4642 STARTTLS
  * \note Supports RFC 4643 AUTHINFO
@@ -1147,15 +1147,6 @@ static int parse_min_max(char *s, int *min, int *max, char sep)
 	*tmp++ = '\0';
 	*min = atoi(s);
 	*max = atoi(tmp);
-	return 0;
-}
-
-static int parse_min_max_extended(char *s, int *min, int *max, char sep)
-{
-	int res = parse_min_max(s, min, max, sep);
-	if (res) {
-		return res;
-	}
 	if (!*max) {
 		if (!*min) {
 			return 1; /* 0-0 or invalid? */
@@ -1541,6 +1532,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			_nntp_send(nntp, "MODE-READER\r\n");
 		}
 		_nntp_send(nntp, "HDR\r\n");
+		_nntp_send(nntp, "XPAT\r\n");
 		_nntp_send(nntp, "LIST ACTIVE ACTIVE.TIMES DISTRIB.PATS HEADERS NEWSGROUPS OVERVIEW.FMT\r\n");
 		_nntp_send(nntp, "OVER MSGID\r\n");
 		_nntp_send(nntp, "XSECRET\r\n");
@@ -1601,7 +1593,9 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		_nntp_send(nntp, " QUIT\r\n");
 		_nntp_send(nntp, " STARTTLS\r\n");
 		_nntp_send(nntp, " STAT [message-ID|number]\r\n");
+		_nntp_send(nntp, " XHDR header [message-ID|range]\r\n");
 		_nntp_send(nntp, " XOVER [range]\r\n");
+		_nntp_send(nntp, " XPAT header message-ID|range pattern [pattern ...]\r\n");
 		_nntp_send(nntp, ".\r\n");
 	} else if (!strcasecmp(command, "XSECRET")) {
 		/* XSECRET appears in RFC 3977, in passing, but there is no actual documentation anywhere of it that I can find.
@@ -1744,7 +1738,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		if (!strlen_zero(s)) {
 			groupname = strsep(&s, " ");
 			if (!strlen_zero(s)) {
-				parse_min_max_extended(s, &min, &max, '-'); /* Even if it fails, we return an empty 211 response */
+				parse_min_max(s, &min, &max, '-'); /* Even if it fails, we return an empty 211 response */
 			}
 		} else {
 			REQUIRE_GROUP();
@@ -1835,18 +1829,19 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		}
 	} else if (!strcasecmp(command, "OVER")) {
 /* If we are using a Message-ID instead of an article number, the spool will need to query ACLs for the group containing the article */
-#define OVER_ACL_RDLOCK(nntp) if (msgid) { ACL_RDLOCK(nntp); }
-#define OVER_ACL_UNLOCK(nntp) if (msgid) { ACL_UNLOCK(nntp); }
+#define CMD_ACL_RDLOCK(nntp) if (msgid) { ACL_RDLOCK(nntp); }
+#define CMD_ACL_UNLOCK(nntp) if (msgid) { ACL_UNLOCK(nntp); }
+#define IS_MESSAGEID_RATHER_THAN_RANGE(s) (*s == '<')
 		/* RFC 3977 OVER */
 		int res, min = 0, max = 0;
 		const char *msgid = NULL;
 		REQUIRE_READER();
 		if (!strlen_zero(s)) {
-			if (*s == '<') {
+			if (IS_MESSAGEID_RATHER_THAN_RANGE(s)) {
 				msgid = s;
 			} else {
 				REQUIRE_GROUP();
-				if (parse_min_max_extended(s, &min, &max, '-')) {
+				if (parse_min_max(s, &min, &max, '-')) {
 					nntp_send(nntp, 423, "Invalid range");
 					return 0;
 				}
@@ -1859,26 +1854,35 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			}
 			min = max = nntp->currentarticle;
 		}
-		OVER_ACL_RDLOCK(nntp);
+		CMD_ACL_RDLOCK(nntp);
 		res = spool_group_overview(nntp, msgid, nntp->currentgroup, min, max);
-		OVER_ACL_UNLOCK(nntp);
+		CMD_ACL_UNLOCK(nntp);
 		if (res) {
 			nntp_send(nntp, msgid ? 430 : 423, "%s", msgid ? "No article with that Message-ID" : "No articles in that range");
 		}
-	} else if (!strcasecmp(command, "HDR")) {
-		/* RFC 3977 OVER */
+	} else if (!strcasecmp(command, "HDR") || !strcasecmp(command, "XHDR") || !strcasecmp(command, "XPAT")) {
+		/* Unlike XOVER/OVER, there are very few differences between XHDR/HDR, since XHDR also supports requests using a Message-ID. Differences:
+		 * - The response code number is different (221 for XHDR, 225 for HDR).
+		 * - Metadata is not supported by XHDR.
+		 * XPAT takes XHDR one step further by allowing for pattern(s) to be specified that must match.
+		 */
 		int res, min = 0, max = 0;
-		char *hdr;
+		char *hdr, *arg2, *pattern = NULL;
 		const char *msgid = NULL;
-		REQUIRE_READER();
+		enum nntp_hdr_cmd cmd = command[0] == 'X' ? command[1] == 'P' ? NNTP_XPAT : NNTP_XHDR : NNTP_HDR;
+		if (cmd == NNTP_HDR) {
+			REQUIRE_READER(); /* XHDR and XPAT can be used by non-readers */
+		}
 		hdr = strsep(&s, " ");
+		arg2 = strsep(&s, " ");
+		pattern = s;
 		REQUIRE_ARGS(hdr);
-		if (!strlen_zero(s)) {
-			if (*s == '<') {
-				msgid = s;
+		if (!strlen_zero(arg2)) {
+			if (IS_MESSAGEID_RATHER_THAN_RANGE(arg2)) {
+				msgid = arg2;
 			} else {
 				REQUIRE_GROUP();
-				if (parse_min_max_extended(s, &min, &max, '-')) {
+				if (parse_min_max(arg2, &min, &max, '-')) {
 					nntp_send(nntp, 423, "Invalid range");
 					return 0;
 				}
@@ -1891,10 +1895,13 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			}
 			min = max = nntp->currentarticle;
 		}
+		if (cmd == NNTP_XPAT) {
+			REQUIRE_ARGS(s);
+		}
 
-		OVER_ACL_RDLOCK(nntp);
-		res = spool_group_overview_header(nntp, hdr, msgid, nntp->currentgroup, min, max);
-		OVER_ACL_UNLOCK(nntp);
+		CMD_ACL_RDLOCK(nntp);
+		res = spool_group_overview_header(nntp, hdr, msgid, nntp->currentgroup, min, max, cmd, pattern);
+		CMD_ACL_UNLOCK(nntp);
 		if (res) {
 			if (res == 2) {
 				/* We only use overview to satisfy HDR requests, so if it's not a field available in overview, we reject it */
@@ -1907,7 +1914,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 #define PARSE_ARTICLENUM_MSGID() \
 	artnum = atoi(s); \
 	if (!artnum) { \
-		if (*s != '<') { \
+		if (!IS_MESSAGEID_RATHER_THAN_RANGE(s)) { \
 			nntp_send(nntp, 423, "No such article"); \
 			return 0; \
 		} \
@@ -1929,6 +1936,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		artnum = nntp->currentarticle; \
 	}
 
+/* Only difference from CMD_ACL_RDLOCK is here we check for NOT article range rather than IS Message-ID */
 #define ARTICLE_ACL_RDLOCK(nntp) if (!artnum) { ACL_RDLOCK(nntp); }
 #define ARTICLE_ACL_UNLOCK(nntp) if (!artnum) { ACL_UNLOCK(nntp); }
 

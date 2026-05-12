@@ -65,9 +65,9 @@ int spool_group_overview(struct nntp_session *nntp, const char *messageid, const
 	return tradspool_group_overview(nntp, messageid, groupname, min, max);
 }
 
-int spool_group_overview_header(struct nntp_session *nntp, const char *field, const char *messageid, const char *groupname, int min, int max)
+int spool_group_overview_header(struct nntp_session *nntp, const char *field, const char *messageid, const char *groupname, int min, int max, enum nntp_hdr_cmd cmd, const char *pattern)
 {
-	return tradspool_group_overview_header(nntp, field, messageid, groupname, min, max);
+	return tradspool_group_overview_header(nntp, field, messageid, groupname, min, max, cmd, pattern);
 }
 
 int spool_overview_header_list(struct nntp_session *nntp, enum list_category listcat, const char *argument)

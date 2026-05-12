@@ -441,6 +441,28 @@ static int run(void)
 	FMT_WRITE(client1, "HDR Content-Type %s\r\n", xmsgid);
 	CLIENT_EXPECT_EVENTUALLY(client1, "503"); /* Not supported for HDR */
 
+	FMT_WRITE(client1, "HDR :bytes %s\r\n", xmsgid);
+	CLIENT_EXPECT(client1, "225");
+	FMT_WRITE(client1, "HDR Subject %s\r\n", xmsgid);
+	CLIENT_EXPECT_EVENTUALLY(client1, "225");
+	FMT_WRITE(client1, "XHDR :bytes %s\r\n", xmsgid);
+	CLIENT_EXPECT_EVENTUALLY(client1, "503"); /* XHDR doesn't support metadata */
+	FMT_WRITE(client1, "XHDR Subject %s\r\n", xmsgid);
+	CLIENT_EXPECT(client1, "221"); /* Both HDR and XHDR should work, but response codes are different */
+	FMT_WRITE(client1, "XPAT :bytes %s 1\r\n", xmsgid);
+	CLIENT_EXPECT_EVENTUALLY(client1, "503");
+	FMT_WRITE(client1, "XPAT Subject %s *test art*\r\n", xmsgid);
+	CLIENT_EXPECT_EVENTUALLY(client1, "test article");
+	SWRITE(client1, "XPAT Subject 10-12 *test art*\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "12 I am just a test article" ENDL);
+	SWRITE(client1, "XPAT Subject 10-12 test art\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "221");
+	CLIENT_EXPECT(client1, "." ENDL); /* No matches */
+
+	/* The articles don't have a References header (but should still appear in HDR response) */
+	FMT_WRITE(client1, "HDR References 8-15\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "11 " ENDL);
+
 	FMT_WRITE(client1, "HDR Subject %s\r\n", xmsgid);
 	CLIENT_EXPECT_EVENTUALLY(client1, "9 I am just a test article" ENDL);
 

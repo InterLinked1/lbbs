@@ -177,6 +177,11 @@ int uwildmat(const char *text, const char *patterns)
 	return *rightmostmatch != '!'; /* If the rightmost match begins with !, not a match, otherwise the whole wildmat matches */
 }
 
+int uwildmat_simple(const char *text, const char *pattern)
+{
+	return wildmat_pattern_match(text, pattern);
+}
+
 int test_wildmats(void)
 {
 	/* RFC 3977 4.2 */
@@ -217,6 +222,8 @@ int test_wildmats(void)
 	bbs_test_assert_equals(1, uwildmat("-adobe-courier-bold-o-normal--12-120-75-75-m-70-iso8859-1", "-*-*-*-*-*-*-12-*-*-*-m-*-*-*")); /* Example from wildmat.c: */
 	bbs_test_assert_equals(0, uwildmat("foobar", "foo[a-")); /* This example caused a crash in the original version of Rich Salz's wildmat_domatch */
 	bbs_test_assert_equals(0, uwildmat("foobar", "foo["));
+
+	bbs_test_assert_equals(1, uwildmat_simple("!aaabbb", "!a*b*"));
 
 	return 0;
 

@@ -316,20 +316,28 @@ int spool_group_list_articles(struct nntp_session *nntp, const char *groupname, 
  */
 int spool_group_overview(struct nntp_session *nntp, const char *messageid, const char *groupname, int min, int max);
 
+enum nntp_hdr_cmd {
+	NNTP_HDR,
+	NNTP_XHDR,
+	NNTP_XPAT,
+};
+
 /*!
- * \brief Send a client matching entries from the overview database (for HDR)
+ * \brief Send a client matching entries from the overview database (for HDR/XHDR/XPAT)
  * \param nntp
  * \param field Header or metadata field to send
  * \param messageid Message-ID of article, if searching by message-ID
  * \param groupname Group name, required if searching by article number. May also be provided to indicate the currently selected group.
  * \param min Minimum article number to match
  * \param max Maximum article number to match
+ * \param cmd Type of command
+ * \param pattern Pattern (for XPAT)
  * \retval 0 on success (response sent to client)
  * \retval -1 on error (response not sent)
  * \retval 1 if group is empty (response not sent)
  * \retval 2 if field is invalid (response not sent)
  */
-int spool_group_overview_header(struct nntp_session *nntp, const char *field, const char *messageid, const char *groupname, int min, int max);
+int spool_group_overview_header(struct nntp_session *nntp, const char *field, const char *messageid, const char *groupname, int min, int max, enum nntp_hdr_cmd cmd, const char *pattern);
 
 /*!
  * \brief Send LIST OVERVIEW.FMT or LIST HEADERS response
@@ -393,5 +401,8 @@ int spool_article_send(struct nntp_session *nntp, enum article_part_filter filte
 
 /*! \brief Check for match for a whole wildmat */
 int uwildmat(const char *text, const char *patterns);
+
+/*! \brief Check for match with simple expression (neither , nor ! are special) */
+int uwildmat_simple(const char *text, const char *pattern);
 
 int test_wildmats(void);
