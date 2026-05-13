@@ -526,6 +526,54 @@ static int run(void)
 	SWRITE(client1, "ARTICLE 1\r\n");
 	CLIENT_EXPECT(client1, "423");
 
+	/* Test dot-stuffing */
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "340");
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
+		"Newsgroups: misc.test" ENDL \
+		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
+		"Subject: I am just a test article" ENDL \
+		ENDL \
+		"This article tests dot-stuffing." ENDL \
+		"." ENDL; \
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT(client1, "240");
+	GROUP_EXPECT(client1, "misc.test", 8, 16, 7);
+	SWRITE(client1, "HDR :bytes 16\r\n");
+	CLIENT_EXPECT(client1, "225");
+	CLIENT_EXPECT(client1, "16 216");
+
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "340");
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
+		"Newsgroups: misc.test" ENDL \
+		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
+		"Subject: I am just a test article" ENDL \
+		ENDL \
+		"This article tests dot-stuffing." ENDL \
+
+		/* These lines are new (and all dot-stuffed): */
+		".." ENDL \
+		".." ENDL \
+		".." ENDL \
+		".." ENDL \
+		".." ENDL \
+		".." ENDL \
+
+		"." ENDL; \
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT(client1, "240");
+	GROUP_EXPECT(client1, "misc.test", 8, 17, 8);
+	SWRITE(client1, "HDR :bytes 17\r\n");
+	/* Same as previous message but with 6 extra lines that are dot-stuffed. 6 lines, 3 bytes each (. CR LF, but not including leading dot for dot-stuffing).
+	 * So, +18 bytes. */
+	CLIENT_EXPECT(client1, "225");
+	CLIENT_EXPECT(client1, "17 234");
+
+	/* When requesting the article back, the lines with a '.' by themselves must be dot-stuffed back again */
+	SWRITE(client1, "BODY 17\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, ".." ENDL);
+
 	/* Try some things that should be denied by ACL */
 
 	/* Can't post to misc.restricted */

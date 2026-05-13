@@ -1305,6 +1305,7 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 	int postfail = 0;
 	size_t postlen = 0;
 	int lines = 0;
+	size_t dot_stuffed_lines = 0;
 	struct article_info *artinfo = &nntp->artinfo;
 
 	nntp_reset_data(nntp);
@@ -1359,7 +1360,11 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 				unlink(template);
 				return 0;
 			}
-			artinfo->bytes = postlen;
+			/* We handle dot-stuffing mostly transparently, i.e. the leading dots are stored in the spool
+			 * so they can be efficiently served to clients without further processing.
+			 * However, that means the "real" length of the file differs from the reported # of bytes.
+			 * This is intended (see RFC 3977 8.1.1, :bytes is not supposed to include dot-stuffing). */
+			artinfo->bytes = postlen - dot_stuffed_lines;
 			artinfo->lines = lines;
 			res = do_post(nntp, template, postlen);
 			unlink(template);
@@ -1404,6 +1409,9 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 			}
 		} else {
 			lines++;
+			if (*s == '.') {
+				dot_stuffed_lines++; /* This line is dot-stuffed, keep track so we can adjust the length */
+			}
 		}
 
 		if ((unsigned int) (postlen + (long unsigned int) len + 2) >= max_post_size) {
@@ -1412,7 +1420,26 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 			continue;
 		}
 
-		res = bbs_append_stuffed_line_message(fp, s, (size_t) len); /* Should return len + 2, unless it was byte stuffed, in which case it'll be len + 1 */
+		/* SMTP and NNTP both use dot-stuffing, but we do not handle them the same way.
+		 * SMTP does not have a single wire format, because messages can be received/transmitted framed in multiple ways,
+		 * so dot-stuffing is not always used. See:
+		 * - https://dotat.at/@/2006-09-15-no-longer-simple-mail-transport-protocol.html
+		 * - https://dotat.at/@/2006-09-19-how-not-to-design-an-mta-part-4-spool-file-format.html
+		 *
+		 * In contrast, in NNTP, messages are always framed the same way, with dot-stuffing.
+		 * Therefore, stripping the leading dot here is pointless as we'd always have to add
+		 * it back again when sending articles to clients; for efficiency, we leave it in,
+		 * so that way we can use sendfile() without having to process the article, i.e.
+		 * articles are always stored in their wire format (INN supports both storing in wire
+		 * format or not, and it's enabled by default now.)
+		 *
+		 * This has the slight disadvantage that other processes can't look at the spool directly
+		 * and receive valid articles, but this sort of thing isn't really common anymore.
+		 * Other stuff can just talk NNTP if needed.
+		 *
+		 * The :bytes metadata item doesn't include dot-stuffing characters, so we do keep track of how many occur,
+		 * so that we can calculate this correctly in tradspool_article_create(), but that's all. */
+		res = bbs_append_line_message(fp, s, (size_t) len); /* Should return len + 2 */
 		if (res < 0) {
 			postfail = 1;
 		}

@@ -66,7 +66,7 @@ struct article_info {
 	char *date;
 	const char *messageid;
 	char *references;
-	size_t bytes;
+	size_t bytes; /* This is the reported size of the article, rather than the actual size on disk (which can be larger when an article includes dot stuffed lines) */
 	int lines;
 	/* Optional fields */
 	char *xref;
@@ -355,7 +355,7 @@ struct stringlist;
  * \param groups List of groups to which to add the article. Caller is responsible for freeing the list's contents afterwards.
  * \param articleid The Message-ID
  * \param srcfd File descriptor from which to read article
- * \param len Length of article (number of bytes to read from srcfd)
+ * \param len Length of article (number of bytes to read from srcfd). Note this included dot-stuffing characters (which should NOT be included in artinfo->bytes)
  * \retval -1 on error (not added to any groups)
  * \returns Number of groups to which the article was added. Can be 0 (in particular, if delivery to all groups failed, and a group was full, errno will be set to ERANGE)
  * \note It's possible not all items in groups will be consumed, caller should call stringlist_empty afterwards

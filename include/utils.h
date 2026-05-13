@@ -126,7 +126,16 @@ char *bbs_sasl_encode(const char *nickname, const char *username, const char *pa
 int bbs_parse_email_address(char *addr, char **name, char **user, char **host);
 
 /*!
- * \brief Append a byte stuffed line (for SMTP or NNTP data) to a fp
+ * \brief Append a line (for NNTP data) to a file (leaving any dot-stuffing intact)
+ * \param fp
+ * \param line
+ * \param len Nominal length of the line. A CR LF will be appended.
+ * \retval -1 on failure, number of bytes actually written to file on success
+ */
+int bbs_append_line_message(FILE *fp, const char *line, size_t len);
+
+/*!
+ * \brief Append a dot-stuffed line (for SMTP data) to a file (removing the dot-stuffing)
  * \param fp
  * \param line
  * \param len Nominal length of the line. If it starts with a ., the first period will be skipped. A CR LF will be appended.

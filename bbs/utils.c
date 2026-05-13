@@ -350,14 +350,10 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host)
 	return 0;
 }
 
-int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len)
+int bbs_append_line_message(FILE *fp, const char *line, size_t len)
 {
 	size_t res;
 	/* Compiler could maybe optimize fprintf to fwrite, but just use it directly */
-	if (*line == '.') { /* RFC 5321 4.5.2: If line starts with a ., it's byte stuffed, and really starts at the character after. */
-		line++;
-		len--;
-	}
 	res = fwrite(line, sizeof(char), len, fp);
 	if (res != len) {
 		bbs_error("Failed to append %lu bytes (appended %lu)\n", len, res);
@@ -369,6 +365,16 @@ int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len)
 		return -1;
 	}
 	return (int) len + 2;
+}
+
+int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len)
+{
+	/* Compiler could maybe optimize fprintf to fwrite, but just use it directly */
+	if (*line == '.') { /* RFC 5321 4.5.2: If line starts with a ., it's dot-stuffed, and really starts at the character after. */
+		line++;
+		len--;
+	}
+	return bbs_append_line_message(fp, line, len);
 }
 
 const char *bbs_basename(const char *s)

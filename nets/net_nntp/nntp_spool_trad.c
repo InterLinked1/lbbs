@@ -936,7 +936,7 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 	char hardpath[NNTP_MAX_PATH_LENGTH];
 	char links[4 * NNTP_MAX_PATH_LENGTH];
 	char xref[10 * NNTP_MAX_LINE_LENGTH]; /* If there are a lot of groups, it could be more than we'll fit in a single line */
-	size_t articlesize, xrefbytes;
+	size_t xrefbytes;
 	char expiresbuf[32] = "-"; /* - indicates no expiration */
 	char *linkspos = links;
 	size_t linksleft = sizeof(links);
@@ -967,7 +967,7 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 	if (!xrefbytes) {
 		return 0; /* Something went wrong if we had no groups to add to Xref header */
 	}
-	articlesize = len + xrefbytes;
+	artinfo->bytes += xrefbytes;
 
 	/* Finally, actually add the article to the spool.
 	 * For the first group, we'll actually create a file in the spool;
@@ -1026,7 +1026,7 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 		if (artinfo->expires) {
 			/*! \todo If article has an Expires header, we would include that in expiresbuf instead - need to convert string to epoch time */
 		}
-		history_add(artinfo->messageid, arrival_time, expiresbuf, articlesize, links);
+		history_add(artinfo->messageid, arrival_time, expiresbuf, artinfo->bytes, links);
 	} else {
 		errno = 0;
 	}
