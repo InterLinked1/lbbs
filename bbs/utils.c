@@ -377,6 +377,46 @@ int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len)
 	return bbs_append_line_message(fp, line, len);
 }
 
+ssize_t bbs_send_stuffed(int outfd, FILE *infp, size_t writelen)
+{
+	ssize_t wrote = 0;
+	int dot_stuffed = 0;
+	char buf[1002]; /* 1000 is the max line length in both SMTP and POP3. +1 for NUL, +1 so we can dot-stuff if needed */
+
+	/* We can't use sendfile directly here, since we may need to add dot-stuffing back to the message.
+	 * The simplest way (though not efficient) is to go line by line; we could use sendfile to send larger
+	 * parts of it, but we would need to know ahead of time what parts can be sent
+	 * without processing. */
+
+	buf[0] = '.';
+	while ((fgets(buf + 1, sizeof(buf) - 1, infp))) {
+		ssize_t wres;
+		size_t len = strlen(buf + 1);
+		if (buf[1] == '.') { /* RFC 5321 4.5.2: If first character is a period, we send an additional period at beginning of line */
+			wres = bbs_write(outfd, buf, len + 1); /* Send dot-string */
+			dot_stuffed++;
+		} else {
+			wres = bbs_write(outfd, buf + 1, len); /* Send it exactly as is */
+		}
+		if (wres < 0) { /* Failed to write full message */
+			return -1;
+		}
+		wrote += wres;
+	}
+
+	if (wrote != (ssize_t) writelen + dot_stuffed) {
+		bbs_error("Failed to send %lu bytes (sent %ld)\n", writelen + (size_t) dot_stuffed, wrote);
+		return -1;
+	}
+
+	if (dot_stuffed) {
+		bbs_debug(5, "Sent %lu bytes (including %d dot-stuffed)\n", wrote, dot_stuffed);
+	} else {
+		bbs_debug(5, "Sent %lu bytes\n", wrote);
+	}
+	return wrote;
+}
+
 const char *bbs_basename(const char *s)
 {
 	/* basename(2) might modify its argument,

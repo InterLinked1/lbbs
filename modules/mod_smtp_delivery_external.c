@@ -462,6 +462,43 @@ static int __debug_data(int srcfd, size_t writelen, int lineno)
 }
 #endif
 
+#define SMTP_EOM "\r\n.\r\n"
+
+/*! \brief Send data in "normal" unextended SMTP data transaction (no chunking or other optimizing extensions) */
+static int send_data_normal(struct bbs_smtp_client *smtpclient, struct smtp_tx_data *tx, const char *prepend, size_t prependlen, FILE *fp, size_t writelen)
+{
+	ssize_t wrote = 0;
+	ssize_t res;
+
+	tx->stage = "DATA";
+	bbs_smtp_client_send(smtpclient, "DATA\r\n");
+	SMTP_CLIENT_EXPECT_FINAL(smtpclient, MIN_MS(2), "354"); /* RFC 5321 4.5.3.2.4 */
+	if (prepend && prependlen) {
+		wrote = bbs_write(smtpclient->client.wfd, prepend, (unsigned int) prependlen);
+	}
+
+	wrote = bbs_send_stuffed(smtpclient->client.wfd, fp, writelen);
+	if (wrote < 0) {
+		goto cleanup;
+	}
+
+	/*! \todo If email doesn't end in CR LF, we need to tack that on. But ONLY if it doesn't already end in CR LF. */
+	bbs_smtp_client_send(smtpclient, SMTP_EOM); /* (end of) EOM */
+	tx->stage = "end of DATA";
+	return 0;
+
+cleanup:
+	return -1;
+}
+
+/*! \brief Actually send the email message during a transaction */
+static int send_data(struct smtp_session *smtp, struct bbs_smtp_client *smtpclient, struct smtp_tx_data *tx, const char *prepend, size_t prependlen, FILE *fp, size_t writelen)
+{
+	/*! \todo Use sendfile with CHUNKING/BDAT for efficiency, since we won't need to worry about dot-stuffing */
+	UNUSED(smtp);
+	return send_data_normal(smtpclient, tx, prepend, prependlen, fp, writelen);
+}
+
 /*!
  * \brief Attempt to send an external message to another mail transfer agent or message submission agent
  * \param smtp SMTP session. Generally, this will be NULL except for relayed messages, which are typically the only time this is needed.
@@ -477,7 +514,7 @@ static int __debug_data(int srcfd, size_t writelen, int lineno)
  * \param recipients A list of recipients for RCPT TO. Either recipient or recipients must be specified.
  * \param prepend Data to prepend
  * \param prependlen Length of prepend
- * \param datafd A file descriptor containing the message data (used instead of data/datalen)
+ * \param fp File containing message
  * \param writelen Number of bytes to send
  * \param[out] buf Buffer in which to temporarily store SMTP responses
  * \param len Size of buf.
@@ -485,18 +522,14 @@ static int __debug_data(int srcfd, size_t writelen, int lineno)
  */
 static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const char *hostname, int port, int use_implicit_tls, int allow_starttls,
 	const char *username, const char *password, const char *sender, const char *recipient, struct stringlist *recipients,
-	const char *prepend, size_t prependlen, int datafd, size_t writelen, char *buf, size_t len)
+	const char *prepend, size_t prependlen, FILE *fp, size_t writelen, char *buf, size_t len)
 {
 	int res = -1;
-	ssize_t wrote = 0;
 	struct bbs_smtp_client smtpclient;
-	off_t send_offset;
 	char sendercopy[MAX_EMAIL_ADDRESS_LENGTH];
 	char *user = NULL, *domain = NULL, *saslstr = NULL; /* saslstr is scoped here for cleanup */
 
-#define SMTP_EOM "\r\n.\r\n"
-
-	bbs_assert(datafd != -1);
+	bbs_assert_exists(fp);
 	bbs_assert(writelen > 0);
 
 	/* Properly parse, since if a name is present, in addition to the email address, we must exclude the name in the MAIL FROM */
@@ -732,26 +765,13 @@ static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session 
 		bbs_error("No recipients specified\n");
 		goto cleanup;
 	}
-	tx->stage = "DATA";
-	bbs_smtp_client_send(&smtpclient, "DATA\r\n");
-	SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(2), "354"); /* RFC 5321 4.5.3.2.4 */
-	if (prepend && prependlen) {
-		wrote = bbs_write(smtpclient.client.wfd, prepend, (unsigned int) prependlen);
-	}
 
-	/* sendfile will be much more efficient than reading the file ourself, as email body could be quite large, and we don't need to involve userspace. */
-	send_offset = 0;
-	res = (int) bbs_sendfile(smtpclient.client.wfd, datafd, &send_offset, writelen);
-
-	/* XXX If email doesn't end in CR LF, we need to tack that on. But ONLY if it doesn't already end in CR LF. */
-	bbs_smtp_client_send(&smtpclient, SMTP_EOM); /* (end of) EOM */
-	tx->stage = "end of DATA";
-	if (res != (int) writelen) { /* Failed to write full message */
-		res = -1;
+	/* Actually send the payload */
+	res = send_data(smtp, &smtpclient, tx, prepend, prependlen, fp, writelen);
+	if (res) {
 		goto cleanup;
 	}
-	wrote += res;
-	bbs_debug(5, "Sent %lu bytes\n", wrote);
+
 	/* RFC 5321 4.5.3.2.6 */
 	SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(10), "250"); /* Okay, this email is somebody else's problem now. */
 
@@ -1252,7 +1272,7 @@ cleanup:
 }
 
 /*! \brief Attempt to send a message via SMTP using static routes instead of doing an MX lookup */
-static int __attribute__ ((nonnull (2, 3, 4, 5, 8))) try_static_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct stringlist *static_routes, const char *sender, const char *recipient, int datafd, size_t writelen, char *buf, size_t len)
+static int __attribute__ ((nonnull (2, 3, 4, 5, 8))) try_static_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct stringlist *static_routes, const char *sender, const char *recipient, FILE *fp, size_t writelen, char *buf, size_t len)
 {
 	const char *route;
 	struct stringitem *i = NULL;
@@ -1284,7 +1304,7 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 8))) try_static_delivery(struct 
 			}
 		}
 
-		res = try_send(smtp, tx, hostname, port, 0, 1, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, writelen, buf, len);
+		res = try_send(smtp, tx, hostname, port, 0, 1, NULL, NULL, sender, recipient, NULL, NULL, 0, fp, writelen, buf, len);
 	}
 	return res;
 }
@@ -1298,14 +1318,14 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 8))) try_static_delivery(struct 
  * \param sender The MAIL FROM for the message
  * \param recipient A single recipient for RCPT TO
  * \param recipients A list of recipients for RCPT TO. Either recipient or recipients must be specified.
- * \param datafd A file descriptor containing the message data (used instead of data/datalen)
+ * \param fp File containing message
  * \param writelen Number of bytes to send
  * \param[out] buf Buffer in which to temporarily store SMTP responses
  * \param len Size of buf.
  * \retval 0 on success, 1 on permanent error, -1 on temporary error
  * \note This function leaves the items in mxservers intact so they can be used again if needed
  */
-static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 9))) try_mx_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct mailq_file *mqf, struct stringlist *mxservers, const char *sender, const char *recipient, int datafd, size_t writelen, char *buf, size_t len)
+static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 9))) try_mx_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct mailq_file *mqf, struct stringlist *mxservers, const char *sender, const char *recipient, FILE *fp, size_t writelen, char *buf, size_t len)
 {
 	const char *hostname;
 	struct stringitem *i = NULL;
@@ -1314,7 +1334,7 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 9))) try_mx_delivery(struct s
 
 	/* Try all the MX servers in order, if necessary */
 	while (res < 0 && (hostname = stringlist_next(mxservers, &i))) {
-		res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 1, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, writelen, buf, len);
+		res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 1, NULL, NULL, sender, recipient, NULL, NULL, 0, fp, writelen, buf, len);
 		if (res == -2) {
 			start_tls_failures++;
 			res = -1;
@@ -1328,20 +1348,20 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 9))) try_mx_delivery(struct s
 			/* Retry without using STARTTLS.
 			 * First, send a delay notification so the sender is aware the message was not delivered securely.
 			 * The sender could then choose to notify the recipient's postmaster of the issue, but it's not really our problem. */
-			smtp_trigger_dsn(&mqf->sinfo, DELIVERY_DELAYED, tx, &mqf->created, sender, recipient, buf, datafd, writelen, mqf->retries);
+			smtp_trigger_dsn(&mqf->sinfo, DELIVERY_DELAYED, tx, &mqf->created, sender, recipient, buf, fileno(fp), writelen, mqf->retries);
 			/* Do another pass, but don't attempt STARTTLS.
 			 * It's possible delivery will succeed without encryption.
 			 * Obviously, this isn't ideal, but most mail servers generally retry delivery without TLS if it fails.
 			 * To prevent falling back to plain text, require_starttls_out should be configured to true. */
 			i = NULL;
 			while (res < 0 && (hostname = stringlist_next(mxservers, &i))) {
-				res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 0, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, writelen, buf, len);
+				res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 0, NULL, NULL, sender, recipient, NULL, NULL, 0, fp, writelen, buf, len);
 				bbs_assert(res != -2); /* Since we don't attempt STARTTLS, res should never be -2 */
 			}
 			if (res == 0) {
 				/* Since we send a delayed DSN, if we succeeded, we now need to also send one for success,
 				 * or the user will think the message hasn't been able to be delivered. */
-				smtp_trigger_dsn(&mqf->sinfo, DELIVERY_DELIVERED, tx, &mqf->created, sender, recipient, buf, datafd, writelen, mqf->retries);
+				smtp_trigger_dsn(&mqf->sinfo, DELIVERY_DELIVERED, tx, &mqf->created, sender, recipient, buf, fileno(fp), writelen, mqf->retries);
 			}
 		}
 	}
@@ -1492,7 +1512,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 			mqf_file_cleanup(mqf); /* For parallel task framework, since cleanup is always called */
 			return 0;
 		} else {
-			res = try_static_delivery(NULL, &tx, static_routes, mqf->realfrom, mqf->realto, fileno(mqf->fp), mqf->size, buf, sizeof(buf));
+			res = try_static_delivery(NULL, &tx, static_routes, mqf->realfrom, mqf->realto, mqf->fp, mqf->size, buf, sizeof(buf));
 		}
 	} else {
 		struct stringlist mxservers;
@@ -1526,7 +1546,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 				no_mx = 1;
 			}
 
-			res = try_mx_delivery(NULL, &tx, mqf, &mxservers, mqf->realfrom, mqf->realto, fileno(mqf->fp), mqf->size, buf, sizeof(buf));
+			res = try_mx_delivery(NULL, &tx, mqf, &mxservers, mqf->realfrom, mqf->realto, mqf->fp, mqf->size, buf, sizeof(buf));
 			stringlist_empty_destroy(&mxservers);
 		}
 	}
@@ -2312,6 +2332,8 @@ static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int 
 		char prepend[256] = "";
 		int prependlen = 0;
 		char timestamp[40];
+		FILE *fp;
+		int newfd;
 		time_t now = time(NULL);
 
 		/* Still prepend a Received header, but less descriptive than normal (don't include Authenticated sender) since we're relaying */
@@ -2323,7 +2345,23 @@ static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int 
 		/* XXX smtp->recipients is "used up" by try_send, so this relies on the message being discarded as there will be no recipients remaining afterwards
 		 * Instead, we could duplicate the recipients list to avoid this restriction. */
 		/* XXX A cool optimization would be if the IMAP server supported BURL IMAP and we did a MOVETO, use BURL with the SMTP server */
-		res = try_send(smtp, &tx, url.host, url.port, STARTS_WITH(url.prot, "smtps"), 1, url.user, url.pass, url.user, NULL, recipients, prepend, (size_t) prependlen, srcfd, datalen, buf, sizeof(buf));
+
+		/* All the call sites except this one have a FILE*, so to be most efficient,
+		 * in this call site, we get a FILE* from the file descriptor to pass along.
+		 * Since we want to close it afterwards, that means we need to dup first. */
+
+		newfd = dup(srcfd); /* Since we don't want to close the underlying file descriptor when we're done, we need to dup */
+		if (newfd < 0) {
+			bbs_error("Failed to dup(%d): %s\n", srcfd, strerror(errno));
+			return -1;
+		}
+		fp = fdopen(newfd, "r");
+		if (!fp) {
+			bbs_error("Failed to open file descriptor %d as FILE: %s\n", srcfd, strerror(errno));
+			return -1;
+		}
+		res = try_send(smtp, &tx, url.host, url.port, STARTS_WITH(url.prot, "smtps"), 1, url.user, url.pass, url.user, NULL, recipients, prepend, (size_t) prependlen, fp, datalen, buf, sizeof(buf));
+		fclose(fp); /* This will close newfd, but leave srcfd unaffected */
 	}
 	if (url.pass) {
 		bbs_memzero(url.pass, strlen(url.pass)); /* Destroy the password */

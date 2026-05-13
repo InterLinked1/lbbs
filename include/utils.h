@@ -144,6 +144,16 @@ int bbs_append_line_message(FILE *fp, const char *line, size_t len);
 int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len);
 
 /*!
+ * \brief Send data in a file to a client, dot-stuffing lines as needed
+ * \param outfd File descriptor to which to send stuffed data
+ * \param infp File from which to reach unstuffed data. Note the file offset MUST be set to the beginning of file before calling this function. The file is not closed upon returning.
+ * \param writelen The expected size of the data in infp that you expect to send. This does not include stuffing characters that will be added.
+ * \retval -1 on failure
+ * \returns Number of bytes sent, including stuffed characters, on success
+ */
+ssize_t bbs_send_stuffed(int outfd, FILE *infp, size_t writelen);
+
+/*!
  * \brief Drop-in replacement for basename(3)
  * \param s
  * \return NULL if input is NULL or string ends in a /

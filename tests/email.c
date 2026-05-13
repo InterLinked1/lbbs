@@ -43,7 +43,7 @@ int test_send_sample_body(int clientfd, const char *from)
 	SWRITE(clientfd, "Bill:" ENDL);
 	SWRITE(clientfd, "The next meeting of the board of directors will be" ENDL);
 	SWRITE(clientfd, "on Tuesday." ENDL);
-	SWRITE(clientfd, "....See you there!" ENDL); /* Test byte stuffing. This should not end message receipt! */
+	SWRITE(clientfd, "....See you there!" ENDL); /* Test dot-stuffing. This should not end message receipt! */
 	SWRITE(clientfd, "John." ENDL);
 	SWRITE(clientfd, "." ENDL); /* EOM */
 	return 0;
@@ -91,7 +91,7 @@ int test_send_message_full(int clientfd, int *sendcount, const char *from, const
 	SWRITE(clientfd, "Content-Type: text/plain" ENDL);
 	SWRITE(clientfd, ENDL);
 	SWRITE(clientfd, "This is a test email message." ENDL);
-	SWRITE(clientfd, "....Let's hope it gets delivered properly." ENDL); /* Test byte stuffing */
+	SWRITE(clientfd, "....Let's hope it gets delivered properly." ENDL); /* Test dot-stuffing */
 	if (extrabytes) {
 		extrabytes = MIN(sizeof(linebuf), extrabytes);
 		memset(linebuf, 'a', extrabytes);

@@ -3736,7 +3736,13 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 			smtp->tflags.datalen = smtp_max_session_message_size(smtp); /* This isn't really true, this is so we can detect that the message was too large. */
 		}
 
-		res = bbs_append_stuffed_line_message(fp, s, len); /* Should return len + 2, unless it was byte stuffed, in which case it'll be len + 1 */
+		/* RFC 5321 4.5.2: If first character is a period (with subsequent characters following), first character is deleted.
+		 *
+		 * And indeed, normally, we remove any dot-stuffing from the inbound message here,
+		 * because if storing in a maildir, we don't want the dot-stuffing,
+		 * and even if relaying via SMTP, depending on which framing method we use,
+		 * the wire format may vary, so later we'll dot-stuff back only if we need to. */
+		res = bbs_append_stuffed_line_message(fp, s, len); /* Should return len + 2, unless it was dot-stuffed, in which case it'll be len + 1 */
 		if (res < 0) {
 			datafail = 1;
 		}

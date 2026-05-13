@@ -28,6 +28,11 @@
 #include <signal.h>
 #include <dirent.h>
 
+#define TMP_HOSTS_FILE "/etc/hosts.lbbs.bak"
+#define SAVE_HOSTS() system("cp /etc/hosts " TMP_HOSTS_FILE)
+#define RESTORE_HOSTS() system("mv " TMP_HOSTS_FILE " /etc/hosts")
+#define RESET_HOSTS() RESTORE_HOSTS(); SAVE_HOSTS();
+
 static int pre(void)
 {
 	test_preload_module("mod_mail.so");
@@ -39,8 +44,16 @@ static int pre(void)
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_SUBCONFIG("dsn", "net_smtp.conf"); /* has relayout=yes, that's all we need */
 
+	/* Needed for loopback test: */
+	test_load_module("mod_smtp_delivery_local.so"); /* Needed for loopback test */
+	test_preload_module("mod_mimeparse.so");
+	test_load_module("net_imap.so");
+	TEST_ADD_CONFIG("net_imap.conf");
+
 	TEST_RESET_MKDIR(TEST_MAIL_DIR);
+	SAVE_HOSTS();
 	ADD_TO_HOSTS_FILE(TEST_EMAIL_EXTERNAL_OUTGOING_TEMPFAIL_DOMAIN, "192.0.2.0"); /* TEST-NET-1 */
+
 	return 0;
 }
 
@@ -146,6 +159,7 @@ static int inspect_controldir(const char *dirname)
 static int run(void)
 {
 	int clientfd;
+	int imapfd = -1;
 	int res = -1;
 	int i;
 
@@ -161,6 +175,17 @@ static int run(void)
 	CLIENT_EXPECT(clientfd, "334");
 	SWRITE(clientfd, TEST_SASL "\r\n");
 	CLIENT_EXPECT(clientfd, "235");
+
+	/* Set up IMAP connection to watch for new messages and inspect them */
+	imapfd = test_make_socket(143);
+	REQUIRE_FD(imapfd);
+	CLIENT_EXPECT(imapfd, "OK");
+	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
+	CLIENT_EXPECT(imapfd, "a1 OK");
+	SWRITE(imapfd, "a2 SELECT \"INBOX\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "a2 OK");
+	SWRITE(imapfd, "b1 IDLE" ENDL);
+	CLIENT_EXPECT(imapfd, "+");
 
 	/* Send a message that will end up in the queue, due to a temporary failure. */
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
@@ -196,12 +221,77 @@ static int run(void)
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/mailq/new", 0);
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/mailq/tmp", 0);
 
+	CLIENT_EXPECT(imapfd, "* 1 EXISTS"); /* Receive non-delivery report */
+	SWRITE(imapfd, "DONE" ENDL);
+	CLIENT_EXPECT(imapfd, "b1 OK");
+	SWRITE(imapfd, "b2 UID FETCH 1 (BODY.PEEK[HEADER.FIELDS (Content-Type)])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "Content-Type: multipart/report; report-type=delivery-status");
+	CLOSE(imapfd); /* reloading mod_mail will kick the IMAP client, we'll need to open the connection again */
+
+	ENSURE_TMP_QUEUE_FILES_CLEANED_UP();
+
+#define TEST_EMAIL_EXTERNAL_OUTGOING_LOOPBACK_DOMAIN "loopback.example.com"
+#define TEST_EMAIL_EXTERNAL_OUTGOING_LOOPBACK "loopback@" TEST_EMAIL_EXTERNAL_OUTGOING_LOOPBACK_DOMAIN
+
+	/* Initially, we add the loopback domain with a valid but unreachable address,
+	 * so delivery will fail temporarily (rather than permanently).
+	 * That allows us to get the message into the queue. */
+	ADD_TO_HOSTS_FILE(TEST_EMAIL_EXTERNAL_OUTGOING_LOOPBACK_DOMAIN, "192.0.2.0"); /* TEST-NET-1 */
+
+	/* Send a message that involves dot-stuffing, ensuring that
+	 * when it gets sent again by mod_smtp_delivery_external, the dot-stuffing
+	 * is added back again, and finally that the final message is not dot-stuffed. */
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL_EXTERNAL_OUTGOING_LOOPBACK ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	/* test_send_sample_body actually has a dot-stuffed line: "....See you there!"
+	 * Only difference here is we send to a deliverable address so we can exercise DATA from the queue. */
+	if (test_send_sample_body(clientfd, TEST_EMAIL)) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT(clientfd, "250");
+
+	/* Wait for the outgoing attempt to temporarily fail and finish (will abort connect after 1 second) */
+	usleep(1050000);
+
+	/* Now that it has been accepted for what was originally an "external" domain,
+	 * we modify the hosts file to make the domain loop back, so that we'll
+	 * deliver the message back to ourselves and we won't reject it at RCPT TO. */
+	RESET_HOSTS();
+	ADD_TO_HOSTS_FILE(TEST_EMAIL_EXTERNAL_OUTGOING_LOOPBACK_DOMAIN, "127.0.0.1");
+	TEST_ADD_SUBCONFIG("smtp_loopback", "mod_mail.conf");
+	TEST_CLI_COMMAND("reload mod_mail");
+
+	imapfd = test_make_socket(143);
+	REQUIRE_FD(imapfd);
+	CLIENT_EXPECT(imapfd, "OK");
+	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
+	CLIENT_EXPECT(imapfd, "a1 OK");
+	SWRITE(imapfd, "a2 SELECT \"INBOX\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "a2 OK");
+
+	SWRITE(imapfd, "c1 IDLE" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, "+");
+
+	TEST_CLI_COMMAND("runq");
+
+	CLIENT_EXPECT(imapfd, "* 2 EXISTS"); /* Non-delivery report was received, so this will be message #2 */
+	SWRITE(imapfd, "DONE" ENDL);
+	CLIENT_EXPECT(imapfd, "c1 OK");
+	ENSURE_TMP_QUEUE_FILES_CLEANED_UP();
+
+	SWRITE(imapfd, "c2 UID FETCH 2 (BODY[TEXT])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(imapfd, ENDL "...See you there!" ENDL);
+
 	ENSURE_TMP_QUEUE_FILES_CLEANED_UP();
 
 	res = 0;
 
 cleanup:
 	close(clientfd);
+	close_if(imapfd);
+	RESTORE_HOSTS();
 	return res;
 }
 
