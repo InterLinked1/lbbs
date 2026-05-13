@@ -172,12 +172,7 @@ static int run(void)
 	fprintf(stderr, TERM_CLEAR_SCROLLBACK);
 
 	/* Log in via IMAP to look at some of the messages */
-	imapfd = test_make_socket(143);
-	REQUIRE_FD(imapfd);
-	CLIENT_EXPECT(imapfd, "OK");
-
-	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(imapfd, "a1 OK");
+	CREATE_IMAP_CONNECTION(imapfd, TEST_USER, TEST_PASS);
 
 	/* Perform some operations that are linear with respect to the current mailbox,
 	 * things that would likely perform better with some kind of caching mechanism. */
@@ -190,8 +185,7 @@ static int run(void)
 
 	/* Select the INBOX (where all the messages are) */
 	START_TIMER();
-	SWRITE(imapfd, "a3 SELECT \"INBOX\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(imapfd, "a3 OK");
+	SELECT_MAILBOX(imapfd, "a3", "INBOX");
 	END_TIMER(t_select);
 
 	/* Copy the initial 10k messages a few times so we end up with 100k messages for IMAP load testing.
@@ -232,8 +226,7 @@ static int run(void)
 	END_TIMER(t2_list_status);
 
 	START_TIMER();
-	SWRITE(imapfd, "c2 SELECT \"INBOX\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(imapfd, "c2 OK");
+	SELECT_MAILBOX(imapfd, "c2", "INBOX");
 	END_TIMER(t2_select);
 
 	/* Search for messages with subject containing "1337".

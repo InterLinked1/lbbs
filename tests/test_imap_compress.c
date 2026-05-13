@@ -46,13 +46,7 @@ static int run(void)
 	int clientfd = -1;
 	int res = -1;
 
-	clientfd = test_make_socket(143);
-	REQUIRE_FD(clientfd);
-
-	/* Connect and log in */
-	CLIENT_EXPECT(clientfd, "OK");
-	SWRITE(clientfd, "1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(clientfd, "1 OK");
+	CREATE_IMAP_CONNECTION(clientfd, TEST_USER, TEST_PASS);
 
 	SWRITE(clientfd, "2 COMPRESS DEFLATE" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "2 OK"); /* The tagged response is without compress. After this, we use compression for the remainder of the session. */

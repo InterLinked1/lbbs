@@ -109,13 +109,8 @@ static int run(void)
 	char buf[512];
 
 	/* Set up IMAP connection to receive events */
-	imapfd = test_make_socket(143);
-	REQUIRE_FD(imapfd);
-	CLIENT_EXPECT(imapfd, "OK");
-	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER2 "\" \"" TEST_PASS2 "\"" ENDL);
-	CLIENT_EXPECT(imapfd, "a1 OK");
-	SWRITE(imapfd, "a2 SELECT \"INBOX\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(imapfd, "a2 OK");
+	CREATE_IMAP_CONNECTION(imapfd, TEST_USER2, TEST_PASS2);
+	SELECT_MAILBOX(imapfd, "a2", "INBOX");
 	SWRITE(imapfd, "a3 IDLE" ENDL);
 	CLIENT_EXPECT(imapfd, "+");
 

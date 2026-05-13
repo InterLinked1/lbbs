@@ -42,7 +42,7 @@ static int pre(void)
 
 	TEST_ADD_CONFIG("bbs.conf"); /* For short connect() timeout */
 	TEST_ADD_CONFIG("mod_mail.conf");
-	TEST_ADD_SUBCONFIG("dsn", "net_smtp.conf"); /* has relayout=yes, that's all we need */
+	TEST_ADD_SUBCONFIG("smtp_dsn", "net_smtp.conf"); /* has relayout=yes, that's all we need */
 
 	/* Needed for loopback test: */
 	test_load_module("mod_smtp_delivery_local.so"); /* Needed for loopback test */
@@ -177,13 +177,8 @@ static int run(void)
 	CLIENT_EXPECT(clientfd, "235");
 
 	/* Set up IMAP connection to watch for new messages and inspect them */
-	imapfd = test_make_socket(143);
-	REQUIRE_FD(imapfd);
-	CLIENT_EXPECT(imapfd, "OK");
-	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(imapfd, "a1 OK");
-	SWRITE(imapfd, "a2 SELECT \"INBOX\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(imapfd, "a2 OK");
+	CREATE_IMAP_CONNECTION(imapfd, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(imapfd, "a2", "INBOX");
 	SWRITE(imapfd, "b1 IDLE" ENDL);
 	CLIENT_EXPECT(imapfd, "+");
 
@@ -263,13 +258,8 @@ static int run(void)
 	TEST_ADD_SUBCONFIG("smtp_loopback", "mod_mail.conf");
 	TEST_CLI_COMMAND("reload mod_mail");
 
-	imapfd = test_make_socket(143);
-	REQUIRE_FD(imapfd);
-	CLIENT_EXPECT(imapfd, "OK");
-	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(imapfd, "a1 OK");
-	SWRITE(imapfd, "a2 SELECT \"INBOX\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(imapfd, "a2 OK");
+	CREATE_IMAP_CONNECTION(imapfd, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(imapfd, "a2", "INBOX");
 
 	SWRITE(imapfd, "c1 IDLE" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(imapfd, "+");

@@ -131,6 +131,7 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_NEWS_HOSTNAME "news.example.com"
 
 #define NEW_NEWSGROUP(sockfd, name, desc, creator, posting) \
+	usleep(10000); \
 	CLI_SWRITE(sockfd, "/news newgroup" CLI_EOL); \
 	CLI_SWRITE(sockfd, name CLI_EOL); \
 	CLI_SWRITE(sockfd, desc CLI_EOL); \
@@ -226,6 +227,17 @@ int test_client_drain(int fd, int ms);
 
 #define REQUIRE_FD(fd) if (fd < 0) { bbs_error("File descriptor is not set\n"); goto cleanup; }
 #define REQUIRE_FD_RETURN(fd) if (fd < 0) { bbs_error("File descriptor is not set\n"); return -1; }
+
+#define CREATE_IMAP_CONNECTION(fd, user, pass) \
+	fd = test_make_socket(143); \
+	REQUIRE_FD(fd); \
+	CLIENT_EXPECT(fd, "OK"); \
+	SWRITE(fd, "a1 LOGIN \"" user "\" \"" pass "\"" ENDL); \
+	CLIENT_EXPECT(fd, "a1 OK");
+
+#define SELECT_MAILBOX(fd, tag, name) \
+	SWRITE(fd, tag " SELECT \"" name "\"" ENDL); \
+	CLIENT_EXPECT_EVENTUALLY(fd, tag " OK");
 
 #define DIRECTORY_EXPECT_FILE_COUNT(dir, cnt) { \
 	int _dir_cnt = test_dir_file_count(dir); \

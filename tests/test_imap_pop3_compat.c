@@ -45,13 +45,7 @@ static int run(void)
 	int client1 = -1, client2 = -1;
 	int res = -1;
 
-	client1 = test_make_socket(143);
-	REQUIRE_FD(client1);
-
-	/* Connect and log in */
-	CLIENT_EXPECT(client1, "OK");
-	SWRITE(client1, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(client1, "a1 OK");
+	CREATE_IMAP_CONNECTION(client1, TEST_USER, TEST_PASS);
 
 	/* POP3 sessions are not necessarily rejected entirely while an IMAP session is active.
 	 * This is hard to test since the IMAP server does not persistently hold the mailbox lock.

@@ -49,10 +49,6 @@ static int pre(void)
 /* Do not change this value, as the value is used hardcoded in several places that would need to be updated as well */
 #define TARGET_MESSAGES 10
 
-#define SELECT_MAILBOX(fd, tag, name) \
-	SWRITE(fd, tag " SELECT \"" name "\"" ENDL); \
-	CLIENT_EXPECT_EVENTUALLY(fd, tag " OK");
-
 static unsigned int get_uidvalidity(int fd, const char *mailbox)
 {
 	char buf[256];
@@ -99,13 +95,7 @@ static int run(void)
 	/* Verify that the email messages were all sent properly. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", send_count);
 
-	client1 = test_make_socket(143);
-	REQUIRE_FD(client1);
-
-	/* Connect and log in */
-	CLIENT_EXPECT(client1, "OK");
-	SWRITE(client1, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(client1, "a1 OK");
+	CREATE_IMAP_CONNECTION(client1, TEST_USER, TEST_PASS);
 
 	/* EXAMINE */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", send_count);
@@ -291,13 +281,7 @@ static int run(void)
 	CLIENT_EXPECT(client1, "a21 OK STORE");
 
 	/* Test another client at the same time. */
-	client2 = test_make_socket(143);
-	REQUIRE_FD(client2);
-
-	CLIENT_EXPECT(client2, "OK");
-	SWRITE(client2, "b1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(client2, "b1 OK");
-
+	CREATE_IMAP_CONNECTION(client2, TEST_USER, TEST_PASS);
 	SELECT_MAILBOX(client2, "b2", "Trash");
 
 	SWRITE(client1, "a22 EXPUNGE" ENDL);
@@ -425,12 +409,7 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(client1, "\\Seen $label3"); /* Previously existing keyword should still be here */
 
 	/* ACLs and shared mailboxes */
-	client2 = test_make_socket(143);
-	REQUIRE_FD(client2);
-
-	CLIENT_EXPECT(client2, "OK");
-	SWRITE(client2, "a1 LOGIN \"" TEST_USER2 "\" \"" TEST_PASS2 "\"" ENDL);
-	CLIENT_EXPECT(client2, "a1 OK");
+	CREATE_IMAP_CONNECTION(client2, TEST_USER2, TEST_PASS2);
 
 	SWRITE(client2, "a2 CREATE sharedmbox" ENDL);
 	CLIENT_EXPECT(client2, "a2 OK");
@@ -636,12 +615,8 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(client1, "+");
 
 	/* Now, if another client expunges a message, we should get a VANISHED response, not an EXPUNGE response */
-	client2 = test_make_socket(143);
-	REQUIRE_FD(client2);
+	CREATE_IMAP_CONNECTION(client2, TEST_USER, TEST_PASS);
 
-	CLIENT_EXPECT(client2, "OK");
-	SWRITE(client2, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(client2, "a1 OK");
 	SELECT_MAILBOX(client2, "a2", "INBOX");
 	SWRITE(client2, "a3 STORE 1 +FLAGS.SILENT (\\Deleted)" ENDL);
 	CLIENT_EXPECT(client1, "\\Deleted"); /* We should get notified about the flag change since we're idling */

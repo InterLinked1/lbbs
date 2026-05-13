@@ -78,40 +78,13 @@ static int run(void)
 	/* Verify that the email messages were all sent properly. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", send_count);
 
-	c1 = test_make_socket(143);
-	if (c1 < 0) {
-		goto cleanup;
-	}
-	c2 = test_make_socket(143);
-	if (c2 < 0) {
-		goto cleanup;
-	}
-	c3 = test_make_socket(143);
-	if (c3 < 0) {
-		goto cleanup;
-	}
-
 	/* Connect and log in */
-	CLIENT_EXPECT(c1, "OK");
-	SWRITE(c1, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(c1, "a1 OK");
-
-	SWRITE(c1, "a2 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(c1, "a2 OK");
-
-	CLIENT_EXPECT(c2, "OK");
-	SWRITE(c2, "b1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(c2, "b1 OK");
-
-	SWRITE(c2, "b2 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(c2, "b2 OK");
-
-	CLIENT_EXPECT(c3, "OK");
-	SWRITE(c3, "c1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(c3, "c1 OK");
-
-	SWRITE(c3, "c2 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(c3, "c2 OK");
+	CREATE_IMAP_CONNECTION(c1, TEST_USER, TEST_PASS);
+	CREATE_IMAP_CONNECTION(c2, TEST_USER, TEST_PASS);
+	CREATE_IMAP_CONNECTION(c3, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(c1, "a2", "INBOX");
+	SELECT_MAILBOX(c2, "b2", "INBOX");
+	SELECT_MAILBOX(c3, "c3", "INBOX");
 
 	/* We now have two IMAP clients that have selected the same mailbox.
 	 * The mailbox currently has 10 messages in it. */

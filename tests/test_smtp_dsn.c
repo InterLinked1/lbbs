@@ -34,7 +34,7 @@ static int pre(void)
 	test_load_module("mod_smtp_delivery_external.so");
 
 	TEST_ADD_CONFIG("mod_mail.conf");
-	TEST_ADD_SUBCONFIG("dsn", "net_smtp.conf");
+	TEST_ADD_SUBCONFIG("smtp_dsn", "net_smtp.conf");
 
 	TEST_RESET_MKDIR(TEST_MAIL_DIR);
 	ADD_TO_HOSTS_FILE(TEST_EMAIL_EXTERNAL_OUTGOING_BOUNCE_DOMAIN, "127.0.0.1");

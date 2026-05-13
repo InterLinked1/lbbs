@@ -42,16 +42,8 @@ static int run(void)
 	int clientfd = -1;
 	int res = -1;
 
-	clientfd = test_make_socket(143);
-	REQUIRE_FD(clientfd);
-
-	/* Connect and log in */
-	CLIENT_EXPECT(clientfd, "OK");
-	SWRITE(clientfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(clientfd, "a1 OK");
-
-	SWRITE(clientfd, "a2 SELECT \"INBOX\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "a2 OK");
+	CREATE_IMAP_CONNECTION(clientfd, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(clientfd, "a2", "INBOX");
 
 	if (test_make_messages(TEST_EMAIL, 5)) { /* Now have 5 messages in INBOX */
 		return -1;
@@ -74,8 +66,7 @@ static int run(void)
 	SWRITE(clientfd, "c3 COPY 1:5 \"Trash\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "c3 OK"); /* Now have 15 messages in Trash */
 
-	SWRITE(clientfd, "d1 SELECT \"Trash\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "d1 OK");
+	SELECT_MAILBOX(clientfd, "d1", "Trash");
 
 	SWRITE(clientfd, "d2 SELECT \"INBOX\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "5 EXISTS");

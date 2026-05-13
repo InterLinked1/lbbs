@@ -70,23 +70,16 @@ static int run(void)
 
 	smtpfd = test_make_socket(25);
 	REQUIRE_FD(smtpfd);
-
-	imapfd = test_make_socket(143);
-	REQUIRE_FD(imapfd);
-
 	CLIENT_EXPECT_EVENTUALLY(smtpfd, "220 ");
 
 	/* Log in and enable NOTIFY */
-	CLIENT_EXPECT(imapfd, "OK");
-	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(imapfd, "a1 OK");
+	CREATE_IMAP_CONNECTION(imapfd, TEST_USER, TEST_PASS);
 
 	/* Enable NOTIFY for all personal mailboxes */
 	SWRITE(imapfd, "a2 NOTIFY SET (personal (MessageNew (FLAGS) MessageExpunge))" ENDL);
 	CLIENT_EXPECT(imapfd, "a2 OK");
 
-	SWRITE(imapfd, "a3 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(imapfd, "a3 OK");
+	SELECT_MAILBOX(imapfd, "a3", "INBOX");
 
 	SWRITE(imapfd, "a4 IDLE" ENDL);
 	CLIENT_EXPECT(imapfd, "+ idling");

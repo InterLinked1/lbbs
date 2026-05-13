@@ -51,9 +51,8 @@ static int run(void)
 	int imapfd = -1;
 	int res = -1;
 
-	imapfd = test_make_socket(143);
-	CLIENT_EXPECT(imapfd, "OK");
-	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
+	CREATE_IMAP_CONNECTION(imapfd, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(imapfd, "a2", "INBOX");
 
 	smtpfd = test_make_socket(25);
 	REQUIRE_FD(smtpfd);
@@ -69,10 +68,6 @@ static int run(void)
 	CLIENT_EXPECT(smtpfd, "250");
 	SWRITE(smtpfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
 	CLIENT_EXPECT(smtpfd, "250");
-
-	CLIENT_EXPECT(imapfd, "a1 OK");
-	SWRITE(imapfd, "a2 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(imapfd, "a2 OK");
 
 	/* Send the body */
 	if (send_body(smtpfd)) {

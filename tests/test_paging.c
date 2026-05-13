@@ -269,8 +269,6 @@ static int run(void)
 
 	/* Test that if we send a page via SNPP, and it gets relayed via SNPP, and then via SMTP to the recipient,
 	 * the initial paging subject is still present as the email subject. */
-	imapfd = test_make_socket(143);
-	REQUIRE_FD(imapfd);
 	SWRITE(clientfd, "PAGE 5551201\r\n");
 	CLIENT_EXPECT(clientfd, "250");
 	SWRITE(clientfd, "SUBJ This is my subject\r\n");
@@ -282,11 +280,8 @@ static int run(void)
 	SWRITE(clientfd, "SEND\r\n");
 	CLIENT_EXPECT(clientfd, "250");
 	/* Check via IMAP that the headers are what we expect */
-	CLIENT_EXPECT(imapfd, "OK");
-	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER2 "\" \"" TEST_PASS2 "\"" ENDL);
-	CLIENT_EXPECT(imapfd, "a1 OK");
-	SWRITE(imapfd, "a2 SELECT \"INBOX\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(imapfd, "a2 OK");
+	CREATE_IMAP_CONNECTION(imapfd, TEST_USER2, TEST_PASS2);
+	SELECT_MAILBOX(imapfd, "a2", "INBOX");
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/2/cur", 2);
 	SWRITE(imapfd, "a3 UID FETCH 2 (BODY.PEEK[HEADER.FIELDS (Subject)])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(imapfd, "Subject: This is my subject" ENDL);

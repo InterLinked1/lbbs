@@ -42,16 +42,8 @@ static int run(void)
 	int res = -1;
 	int i;
 
-	clientfd = test_make_socket(143);
-	REQUIRE_FD(clientfd);
-
-	/* Connect and log in */
-	CLIENT_EXPECT(clientfd, "OK");
-	SWRITE(clientfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(clientfd, "a1 OK");
-
-	SWRITE(clientfd, "a2 SELECT \"INBOX\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "a2 OK");
+	CREATE_IMAP_CONNECTION(clientfd, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(clientfd, "a2", "INBOX");
 
 	SWRITE(clientfd, "b1 GETQUOTA" ENDL);
 	CLIENT_EXPECT(clientfd, "(STORAGE 32 39062)"); /* used, then total */
@@ -79,8 +71,7 @@ static int run(void)
 	SWRITE(clientfd, "d2 GETQUOTA" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "(STORAGE 53 39062)"); /* Should've been no material change in quota usage, but the move does create some directories and files */
 
-	SWRITE(clientfd, "e1 SELECT Trash" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "e1 OK");
+	SELECT_MAILBOX(clientfd, "e1", "Trash");
 
 	SWRITE(clientfd, "e2 STORE 1:* +FLAGS (\\Deleted)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "e2 OK");

@@ -58,26 +58,11 @@ static int run(void)
 	/* Verify that the email messages were all sent properly. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", send_count);
 
-	client1 = test_make_socket(143);
-	REQUIRE_FD(client1);
-
-	client2 = test_make_socket(143);
-	REQUIRE_FD(client2);
-
-	client3 = test_make_socket(143);
-	REQUIRE_FD(client3);
-
 	/* Connect and log in */
-	CLIENT_EXPECT(client2, "OK");
-	SWRITE(client2, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(client2, "a1 OK");
-
-	SWRITE(client2, "a2 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client2, "a2 OK");
-
-	CLIENT_EXPECT(client1, "OK");
-	SWRITE(client1, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(client1, "a1 OK");
+	CREATE_IMAP_CONNECTION(client1, TEST_USER, TEST_PASS);
+	CREATE_IMAP_CONNECTION(client2, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(client1, "c1", "INBOX");
+	SELECT_MAILBOX(client2, "a2", "INBOX");
 
 	/* NOTIFY with unsupported events */
 	SWRITE(client1, "a2 NOTIFY SET (personal (FlagChange Foobar))" ENDL);
@@ -96,9 +81,6 @@ static int run(void)
 	/* NOTIFY without a selected mailbox */
 	SWRITE(client1, "a6 NOTIFY SET (SELECTED (MessageNew (FLAGS) MessageExpunge))" ENDL);
 	CLIENT_EXPECT(client1, "a6 OK");
-
-	SWRITE(client1, "c1 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "c1 OK");
 
 	/* If SELECTED is used (instead of SELECTED-DELAYED), sequence numbers cannot be used (UID commands must be used) */
 	SWRITE(client1, "c2 FETCH 1 (FLAGS)" ENDL);
@@ -139,8 +121,7 @@ static int run(void)
 
 	/* Test FlagChange in different mailbox: should get STATUS.
 	 * Even though we're not using CONDSTORE/QRESYNC, we should get a STATUS, because UNSEEN will change. */
-	SWRITE(client1, "d1 SELECT Sent" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "d1 OK");
+	SELECT_MAILBOX(client1, "d1", "Sent");
 
 	SWRITE(client1, "d2 IDLE" ENDL);
 	CLIENT_EXPECT(client1, "+ idling");
@@ -184,18 +165,11 @@ static int run(void)
 
 	SWRITE(client2, "z997 LOGOUT" ENDL);
 	CLIENT_EXPECT(client2, "* BYE");
+	CLOSE(client2);
 
 	/* Should never get events for other users, even though we're subscribed, because we're not authorized */
-	client2 = test_make_socket(143);
-	REQUIRE_FD(client2);
-
-	/* Connect and log in */
-	CLIENT_EXPECT(client2, "OK");
-	SWRITE(client2, "e1 LOGIN \"" TEST_USER2 "\" \"" TEST_PASS2 "\"" ENDL);
-	CLIENT_EXPECT(client2, "e1 OK");
-
-	SWRITE(client2, "e2 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client2, "e2 OK");
+	CREATE_IMAP_CONNECTION(client2, TEST_USER2, TEST_PASS2);
+	SELECT_MAILBOX(client2, "e2", "INBOX");
 	SWRITE(client2, "e3 IDLE" ENDL);
 	CLIENT_EXPECT(client2, "+ idling");
 
@@ -234,12 +208,8 @@ static int run(void)
 	CLIENT_EXPECT(client2, "e6 OK");
 
 	/* If one client marks a message as seen or unseen, the other client should also see it. */
-	CLIENT_EXPECT(client3, "OK");
-	SWRITE(client3, "f1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(client3, "f1 OK");
-
-	SWRITE(client3, "f2 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client3, "f2 OK");
+	CREATE_IMAP_CONNECTION(client3, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(client3, "f2", "INBOX");
 
 	/* FlagChange is included in SELECTED-DELAYED, but not in personal.
 	 * Among other things, this test ensures that we use SELECTED-DELAYED for the selected mailbox, not personal (which is a less specific match). */
@@ -249,8 +219,7 @@ static int run(void)
 	SWRITE(client3, "f4 IDLE" ENDL);
 	CLIENT_EXPECT(client3, "+ idling");
 
-	SWRITE(client1, "g1 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "g1 OK");
+	SELECT_MAILBOX(client1, "g1", "INBOX");
 
 	SWRITE(client1, "g2 STORE 1 -FLAGS (\\Seen)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "* 1 FETCH");
@@ -265,8 +234,7 @@ static int run(void)
 	SWRITE(client3, "f6 IDLE" ENDL);
 	CLIENT_EXPECT(client3, "+ idling");
 
-	SWRITE(client1, "g3 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "g3 OK");
+	SELECT_MAILBOX(client1, "g3", "INBOX");
 
 	SWRITE(client1, "g4 STORE 1 +FLAGS (\\Seen)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "* 1 FETCH");

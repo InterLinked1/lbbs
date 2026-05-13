@@ -189,16 +189,8 @@ static int run(void)
 	/* Verify that the email messages were all sent properly. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", send_count);
 
-	client1 = test_make_socket(143);
-	REQUIRE_FD(client1);
-
-	/* Connect and log in */
-	CLIENT_EXPECT(client1, "OK");
-	SWRITE(client1, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(client1, "a1 OK");
-
-	SWRITE(client1, "a2 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "a2 OK");
+	CREATE_IMAP_CONNECTION(client1, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(client1, "a2", "INBOX");
 
 	SWRITE(client1, "b1 FETCH 1 (BODYSTRUCTURE)" ENDL);
 	/* Actual BODYSTRUCTURE format may vary be server since they all do that differently... but certain things should ALWAYS appear verbatim */

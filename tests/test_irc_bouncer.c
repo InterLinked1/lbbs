@@ -194,13 +194,8 @@ static int run(void)
 
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", -1); /* Shouldn't be any messages yet, in fact, the maildir doesn't even exist yet */
 
-	imapfd = test_make_socket(143);
-	REQUIRE_FD(imapfd);
-	CLIENT_EXPECT(imapfd, "OK");
-	SWRITE(imapfd, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(imapfd, "a1 OK");
-	SWRITE(imapfd, "a2 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(imapfd, "a2 OK");
+	CREATE_IMAP_CONNECTION(imapfd, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(imapfd, "a2", "INBOX");
 
 	TEST_DELIMIT(10, "User 1 joins #bouncer-test2, triggering email of missed message");
 	SWRITE(client1, "JOIN #bouncer-test2\r\n");

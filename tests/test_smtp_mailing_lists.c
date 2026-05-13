@@ -125,16 +125,8 @@ static int run(void)
 
 	/* Check that Subject contains tag.
 	 * Ironically, it's easier to do this using the IMAP protocol than it is trying to manually find and parse the file on disk ourselves. */
-	client1 = test_make_socket(143);
-	REQUIRE_FD(client1);
-
-	/* Connect and log in */
-	CLIENT_EXPECT(client1, "OK");
-	SWRITE(client1, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
-	CLIENT_EXPECT(client1, "a1 OK");
-
-	SWRITE(client1, "a2 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "a2 OK");
+	CREATE_IMAP_CONNECTION(client1, TEST_USER, TEST_PASS);
+	SELECT_MAILBOX(client1, "a2", "INBOX");
 
 	/* This also tests IMAP to some extent... */
 	SWRITE(client1, "a3 FETCH 1 (BODY.PEEK[HEADER.FIELDS (SUBJECT)])" ENDL);
