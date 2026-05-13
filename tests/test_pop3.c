@@ -97,8 +97,13 @@ static int run(void)
 	/* Continue the first session */
 
 	SWRITE(client1, "RETR 1" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, ".");
+	CLIENT_EXPECT_EVENTUALLY(client1, "." ENDL);
+
+	/* Ensure messages are dot-stuffed if needed */
+	SWRITE(client1, "RETR 1" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, ENDL "....Let's hope it gets delivered properly." ENDL);
 	CLIENT_DRAIN(client1);
+
 	SWRITE(client1, "DELE 1" ENDL);
 	CLIENT_EXPECT(client1, "+OK");
 	SWRITE(client1, "QUIT" ENDL);

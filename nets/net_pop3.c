@@ -452,10 +452,10 @@ static int on_list(const char *dir_name, const char *filename, struct pop3_sessi
 static int on_retr(const char *dir_name, const char *filename, struct pop3_session *pop3, int number, int msgfilter)
 {
 	FILE *fp;
-	unsigned int res, size, realsize;
+	size_t size, realsize;
+	ssize_t res;
 	const char *sizestr;
 	char fullpath[516];
-	off_t offset;
 
 	if (number != msgfilter) {
 		return 0;
@@ -468,7 +468,7 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 		return 0;
 	}
 	sizestr += STRLEN(",S=");
-	size = (unsigned int) atoi(sizestr);
+	size = (size_t) atol(sizestr);
 
 	snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_name, filename);
 	fp = fopen(fullpath, "r");
@@ -484,20 +484,21 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 	 * Of course, this assumes that nobody has messed with us, so maybe check anyways. */
 
 	fseek(fp, 0L, SEEK_END); /* Go to EOF */
-	realsize = (unsigned int) ftell(fp);
+	realsize = (size_t) ftell(fp);
 	rewind(fp);
 
 	if (size != realsize) { /* Shouldn't happen unless some tampered with the message on disk... naughty tyke... */
-		bbs_error("Expected %s to be %u bytes, but it's really %d bytes?\n", fullpath, size, realsize);
+		bbs_error("Expected %s to be %lu bytes, but it's really %lu bytes?\n", fullpath, size, realsize);
 		pop3_err(pop3, "Server error"); /* Don't send the message unless it's the right size. */
 		fclose(fp);
 		return 0;
 	}
 
-	pop3_ok(pop3, "%u octets", realsize);
-	offset = 0;
-	res = (unsigned int) bbs_sendfile(pop3->node->wfd, fileno(fp), &offset, realsize);
-	bbs_debug(6, "Sent %d bytes\n", res);
+	pop3_ok(pop3, "%lu octets", realsize);
+	res = bbs_send_stuffed(pop3->node->wfd, fp, realsize); /* We need to dot-stuff, so we can't use sendfile directly */
+	if (res < 0) {
+		return -1;
+	}
 	bbs_node_fd_writef(pop3->node, pop3->node->wfd, ".\r\n");
 	fclose(fp);
 	return 0;
