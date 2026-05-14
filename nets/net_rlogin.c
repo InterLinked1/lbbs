@@ -80,7 +80,7 @@ static int rlogin_handshake(struct bbs_node *node)
 	 */
 	res = bbs_poll_read(node->fd, SEC_MS(30), buf, sizeof(buf) - 1); /* Session might be interactive, so give enough time for the user to enter credentials */
 	if (res <= 0) {
-		bbs_warning("Didn't receive connection string\n");
+		bbs_client_err("Didn't receive connection string\n");
 		return -1;
 	}
 	buf[res] = '\0'; /* Safe - just in case we didn't read a NUL */
@@ -91,19 +91,19 @@ static int rlogin_handshake(struct bbs_node *node)
 		bbs_debug(3, "Got %ld-byte connection string with %d NULs?\n", res, i);
 		mres = bbs_poll_read(node->fd, SEC_MS(30), buf + res, sizeof(buf) - (size_t) res - 1);
 		if (mres <= 0) {
-			bbs_warning("Didn't receive rest of connection string\n");
+			bbs_client_err("Didn't receive rest of connection string\n");
 			return -1;
 		}
 		res += mres;
 		buf[mres] = '\0'; /* Safe - just in case we didn't read a NUL */
 		if (++attempts > 3) {
-			bbs_warning("Too many attempts to receive connection string, disconnecting\n");
+			bbs_client_err("Too many attempts to receive connection string, disconnecting\n");
 			return -1;
 		}
 		i = bbs_strncount(buf, (size_t) res, '\0');
 	}
 	if (i != 4) {
-		bbs_warning("Got %ld-byte connection string with %d NULs?\n", res, i);
+		bbs_client_err("Got %ld-byte connection string with %d NULs?\n", res, i);
 		return -1;
 	}
 
@@ -166,7 +166,7 @@ static int rlogin_handshake(struct bbs_node *node)
 
 	res = bbs_poll_read(node->fd, SEC_MS(1), (char*) buf2, sizeof(buf2) - 1);
 	if (res <= 0) {
-		bbs_warning("Failed to receive window change control sequence\n");
+		bbs_client_err("Failed to receive window change control sequence\n");
 		/* Just continue */
 	} else if (res >= 12) {
 		if (buf2[0] == 0xFF && buf2[1] == 0xFF) {

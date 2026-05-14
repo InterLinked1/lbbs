@@ -737,7 +737,7 @@ static int snpp_process(struct snpp_session *snpp, struct readline_data *rldata,
 			snpp_reply(snpp, 250, "%s %s OK, message tag purged", meta.msgtag, timestampbuf);
 		}
 	} else {
-		bbs_warning("Unrecognized SNPP command '%s'\n", cmd);
+		bbs_client_err("Unrecognized SNPP command '%s'\n", cmd);
 		snpp_reply(snpp, 500, "Command Not Implemented");
 	}
 	return 0;

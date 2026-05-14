@@ -273,7 +273,7 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 				break;
 			case IMAP_SEARCH_ALL:
 			default:
-				bbs_warning("Invalid key: %d\n", skey->type);
+				bbs_client_err("Invalid key: %d\n", skey->type);
 				dyn_str_append(str, "\n", 1);
 				break;
 		}
@@ -298,7 +298,7 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 		} \
 		next = strsep(s, " "); \
 		if (!next) { \
-			bbs_warning("Missing numeric argument\n"); \
+			bbs_client_err("Missing numeric argument\n"); \
 			return -1; \
 		} \
 		nk->child.number = atoi(next); \
@@ -313,7 +313,7 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 		} \
 		next = strsep(s, " "); \
 		if (!next) { \
-			bbs_warning("Missing numeric argument\n"); \
+			bbs_client_err("Missing numeric argument\n"); \
 			return -1; \
 		} \
 		nk->child.longnumber = (unsigned long) atol(next); \
@@ -330,7 +330,7 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 		} \
 		/* Argument can be more than one word - it's the whole quoted argument. Find it, and strip the quotes in the process. */ \
 		if (!*s) { \
-			bbs_warning("Missing string argument\n"); \
+			bbs_client_err("Missing string argument\n"); \
 			return -1; \
 		} \
 		if (**s == '"') { \
@@ -340,13 +340,13 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			begin = *s; \
 		} \
 		if (!*begin) { \
-			bbs_warning("Empty quoted argument\n"); \
+			bbs_client_err("Empty quoted argument\n"); \
 			return -1; \
 		} \
 		if (quoted_arg) { \
 			next = strchr(begin, '"'); \
 			if (!next) { \
-				bbs_warning("Unterminated quoted argument\n"); \
+				bbs_client_err("Unterminated quoted argument\n"); \
 				return -1; \
 			} \
 		} else { \
@@ -414,7 +414,7 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 				}
 			}
 			if (paren_count) {
-				bbs_warning("Invalid SEARCH expression: unterminated parentheses: %s\n", next);
+				bbs_client_err("Invalid SEARCH expression: unterminated parentheses: %s\n", next);
 				return -1;
 			}
 			*p++ = '\0';
@@ -444,14 +444,14 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 			begin = *s + 1; /* Skip opening " */
 			begin = strchr(begin, '"');
 			if (!begin) {
-				bbs_warning("Missing end quote for HEADER arg1\n");
+				bbs_client_err("Missing end quote for HEADER arg1\n");
 				return -1;
 			}
 			*begin++ = ' '; /* Don't null terminate, we need to be able to continue through the string. */
 			begin = strchr(begin, '"');
 			/* There should be a "" for empty arg2, but the quotes should still be there */
 			if (!begin) {
-				bbs_warning("Missing opening quote for HEADER arg2\n");
+				bbs_client_err("Missing opening quote for HEADER arg2\n");
 				return -1;
 			}
 			*begin = ' ';
@@ -516,7 +516,7 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 			nk->child.string = next; /* We store the literal '$' here, but this will get resolved in imap_in_range */
 			listsize++;
 		} else {
-			bbs_warning("Foreign IMAP search key: %s\n", next);
+			bbs_client_err("Foreign IMAP search key: %s\n", next);
 			return -1;
 		}
 checklistsize:
@@ -540,13 +540,13 @@ ret:
 	switch (parent_type) {
 		case IMAP_SEARCH_NOT:
 			if (listsize != 1) {
-				bbs_warning("NOT has %d children?\n", listsize);
+				bbs_client_err("NOT has %d children?\n", listsize);
 				return -1;
 			}
 			break;
 		case IMAP_SEARCH_OR:
 			if (listsize != 2) {
-				bbs_warning("OR has %d children?\n", listsize);
+				bbs_client_err("OR has %d children?\n", listsize);
 				return -1;
 			}
 			break;
@@ -842,7 +842,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 			case IMAP_SEARCH_HEADER:
 				hdrval = strchr(skey->child.string, ' ');
 				if (!hdrval) {
-					bbs_warning("No header?\n");
+					bbs_client_err("No header?\n");
 					break;
 				}
 				len = (size_t) (hdrval - skey->child.string);
@@ -853,13 +853,13 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 			case IMAP_SEARCH_KEYWORD:
 				/* This is not very efficient, since we reparse the keywords for every message, but the keyword mapping is the same for everything in this mailbox. */
 				if (strlen_zero(skey->child.string)) {
-					bbs_warning("No keyword?\n");
+					bbs_client_err("No keyword?\n");
 					break;
 				}
 				parse_keyword(search->imap, skey->child.string, search->imap->dir, 0);
 				/* imap->appendkeywords is now set. */
 				if (search->imap->numappendkeywords != 1) {
-					bbs_warning("Expected %d keyword, got %d? (%s)\n", 1, search->imap->numappendkeywords, skey->child.string);
+					bbs_client_err("Expected %d keyword, got %d? (%s)\n", 1, search->imap->numappendkeywords, skey->child.string);
 					break;
 				}
 				retval = strchr(search->keywords, search->imap->appendkeywords[0]) ? 1 : 0;
@@ -870,7 +870,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 			case IMAP_SEARCH_ON: /* INTERNALDATE == match */
 				SEARCH_STAT()
 				if (!strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */
-					bbs_warning("Failed to parse as date: %s\n", skey->child.string);
+					bbs_client_err("Failed to parse as date: %s\n", skey->child.string);
 					break;
 				}
 				localtime_r(&search->st.st_mtim.tv_sec, &tm1);
@@ -898,7 +898,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 			case IMAP_SEARCH_BEFORE: /* INTERNALDATE < */
 				SEARCH_STAT()
 				if (!strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */
-					bbs_warning("Failed to parse as date: %s\n", skey->child.string);
+					bbs_client_err("Failed to parse as date: %s\n", skey->child.string);
 					break;
 				}
 				localtime_r(&search->st.st_mtim.tv_sec, &tm1);
@@ -909,7 +909,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 			case IMAP_SEARCH_SINCE: /* INTERNALDATE >=, e.g. 08-Mar-2011 */
 				SEARCH_STAT()
 				if (!strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */
-					bbs_warning("Failed to parse as date: %s\n", skey->child.string);
+					bbs_client_err("Failed to parse as date: %s\n", skey->child.string);
 					break;
 				}
 				localtime_r(&search->st.st_mtim.tv_sec, &tm1);
@@ -952,7 +952,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 			case IMAP_SEARCH_ALL: /* Implicitly always true */
 				break;
 			default:
-				bbs_warning("Invalid key: %d\n", skey->type);
+				bbs_client_err("Invalid key: %d\n", skey->type);
 				break;
 		}
 		/* Short circuit by stopping if any of the expressions turns out to be false... unless we're ORing (where we stop on the first one that's true). */
@@ -1081,7 +1081,7 @@ static int do_search(struct imap_session *imap, char *s, unsigned int **a, int u
 	if (parse_search_query(imap, &skeys, IMAP_SEARCH_ALL, &s) || !strlen_zero(s)) {
 		imap_search_free(&skeys);
 		imap_reply(imap, "BAD [CLIENTBUG] Invalid search query");
-		bbs_warning("Failed to parse search query\n"); /* Consumed the query in the process, but should be visible in a previous debug message */
+		bbs_client_err("Failed to parse search query\n"); /* Consumed the query in the process, but should be visible in a previous debug message */
 		RWLIST_HEAD_DESTROY(&skeys);
 		return -1;
 	}
@@ -1497,7 +1497,7 @@ static int sort_compare(const void *aptr, const void *bptr, void *varg)
 			GET_HEADERS("To");
 			res = strcasecmp(buf1, buf2);
 		} else {
-			bbs_warning("Invalid SORT criterion: %.*s\n", len, criterion);
+			bbs_client_err("Invalid SORT criterion: %.*s\n", len, criterion);
 		}
 		if (reverse && res) {
 			res = -res; /* Invert if needed */

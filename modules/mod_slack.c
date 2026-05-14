@@ -1624,7 +1624,7 @@ static int load_config(void)
 	struct bbs_config *cfg = bbs_config_load("mod_slack.conf", 1);
 
 	if (!cfg) {
-		bbs_error("File 'mod_slack.conf' is missing, declining to load\n");
+		bbs_missing_config_err("File 'mod_slack.conf' is missing, declining to load\n");
 		return -1;
 	}
 

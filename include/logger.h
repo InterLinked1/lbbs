@@ -35,6 +35,24 @@ enum bbs_log_level {
 #define bbs_verb(level, fmt, ...) __bbs_log(LOG_VERBOSE, level, __FILE__, __LINE__, __func__, fmt, ## __VA_ARGS__);
 #define bbs_debug(level, fmt, ...) __bbs_log(LOG_DEBUG, level, __FILE__, __LINE__, __func__, fmt, ## __VA_ARGS__);
 
+/* Normally, if a client does something wrong (typically in a protocol interaction),
+ * we log a debug message rather than a warning (recommended for busy, production systems).
+ * However, if you have a small system or are trying to debug client behavior,
+ * you may wish to change this to warnings temporarily for easier troubleshooting. */
+#ifdef WARN_ABOUT_CLIENT_ISSUES
+#define bbs_client_err(fmt, ...) bbs_warning(fmt, ## __VA_ARGS__)
+#else
+#define bbs_client_err(fmt, ...) bbs_debug(1, fmt, ## __VA_ARGS__)
+#endif
+
+/* With autoload=yes, many modules will decline to load without their configuration file.
+ * In such cases, it's best not to log warnings when this happens, but this can be modified. */
+#ifdef WARN_ABOUT_MISSING_CONFIGS
+#define bbs_missing_config_err(fmt, ...) bbs_warning(fmt, ## __VA_ARGS__)
+#else
+#define bbs_missing_config_err(fmt, ...) bbs_notice(fmt, ## __VA_ARGS__)
+#endif
+
 /*!
  * \brief Set BBS verbose level
  * \param newlevel Level between 0 and 10

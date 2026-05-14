@@ -227,20 +227,20 @@ unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authe
 	authorization_id = (char*) decoded;
 	runlen += (int) strlen(authorization_id) + 1;
 	if (runlen >= outlen) {
-		bbs_warning("No data after nickname?\n");
+		bbs_client_err("No data after nickname?\n");
 		free(decoded);
 		return NULL;
 	}
 	authentication_id = (char*) decoded + runlen;
 	runlen += (int) strlen(authentication_id) + 1;
 	if (runlen >= outlen) {
-		bbs_warning("No data after username?\n");
+		bbs_client_err("No data after username?\n");
 		free(decoded);
 		return NULL;
 	}
 	password = (char*) decoded + runlen;
 	if (strlen_zero(password)) {
-		bbs_warning("No password provided\n");
+		bbs_client_err("No password provided\n");
 		free(decoded);
 		return NULL;
 	}

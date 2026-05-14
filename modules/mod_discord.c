@@ -1556,7 +1556,7 @@ static int load_config(void)
 	struct bbs_config *cfg = bbs_config_load("mod_discord.conf", 1);
 
 	if (!cfg) {
-		bbs_error("File 'mod_discord.conf' is missing, declining to load\n");
+		bbs_missing_config_err("File 'mod_discord.conf' is missing, declining to load\n");
 		return -1;
 	}
 

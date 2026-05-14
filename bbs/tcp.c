@@ -113,6 +113,6 @@ int __bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, in
 			return 0;
 		}
 	}
-	__bbs_log(LOG_WARNING, 0, file, line, func, "Missing expected response (%s), got: %s\n", str, client->buf);
+	__bbs_log(LOG_NOTICE, 0, file, line, func, "Missing expected response (%s), got: %s\n", str, client->buf);
 	return 1;
 }

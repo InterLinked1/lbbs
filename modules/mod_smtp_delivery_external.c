@@ -213,12 +213,12 @@ static int dns_record_lookup(const char *domain, enum dns_record_type rectype, c
 	}
 	res = ns_initparse(answer, res, &msg);
 	if (res < 0) {
-		bbs_error("Failed to look up %s record: %s\n", rectype & DNS_RECORD_CNAME ? "CNAME" : "A", strerror(errno));
+		bbs_notice("Failed to look up %s record: %s\n", rectype & DNS_RECORD_CNAME ? "CNAME" : "A", strerror(errno));
 		return 0;
 	}
 	res = ns_msg_count(msg, ns_s_an);
 	if (res < 1) {
-		bbs_error("No %s records available for %s\n", rectype & DNS_RECORD_CNAME ? "CNAME" : "A", domain);
+		bbs_notice("No %s records available for %s\n", rectype & DNS_RECORD_CNAME ? "CNAME" : "A", domain);
 		return 0;
 	}
 
@@ -294,17 +294,17 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 
 	res = res_query(domain, C_IN, T_MX, answer, sizeof(answer));
 	if (res == -1) {
-		bbs_warning("res_query failed for '%s': %s\n", domain, hstrerror(h_errno)); /* res_query sets h_errno, not errno */
+		bbs_notice("res_query failed for '%s': %s\n", domain, hstrerror(h_errno)); /* res_query sets h_errno, not errno */
 		return -1;
 	}
 	res = ns_initparse(answer, res, &msg);
 	if (res < 0) {
-		bbs_error("Failed to look up MX record: %s\n", strerror(errno));
+		bbs_notice("Failed to look up MX record: %s\n", strerror(errno));
 		return -1;
 	}
 	res = ns_msg_count(msg, ns_s_an);
 	if (res < 1) {
-		bbs_error("No MX records available\n");
+		bbs_notice("No MX records available\n");
 		return -1;
 	}
 
@@ -361,7 +361,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 	}
 
 	if (!added) {
-		bbs_warning("No MX records available for %s\n", domain);
+		bbs_notice("No MX records available for %s\n", domain);
 		RWLIST_HEAD_DESTROY(&mxs);
 		return -1;
 	}
@@ -611,7 +611,7 @@ static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session 
 				res = 1;
 				goto cleanup;
 			} else if (!bbs_address_nonpublic(hostname)) { /* Don't emit this warning for non-public IPs */
-				bbs_warning("SMTP server %s does not support STARTTLS. This message will not be transmitted securely!\n", hostname);
+				bbs_notice("SMTP server %s does not support STARTTLS. This message will not be transmitted securely!\n", hostname);
 			}
 		} else {
 			/* If STARTTLS isn't allowed, this is the case where we already made a pass and tried STARTTLS and
@@ -726,7 +726,7 @@ static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session 
 
 			SMTP_EXPECT(&smtpclient, SEC_MS(10), "235");
 		} else {
-			bbs_warning("No mutual login methods available\n");
+			bbs_notice("No mutual login methods available\n");
 			res = -1;
 			goto cleanup;
 		}
@@ -807,12 +807,12 @@ cleanup:
 			char emsg[3];
 			ssize_t rres = bbs_readline(smtpclient.client.rfd, &smtpclient.client.rldata, "\r\n", SEC_MS(1));
 			if (rres < 0) {
-				bbs_warning("Unexpected end of response (so far: '%s')\n", respbuf);
+				bbs_notice("Unexpected end of response (so far: '%s')\n", respbuf);
 				break;
 			}
 			/* Skip the first four characters since this is a continuation of the response */
 			if (rres < 4) {
-				bbs_warning("Unexpected end of response: '%s' (so far: '%s')\n", buf, respbuf);
+				bbs_notice("Unexpected end of response: '%s' (so far: '%s')\n", buf, respbuf);
 				break;
 			}
 			continuation = buf + 3; /* That will skip e.g. "550-" or "550 " */
@@ -1344,7 +1344,7 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 9))) try_mx_delivery(struct s
 	if (res < 0 && start_tls_failures) {
 		/* Delivery failed, but at least one failure was because STARTTLS failed. */
 		if (!require_starttls_out) {
-			bbs_warning("Reattempting delivery to %s insecurely since STARTTLS failed\n", recipient);
+			bbs_notice("Reattempting delivery to %s insecurely since STARTTLS failed\n", recipient);
 			/* Retry without using STARTTLS.
 			 * First, send a delay notification so the sender is aware the message was not delivered securely.
 			 * The sender could then choose to notify the recipient's postmaster of the issue, but it's not really our problem. */
@@ -1527,10 +1527,9 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 				char a_ip[256];
 				/* Fall back to trying the A record */
 				if (bbs_resolve_hostname(mqf->domain, a_ip, sizeof(a_ip))) {
-					bbs_warning("Recipient domain %s does not have any MX or A records\n", mqf->domain);
 					/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
 					/* Send a delivery failure response, then delete the file. */
-					bbs_warning("Delivery of message %s from <%s> to %s has failed permanently (no MX records)\n", mqf->datafile, mqf->realfrom, mqf->realto);
+					bbs_notice("Delivery of message %s from <%s> to %s has failed permanently (no MX or A records for %s)\n", mqf->datafile, mqf->realfrom, mqf->realto, mqf->domain);
 					/* There isn't any SMTP level error at this point yet, we have to make our own error message for the bounce message */
 					snprintf(buf, sizeof(buf), "No MX record(s) located for hostname %s", mqf->domain); /* No status code */
 					smtp_tx_data_reset(&tx);
@@ -1541,7 +1540,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 					QUEUE_INCR_STAT(failed);
 					return 0;
 				}
-				bbs_warning("Recipient domain %s does not have any MX records, falling back to A record %s\n", mqf->domain, a_ip);
+				bbs_notice("Recipient domain %s does not have any MX records, falling back to A record %s\n", mqf->domain, a_ip);
 				stringlist_push(&mxservers, a_ip);
 				no_mx = 1;
 			}
@@ -1589,7 +1588,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	} else if (res == -2 || res > 0 || attempts >= (int) max_retries || no_retries) { /* Permanent failure or retries exceeded */
 permfail:
 		/* Send a delivery failure response, then delete the file. */
-		bbs_warning("Delivery of message %s from <%s> to %s has failed permanently after %d attempt%s\n", mqf->datafile, mqf->realfrom, mqf->realto, attempts, ESS(attempts));
+		bbs_notice("Delivery of message %s from <%s> to %s has failed permanently after %d attempt%s\n", mqf->datafile, mqf->realfrom, mqf->realto, attempts, ESS(attempts));
 		bbs_smtp_log(1, NULL, "Delivery failed permanently after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		/* To the dead letter office we go */
 		/* XXX buf will only contain the last line of the SMTP transaction, since it was using the readline buffer
@@ -1600,7 +1599,7 @@ permfail:
 		QUEUE_INCR_STAT(failed);
 	} else { /* Delivery deferred due to temporary failure */
 		if (message_age > max_age) {
-			bbs_warning("Message expired while in queue (message created at %" TIME_T_FMT ", now %" TIME_T_FMT "/%d s old)\n", mqf->createdtime, message_age, max_age);
+			bbs_notice("Message expired while in queue (message created at %" TIME_T_FMT ", now %" TIME_T_FMT "/%d s old)\n", mqf->createdtime, message_age, max_age);
 			goto permfail;
 		}
 		bbs_debug(3, "Delivery of %s to %s has been attempted %d/%d times\n", mqf->datafile, mqf->realto, attempts, max_retries);

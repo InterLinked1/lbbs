@@ -40,6 +40,9 @@ static FILE *histfp;
 
 int tradspool_init(void)
 {
+	bbs_mutex_init(&histlock, NULL);
+	bbs_rwlock_init(&overviewlock, NULL);
+
 	snprintf(history_file, sizeof(history_file), "%s/%s", newsdir, "history");
 	/* Keep the history file open for writing at runtime.
 	 * We don't even need to lock for writes to it, since fprintf will ensure writes get interleaved properly. */
@@ -48,8 +51,6 @@ int tradspool_init(void)
 		bbs_error("Failed to open %s: %s\n", history_file, strerror(errno));
 		return -1;
 	}
-	bbs_mutex_init(&histlock, NULL);
-	bbs_rwlock_init(&overviewlock, NULL);
 	return 0;
 }
 

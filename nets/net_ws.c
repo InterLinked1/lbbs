@@ -868,7 +868,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int pro
 
 	route = find_route(http->req->uri);
 	if (!route) {
-		bbs_warning("Rejecting WebSocket connection for '%s' (no such WebSocket route)\n", http->req->uri);
+		bbs_notice("Rejecting WebSocket connection for '%s' (no such WebSocket route)\n", http->req->uri);
 		goto exit; /* Get lost, dude */
 	}
 
@@ -880,15 +880,15 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int pro
 		char match_str[256];
 		const char *origin = http_request_header(http, "Origin");
 		if (strlen_zero(origin)) {
-			bbs_warning("No Origin header supplied\n");
+			bbs_client_err("No Origin header supplied\n");
 			goto done2; /* Goodbye */
 		} else if (strchr(origin, ',')) {
-			bbs_warning("Origin header seems invalid: %s\n", origin);
+			bbs_client_err("Origin header seems invalid: %s\n", origin);
 			goto done2;
 		}
 		snprintf(match_str, sizeof(match_str), ",%s,", origin);
 		if (!strstr(allowed_origins, match_str)) {
-			bbs_warning("Client origin '%s' is not explicitly allowed, rejecting\n", origin);
+			bbs_client_err("Client origin '%s' is not explicitly allowed, rejecting\n", origin);
 			goto done2;
 		}
 		bbs_debug(4, "Origin '%s' is explicitly allowed\n", origin);

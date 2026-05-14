@@ -518,10 +518,10 @@ static enum partspec_suffix parse_part_spec(char *restrict buf, size_t len, cons
 			*tmp = '\0';
 			suffix = PARTSPEC_HEADER_FIELDS;
 		} else if (!strcmp(tmp, ".")) {
-			bbs_warning("Malformed part specifier: %s\n", input);
+			bbs_client_err("Malformed part specifier: %s\n", input);
 		} else {
 			if (!isdigit(*tmp)) {
-				bbs_warning("Unknown part specifier: %s\n", input);
+				bbs_client_err("Unknown part specifier: %s\n", input);
 			}
 		}
 	}
@@ -850,7 +850,7 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 			snprintf(itemname, sizeof(itemname), "%s[%s]", "BODY", fbr->bodyarg);
 			send_filtered_headers(imap, fbr, itemname, &fp, fullname, fbr->bodyarg, -1);
 		} else {
-			bbs_warning("Unknown FETCH BODY item: %s\n", fbr->bodyarg);
+			bbs_client_err("Unknown FETCH BODY item: %s\n", fbr->bodyarg);
 		}
 	}
 
@@ -1112,7 +1112,7 @@ char *fetchitem_sep(char **s)
 				/* Keep going, there might be <> components afterwards
 				 * e.g. BODY[]<0.2048> */
 			} else {
-				bbs_warning("Malformed FETCH request item string: %s\n", *s);
+				bbs_client_err("Malformed FETCH request item string: %s\n", *s);
 			}
 		} else if (*cur == ' ') {
 			if (!in_bracket) {
@@ -1181,7 +1181,7 @@ int handle_fetch_full(struct imap_session *imap, char *s, int usinguid, int tagg
 			} else if (!strcasecmp(arg, "VANISHED")) {
 				fetchreq.vanished = 1;
 			} else {
-				bbs_warning("Unexpected FETCH modifier: %s\n", s);
+				bbs_client_err("Unexpected FETCH modifier: %s\n", s);
 				imap_reply(imap, "BAD FETCH failed. Illegal arguments.");
 				goto cleanup;
 			}
@@ -1224,7 +1224,7 @@ int handle_fetch_full(struct imap_session *imap, char *s, int usinguid, int tagg
 			tmp = item + (fbr->peek ? STRLEN("BODY.PEEK[") : STRLEN("BODY["));
 			fbr->substart = -1; /* Initialize to -1 */
 			if (parse_body_tail(fbr, tmp)) {
-				bbs_warning("Failed to parse partial fetch directive: %s\n", tmp);
+				bbs_client_err("Failed to parse partial fetch directive: %s\n", tmp);
 				res = -1;
 				free(fbr);
 				goto cleanup;
@@ -1272,7 +1272,7 @@ int handle_fetch_full(struct imap_session *imap, char *s, int usinguid, int tagg
 			fetchreq.body = 1;
 			break;
 		} else {
-			bbs_warning("Unsupported FETCH item: %s\n", item);
+			bbs_client_err("Unsupported FETCH item: %s\n", item);
 			imap_reply(imap, "BAD FETCH failed. Illegal arguments.");
 			goto cleanup;
 		}

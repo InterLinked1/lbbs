@@ -118,15 +118,15 @@ static int parse_msp(struct msp *restrict msp, char *restrict buf, size_t len)
 	}
 
 	if (strnsep(&msp->recip, &tmp, &len)) {
-		bbs_warning("Failed to parse recipient\n");
+		bbs_client_err("Failed to parse recipient\n");
 		return -1;
 	}
 	if (strnsep(&msp->recipterm, &tmp, &len)) {
-		bbs_warning("Failed to parse recipient terminal\n");
+		bbs_client_err("Failed to parse recipient terminal\n");
 		return -1;
 	}
 	if (strnsep(&msp->message, &tmp, &len)) {
-		bbs_warning("Failed to parse message\n");
+		bbs_client_err("Failed to parse message\n");
 		return -1;
 	}
 
@@ -136,19 +136,19 @@ static int parse_msp(struct msp *restrict msp, char *restrict buf, size_t len)
 	}
 
 	if (strnsep(&msp->sender, &tmp, &len)) {
-		bbs_warning("Failed to parse sender\n");
+		bbs_client_err("Failed to parse sender\n");
 		return -1;
 	}
 	if (strnsep(&msp->senderterm, &tmp, &len)) {
-		bbs_warning("Failed to parse sender terminal\n");
+		bbs_client_err("Failed to parse sender terminal\n");
 		return -1;
 	}
 	if (strnsep(&msp->cookie, &tmp, &len)) {
-		bbs_warning("Failed to parse cookie\n");
+		bbs_client_err("Failed to parse cookie\n");
 		return -1;
 	}
 	if (strnsep(&msp->signature, &tmp, &len)) {
-		bbs_warning("Failed to parse signature\n");
+		bbs_client_err("Failed to parse signature\n");
 		return -1;
 	}
 
@@ -185,14 +185,14 @@ static ssize_t read_msg(struct msp *restrict msp, char *restrict buf, size_t len
 		bufptr += res;
 		left -= (size_t) res;
 		if (left <= 0) {
-			bbs_warning("MSP message too long, buffer exhausted\n");
+			bbs_client_err("MSP message too long, buffer exhausted\n");
 			return -1;
 		}
 		if (!got_version) {
 			if (buf[0] != 'A' && buf[0] != 'B') {
 				/* If we don't get a valid protocol version,
 				 * don't even bother reading the rest. */
-				bbs_warning("Invalid MSP protocol version: '%c'\n", buf[0]);
+				bbs_client_err("Invalid MSP protocol version: '%c'\n", buf[0]);
 				return -1;
 			}
 			msp->version = buf[0] == 'B';

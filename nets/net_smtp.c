@@ -611,10 +611,10 @@ static int fcrdns_check(struct smtp_session *smtp)
 	 */
 
 	if (bbs_get_hostname(smtp->node->ip, hostname, sizeof(hostname))) { /* Get reverse PTR record for client's IP */
-		bbs_warning("Unable to look up reverse DNS record for %s\n", smtp->node->ip);
+		bbs_notice("Unable to look up reverse DNS record for %s\n", smtp->node->ip);
 		smtp->failures += 4; /* Heavy penalty */
 	} else if (!bbs_hostname_has_ip(hostname, smtp->node->ip)) { /* Ensure that there's a match, with at least one A record (may be indirect) */
-		bbs_warning("FCrDNS check failed: %s != %s\n", hostname, smtp->node->ip);
+		bbs_notice("FCrDNS check failed: %s != %s\n", hostname, smtp->node->ip);
 		smtp->failures += 5;
 	} else {
 		/* The hostname returned by the PTR record for this IP SHOULD NOT be a CNAME, it should be a direct A record.
@@ -629,12 +629,12 @@ static int fcrdns_check(struct smtp_session *smtp)
 			if (res & DNS_RECORD_CNAME) {
 				/* If we got a CNAME record back, immediately fail the test.
 				 * Additionally, if we got to an A record via a CNAME record, both flags should be set, so we'll take this branch. */
-				bbs_warning("FCrDNS check failed: hostname returned by PTR lookup (%s) has a CNAME record (%s)\n", hostname, buf);
+				bbs_notice("FCrDNS check failed: hostname returned by PTR lookup (%s) has a CNAME record (%s)\n", hostname, buf);
 				smtp->failures += 3;
 			} else {
 				res |= BBS_SINGULAR_CALLBACK_EXECUTE(partial_lookup)(hostname, DNS_RECORD_A, buf, sizeof(buf));
 				if (!(res & DNS_RECORD_A)) {
-					bbs_warning("FCrDNS check failed: hostname returned by PTR lookup (%s) does not have an A record\n", hostname);
+					bbs_notice("FCrDNS check failed: hostname returned by PTR lookup (%s) does not have an A record\n", hostname);
 					smtp->failures += 6;
 				} else {
 					bbs_debug(4, "FCrDNS check passed: hostname returned by PTR lookup (%s) resolves via A record to %s\n", hostname, buf);
@@ -697,7 +697,7 @@ static int handle_connect(struct smtp_session *smtp)
 				bbs_debug(3, "Client appears to have disconnected\n");
 				return -1;
 			}
-			bbs_warning("Pregreet: %lu byte%s received before banner finished\n", bytes, ESS(bytes));
+			bbs_client_err("Pregreet: %lu byte%s received before banner finished\n", bytes, ESS(bytes));
 			smtp->failures += 3;
 			if (smtp_tarpit(smtp, 220, "Waiting for service to initialize...")) {
 				return -1;
@@ -721,7 +721,7 @@ static int smtp_ip_mismatch(const char *actual, const char *hostname)
 	 * IPv6 literals as described in RFC 5321 4.1.3 are not supported. */
 	if (bbs_hostname_is_ipv4(hostname)) {
 		if (!strcmp(actual, hostname)) {
-			bbs_warning("SMTP IP address '%s' is in non-canonical format\n", hostname); /* Should be surrounded by [] */
+			bbs_client_err("SMTP IP address '%s' is in non-canonical format\n", hostname); /* Should be surrounded by [] */
 			return 0;
 		}
 		return -1;
@@ -870,7 +870,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 			bbs_debug(2, "%s is explicitly authorized to relay mail as %s\n", smtp->node->ip, smtp->helohost);
 		} else if (!smtp->msa && smtp_ip_mismatch(smtp->node->ip, smtp->helohost) && !is_benign_ip_mismatch(smtp)) {
 			/* Message submission is exempt from these checks, the HELO hostname is not useful anyways */
-			bbs_warning("HELO/EHLO hostname '%s' does not resolve to client IP %s\n", smtp->helohost, smtp->node->ip);
+			bbs_notice("HELO/EHLO hostname '%s' does not resolve to client IP %s\n", smtp->helohost, smtp->node->ip);
 			/* This is suspicious. It is not invalid, but it very well might be.
 			 * I'm aware that this doesn't support IPv6. IPv4 is pretty important for email,
 			 * if you're sending email using an IPv6 address, then that'll be penalized as well.
@@ -1095,17 +1095,17 @@ static int parse_mail_parameters(struct smtp_session *smtp, char *s)
 	while ((d = strsep(&s, " "))) {
 		char *ext = strsep(&d, "=");
 		if (strlen_zero(ext)) {
-			bbs_warning("No extension name?\n");
+			bbs_client_err("No extension name?\n");
 			continue;
 		} else if (strlen_zero(d)) {
-			bbs_warning("Empty extension data value\n");
+			bbs_client_err("Empty extension data value\n");
 			continue;
 		} else if (!strcasecmp(ext, "SIZE")) {
 			long freebytes;
 			unsigned int sizebytes;
 			/* RFC 1870 Message Size Declaration */
 			if (smtp->tflags.sizepreview) {
-				bbs_warning("Duplicate SIZE declaration (%lu)\n", smtp->tflags.sizepreview);
+				bbs_client_err("Duplicate SIZE declaration (%lu)\n", smtp->tflags.sizepreview);
 				smtp->failures++;
 				continue;
 			}
@@ -3151,7 +3151,7 @@ success:
 
 fail:
 	/* It resolved to something else (or maybe nothing at all, if NULL). Reject. */
-	bbs_warning("Rejected attempt by %s to send email as %s@%s (%d != %u)\n", bbs_username(smtp->node->user), user, domain,
+	bbs_notice("Rejected attempt by %s to send email as %s@%s (%d != %u)\n", bbs_username(smtp->node->user), user, domain,
 		sendingmbox ? mailbox_id(sendingmbox) : 0, smtp->node->user->id);
 	smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
 	return -1;
@@ -3605,7 +3605,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 				break;
 			} else if (smtp->tflags.hopcount > 1) {
 				if (smtp->tflags.hopcount >= HOP_COUNT_WARN_LEVEL) {
-					bbs_warning("Current SMTP hop count is %d\n", smtp->tflags.hopcount);
+					bbs_notice("Current SMTP hop count is %d\n", smtp->tflags.hopcount);
 				} else {
 					bbs_debug(3, "Current SMTP hop count is %d\n", smtp->tflags.hopcount);
 				}
@@ -4046,7 +4046,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "msa", "requirestarttls", &require_starttls);
 
 /*! \brief Section names that are valid but not parsed in the loop */
-#define VALID_SECT_NAME(s) (!strcmp(s, "general") || !strcmp(s, "logging") || !strcmp(s, "privs") || !strcmp(s, "smtp") || !strcmp(s, "smtps") || !strcmp(s, "msa") || !strcmp(s, "static_relays"))
+#define VALID_SECT_NAME(s) (!strcmp(s, "general") || !strcmp(s, "logging") || !strcmp(s, "privs") || !strcmp(s, "smtp") || !strcmp(s, "smarthost") || !strcmp(s, "smtps") || !strcmp(s, "msa") || !strcmp(s, "static_relays"))
 
 	while ((section = bbs_config_walk(cfg, section))) {
 		struct bbs_keyval *keyval = NULL;

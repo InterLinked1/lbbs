@@ -158,7 +158,7 @@ static int load_config(void)
 	struct bbs_config *cfg = bbs_config_load("mod_irc_client.conf", 1);
 
 	if (!cfg) {
-		bbs_error("File 'mod_irc_client.conf' is missing: IRC client declining to start\n");
+		bbs_notice("File 'mod_irc_client.conf' is missing: IRC client declining to start\n");
 		return -1; /* Abort, if we have no users, we can't start */
 	}
 

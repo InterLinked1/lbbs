@@ -2146,7 +2146,7 @@ unsigned int imap_msg_in_range(struct imap_session *imap, int seqno, const char 
 
 	if (use_saved_search) {
 		if (!imap->savedsearch) {
-			bbs_warning("Client referred to nonexistent saved search\n");
+			bbs_client_err("Client referred to nonexistent saved search\n");
 			*error = 1;
 			return 0;
 		}
@@ -4796,7 +4796,7 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 		imap_reply(imap, "OK ID completed");
 	/* Past this point, must be logged in. */
 	} else if (!bbs_user_is_registered(imap->node->user)) {
-		bbs_warning("'%s' command may not be used in the unauthenticated state\n", command);
+		bbs_client_err("'%s' command may not be used in the unauthenticated state\n", command);
 		imap_reply(imap, "BAD Not logged in"); /* Not necessarily a client bug, could be our fault too if we don't implement something */
 	} else if (!strcasecmp(command, "SELECT")) {
 		res = handle_select(imap, s, CMD_SELECT);

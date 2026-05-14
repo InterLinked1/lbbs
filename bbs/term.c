@@ -97,7 +97,7 @@ static int bbs_node_set_input(struct bbs_node *node, int buffered, int echo)
 	/* We're going to disable/enable buffering on the slave end of the node's PTY.
 	 * You can't perform terminal operations directly on socket file descriptors. */
 	if (node->slavefd == -1) {
-		bbs_error("Node %d has no slave fd\n", node->id);
+		bbs_warning("Node %d has no slave fd\n", node->id);
 		return -1;
 	}
 

@@ -45,7 +45,7 @@ int bbs_kvs_get(const char *key, size_t keylen, char *buf, size_t len, size_t *o
 	*ptr = 0;
 
 	if (bbs_singular_callback_execute_pre(&callbacks)) {
-		bbs_error("No KVS backend currently registered\n");
+		bbs_debug(1, "No KVS backend currently registered\n");
 		return -1;
 	}
 
@@ -67,7 +67,7 @@ char *bbs_kvs_get_allocated(const char *key, size_t keylen, size_t *outlen)
 	ptr = outlen ? outlen : &outlentmp;
 	*ptr = 0;
 	if (bbs_singular_callback_execute_pre(&callbacks)) {
-		bbs_error("No KVS backend currently registered\n");
+		bbs_debug(1, "No KVS backend currently registered\n");
 		return NULL;
 	}
 
@@ -87,7 +87,7 @@ int bbs_kvs_put(const char *key, size_t keylen, const char *value, size_t valuel
 	int res;
 
 	if (bbs_singular_callback_execute_pre(&callbacks)) {
-		bbs_error("No KVS backend currently registered\n");
+		bbs_debug(1, "No KVS backend currently registered\n");
 		return -1;
 	}
 
@@ -103,7 +103,7 @@ int bbs_kvs_del(const char *key, size_t keylen)
 	int res;
 
 	if (bbs_singular_callback_execute_pre(&callbacks)) {
-		bbs_error("No KVS backend currently registered\n");
+		bbs_debug(1, "No KVS backend currently registered\n");
 		return -1;
 	}
 

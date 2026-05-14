@@ -1114,7 +1114,7 @@ static int agent_exec(struct bbs_node *node, const char *args)
 	bbs_node_lock(node);
 	tmp = bbs_node_var_get(node, "ASTERISK_AGENT_ID");
 	if (!tmp) {
-		bbs_warning("Rejecting unauthorized queue agent '%s'\n", bbs_username(node->user));
+		bbs_client_err("Rejecting unauthorized queue agent '%s'\n", bbs_username(node->user));
 		bbs_node_unlock(node);
 		return 0;
 	}

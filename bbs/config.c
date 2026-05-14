@@ -241,7 +241,7 @@ int bbs_config_val_set_port(struct bbs_config *cfg, const char *section_name, co
 		if (PORT_VALID(tmp)) {
 			*var = tmp;
 		} else {
-			bbs_warning("Invalid port number: %s\n", s);
+			bbs_warning("Invalid port number for '%s': %s\n", key, s);
 		}
 		return 0;
 	}

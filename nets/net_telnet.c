@@ -120,11 +120,11 @@ static int telnet_read_command(int fd, unsigned char *buf, size_t len)
 		}
 		/* Don't let the client make us index out of bounds */
 		if (!TELCMD_OK(buf[0]) || !TELCMD_OK(buf[1])) {
-			bbs_warning("Got out of bounds command: %d %d %d\n", buf[0], buf[1], buf[2]);
+			bbs_client_err("Got out of bounds command: %d %d %d\n", buf[0], buf[1], buf[2]);
 			return 0;
 		}
 		if (!TELOPT_OK(buf[2])) {
-			bbs_warning("Got out of bounds option: %d %d %d\n", buf[0], buf[1], buf[2]);
+			bbs_client_err("Got out of bounds option: %d %d %d\n", buf[0], buf[1], buf[2]);
 			return 0;
 		}
 		a = buf[0] - xEOF; /* We know this is IAC */
@@ -136,7 +136,7 @@ static int telnet_read_command(int fd, unsigned char *buf, size_t len)
 		bbs_debug(3, "Received Telnet command %s %s %s\n", telcmds[a], telcmds[b], telopts[c]);
 		return (int) res;
 	} else {
-		bbs_warning("Read %ld bytes, not enough to do anything with, discarding\n", res);
+		bbs_client_err("Read %ld bytes, not enough to do anything with, discarding\n", res);
 		return 0;
 	}
 }
@@ -502,7 +502,7 @@ static int __telnet_process_command(struct bbs_node *node, struct telnet_setting
 
 	if (depth > 4) {
 		/* Prevent infinite recursion if the client replies with the same thing that triggered another command */
-		bbs_warning("Exceeded command stack depth %d\n", depth);
+		bbs_client_err("Exceeded command stack depth %d\n", depth);
 		return 0;
 	}
 

@@ -224,7 +224,7 @@ static enum http_response_code proxy_handler(struct http_session *http)
 				bbs_strncpy_until(hostbuf, http->req->host, sizeof(hostbuf), ':'); /* Strip : */
 				host = hostbuf;
 			} else {
-				bbs_warning("CONNECT request missing hostname\n");
+				bbs_client_err("CONNECT request missing hostname\n");
 				return HTTP_BAD_REQUEST;
 			}
 		} else {
@@ -237,17 +237,17 @@ static enum http_response_code proxy_handler(struct http_session *http)
 				const char *portstr = strchr(http->req->uri, ':');
 				/* If we are using the request URI for the hostname, we also use it for the port */
 				if (!portstr) {
-					bbs_warning("CONNECT request line URI '%s' does not include a port\n", http->req->uri);
+					bbs_client_err("CONNECT request line URI '%s' does not include a port\n", http->req->uri);
 					return HTTP_BAD_REQUEST;
 				}
 				portstr++;
 				if (strlen_zero(portstr)) {
-					bbs_warning("CONNECT request line URI '%s' does not include a port\n", http->req->uri);
+					bbs_client_err("CONNECT request line URI '%s' does not include a port\n", http->req->uri);
 					return HTTP_BAD_REQUEST;
 				}
 				sport = atoi(portstr);
 				if (sport < 0) {
-					bbs_warning("Rejecting invalid port %d\n", sport);
+					bbs_client_err("Rejecting invalid port %d\n", sport);
 					return HTTP_BAD_REQUEST;
 				}
 				port = (unsigned int) sport;

@@ -232,8 +232,8 @@ static void check_cap(int isroot)
 		if (isroot) {
 			fprintf(stderr, "Process lacks CAP_NET_BIND_SERVICE capability and may not be able to bind to privileged ports\n");
 		} else {
-			bbs_warning("Process lacks CAP_NET_BIND_SERVICE capability and may not be able to bind to privileged ports.\n");
-			bbs_warning("Consider granting privileges to UID %d to bind on any necessary ports, or use nonprivileged ports.\n", getuid()); /* By this point, we've dropped privileges and check UID directly */
+			bbs_notice("Process lacks CAP_NET_BIND_SERVICE capability and may not be able to bind to privileged ports.\n");
+			bbs_notice("Consider granting privileges to UID %d to bind on any necessary ports, or use nonprivileged ports.\n", getuid()); /* By this point, we've dropped privileges and check UID directly */
 		}
 	}
 
@@ -1281,7 +1281,7 @@ int main(int argc, char *argv[])
 	bbs_malloc_trim();
 
 	if (is_root() && !runuser) {
-		bbs_warning("BBS is running as root. This may compromise the security of your system.\n");
+		bbs_notice("BBS is running as root. This may compromise the security of your system.\n");
 	}
 
 	if (option_run_unit_tests) {

@@ -69,7 +69,7 @@ int bbs_printable_strlen(const char *restrict s)
 			/* Fortunately, this shouldn't happen. The automatic menu screen generator doesn't use tabs.
 			 * Users may use tabs if they manually make the screen using display= in menus.conf,
 			 * but in that case, we don't call print_strlen on that. */
-			bbs_warning("Printable string length calculation may be inaccurate: string contains TAB\n");
+			bbs_client_err("Printable string length calculation may be inaccurate: string contains TAB\n");
 			s++;
 			c += 4; /* Assume 4 characters, but this is kinda arbitrary. But for the purposes we care about, overestimate is safer than underestimate. */
 		} else {
@@ -606,13 +606,13 @@ char *quotesep(char **str)
 		return strsep(str, " "); /* If not in quotes, then just return the next word as usual */
 	}
 	if (!*(s + 1)) {
-		bbs_warning("Malformed string (quotes not terminated)\n");
+		bbs_client_err("Malformed string (quotes not terminated)\n");
 		return NULL;
 	}
 	ret = s + 1;
 	s = strchr(s + 1, '"');
 	if (!s) {
-		bbs_warning("Unterminated quotes\n");
+		bbs_client_err("Unterminated quotes\n");
 		return NULL;
 	}
 
@@ -632,7 +632,7 @@ int bbs_quoted_printable_decode(char *restrict s, size_t *restrict len, int prin
 			s++;
 			index++;
 			if (!*s) {
-				bbs_warning("Invalid quoted-printable sequence (abruptly terminated)\n");
+				bbs_client_err("Invalid quoted-printable sequence (abruptly terminated)\n");
 				return -1;
 			}
 			if (*s == '\r') {
@@ -640,7 +640,7 @@ int bbs_quoted_printable_decode(char *restrict s, size_t *restrict len, int prin
 				s++;
 				index++;
 				if (*s != '\n') {
-					bbs_warning("Invalid quoted-printable sequence (CR not followed by LF)\n");
+					bbs_client_err("Invalid quoted-printable sequence (CR not followed by LF)\n");
 					return -1;
 				}
 			} else {
@@ -649,13 +649,13 @@ int bbs_quoted_printable_decode(char *restrict s, size_t *restrict len, int prin
 				s++;
 				index++;
 				if (!*s) {
-					bbs_warning("Invalid quoted-printable sequence (abruptly terminated)\n");
+					bbs_client_err("Invalid quoted-printable sequence (abruptly terminated)\n");
 					return -1;
 				}
 				hexcode[1] = *s;
 				hexcode[2] = '\0';
 				if (sscanf(hexcode, "%x", &hex) != 1) {
-					bbs_warning("Failed to decode %s\n", hexcode);
+					bbs_client_err("Failed to decode %s\n", hexcode);
 				}
 				if (!printonly || isprint((char) hex)) { /* XXX isprint check only works for single-byte UTF-8 characters */
 					*d++ = (char) hex;
@@ -666,7 +666,7 @@ int bbs_quoted_printable_decode(char *restrict s, size_t *restrict len, int prin
 				} else {
 					/* Don't add invalid UTF-8 characters in the first place */
 #ifdef __linux__
-					bbs_warning("Invalid quoted printable[%lu] %s -> %d (%c)\n", index, hexcode, hex, isprint(hex) ? hex : '.');
+					bbs_client_err("Invalid quoted printable[%lu] %s -> %d (%c)\n", index, hexcode, hex, isprint(hex) ? hex : '.');
 #endif
 				}
 			}
@@ -674,7 +674,7 @@ int bbs_quoted_printable_decode(char *restrict s, size_t *restrict len, int prin
 			index++;
 		} else {
 			if (*s <= 32 && !isspace(*s)) {
-				bbs_warning("Illegal quoted-printable character: %d\n", *s);
+				bbs_client_err("Illegal quoted-printable character: %d\n", *s);
 				return -1;
 			}
 			*d++ = *s++;
@@ -777,7 +777,7 @@ int bbs_utf8_remove_invalid(unsigned char *restrict s, size_t *restrict len)
 		}
 	}
 	if (i) {
-		bbs_warning("%d invalid UTF-8 sequence%s removed\n", i, ESS(i));
+		bbs_client_err("%d invalid UTF-8 sequence%s removed\n", i, ESS(i));
 	}
 	*d = '\0';
 	return i;

@@ -529,7 +529,7 @@ static int __transfer_set_path(struct bbs_node *node, const char *function, cons
 		errno = ENOENT;
 		return -1; /* Doesn't exist, don't change the path. */
 	} else if (strstr(fullpath, "..")) {
-		bbs_warning("Attempt to access unsafe path '%s'\n", fullpath);
+		bbs_client_err("Attempt to access unsafe path '%s'\n", fullpath);
 		errno = EPERM;
 		return -1;
 	}

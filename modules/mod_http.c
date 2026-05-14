@@ -650,7 +650,7 @@ static int parse_request_line(struct http_session *restrict http, char *s)
 	} else if (!strcmp(tmp, "CONNECT")) {
 		http->req->method = HTTP_METHOD_CONNECT;
 	} else {
-		bbs_warning("Unknown HTTP request method: %s\n", bbs_str_isprint(tmp) ? tmp : "(non-printable)");
+		bbs_client_err("Unknown HTTP request method: %s\n", bbs_str_isprint(tmp) ? tmp : "(non-printable)");
 		return HTTP_NOT_IMPLEMENTED;
 	}
 
@@ -678,7 +678,7 @@ static int parse_request_line(struct http_session *restrict http, char *s)
 		} else if (STARTS_WITH(tmp, "https://")) {
 			tmp += STRLEN("https://");
 		} else {
-			bbs_warning("Unsupported protocol in request: %s\n", tmp);
+			bbs_client_err("Unsupported protocol in request: %s\n", tmp);
 			return HTTP_BAD_REQUEST;
 		}
 		if (!*tmp) {
@@ -731,13 +731,13 @@ static int process_headers(struct http_session *http)
 		if (portstr) {
 			portstr++;
 			if (strlen_zero(portstr)) {
-				bbs_warning("Malformed host: %s\n", value);
+				bbs_client_err("Malformed host: %s\n", value);
 			} else {
 				http->req->hostport = (unsigned int) atoi(portstr);
 				if (http->req->hostport != http->node->port && !(http->req->method & HTTP_METHOD_CONNECT) && !http->req->absolute) {
 					/* For proxy connections, the port could be anything arbitrary,
 					 * but otherwise, it's not legitimate and we should reject it. */
-					bbs_warning("Host port %u does not match actual port %u\n", http->req->hostport, http->node->port);
+					bbs_client_err("Host port %u does not match actual port %u\n", http->req->hostport, http->node->port);
 					return HTTP_BAD_REQUEST;
 				}
 			}
@@ -745,7 +745,7 @@ static int process_headers(struct http_session *http)
 	} else {
 		if (http->req->version & HTTP_VERSION_1_1_OR_NEWER) {
 			/* The Host request header is mandatory in HTTP 1.1. */
-			bbs_warning("HTTP 1.1 client missing Host header\n");
+			bbs_client_err("HTTP 1.1 client missing Host header\n");
 			return HTTP_BAD_REQUEST;
 		}
 	}
@@ -923,18 +923,18 @@ int http_websocket_handshake(struct http_session *http)
 	int version;
 
 	if (!(http->req->version & HTTP_VERSION_1_1_OR_NEWER)) {
-		bbs_warning("HTTP version incompatible with websockets\n");
+		bbs_client_err("HTTP version incompatible with websockets\n");
 		return -1;
 	}
 
 	if (!(http->req->method & HTTP_METHOD_GET)) {
-		bbs_warning("Websocket upgrades must use GET request\n");
+		bbs_client_err("Websocket upgrades must use GET request\n");
 		return -1;
 	}
 
 	versionstr = http_request_header(http, "Sec-WebSocket-Version");
 	if (!versionstr) {
-		bbs_warning("Websocket version not included in client request\n");
+		bbs_client_err("Websocket version not included in client request\n");
 		return -1;
 	}
 	/* Version numbers found here: https://www.iana.org/assignments/websocket/websocket.xhtml#version-number */
@@ -1096,7 +1096,7 @@ static int push_post_param(struct http_session *http, const char *name, const ch
 	size_t namelen, ctypelen, filenamelen;
 
 	if (strlen_zero(name)) {
-		bbs_warning("%lu-byte POST field missing name\n", len);
+		bbs_client_err("%lu-byte POST field missing name\n", len);
 		return -1;
 	}
 
@@ -1269,12 +1269,12 @@ static int parse_multipart(struct http_session *http, const char *content_type)
 	int res = -1;
 	const char *boundary = strchr(content_type, '='); /* ; boundary= */
 	if (!boundary) {
-		bbs_warning("No boundary provided in content type\n");
+		bbs_client_err("No boundary provided in content type\n");
 		return -1;
 	}
 	boundary++;
 	if (!*boundary) {
-		bbs_warning("Empty boundary\n");
+		bbs_client_err("Empty boundary\n");
 		return -1;
 	}
 	/* Note that the actual boundary where it appears in the data will be prefixed
@@ -1287,14 +1287,14 @@ static int parse_multipart(struct http_session *http, const char *content_type)
 
 	/* The first boundarylen + 2 bytes should be -- and the boundary. */
 	if (strncmp((char*) bodypos, "--", 2) || strncmp((char*) bodypos + 2, boundary, boundarylen)) {
-		bbs_warning("POST body (size %lu) does not begin with boundary? (%02x %02x)\n", bodyleft, bodypos[0], bodypos[1]);
+		bbs_client_err("POST body (size %lu) does not begin with boundary? (%02x %02x)\n", bodyleft, bodypos[0], bodypos[1]);
 		goto cleanup;
 	}
 	/* +2 for leading -- and +2 for CR LF afterwards */
 	start = bodypos = bodypos + 2 + boundarylen; /* Beginning of first data */
 	bodyleft -= boundarylen + 2;
 	if (strncmp((char*) bodypos, "\r\n", 2)) {
-		bbs_warning("Boundary not followed by CR LF?\n");
+		bbs_client_err("Boundary not followed by CR LF?\n");
 		goto cleanup;
 	}
 	start = bodypos = bodypos + 2;
@@ -1305,7 +1305,7 @@ static int parse_multipart(struct http_session *http, const char *content_type)
 		/* Find the end of this data. */
 		nextboundary = memmem(bodypos, bodyleft, boundary, boundarylen);
 		if (!nextboundary) {
-			bbs_warning("Encountered premature end of multipart body?\n");
+			bbs_client_err("Encountered premature end of multipart body?\n");
 #ifdef DEBUG_UPLOADS
 			bbs_dump_mem(bodypos, bodyleft);
 #endif
@@ -1338,17 +1338,17 @@ static int parse_multipart(struct http_session *http, const char *content_type)
 		if (!strncmp((const char*) nextboundary + boundarylen, "--", 2)) {
 			/* The last boundary has 2 dashes after it, instead of CR LF */
 			if (bodyleft != 2) {
-				bbs_warning("%lu bytes left at end of POST body?\n", bodyleft);
+				bbs_client_err("%lu bytes left at end of POST body?\n", bodyleft);
 			}
 			res = 0;
 			break;
 		}
 
 		if (bodyleft < 2) {
-			bbs_warning("No CR LF after boundary? (%lu bytes left)\n", bodyleft);
+			bbs_client_err("No CR LF after boundary? (%lu bytes left)\n", bodyleft);
 			break;
 		} else if (strncmp((char*) bodypos, "\r\n", 2)) {
-			bbs_warning("Expected CR LF after boundary? (%02x %02x)\n", bodypos[0], bodypos[1]);
+			bbs_client_err("Expected CR LF after boundary? (%02x %02x)\n", bodypos[0], bodypos[1]);
 			break;
 		}
 		bodyleft -= 2;
@@ -1378,7 +1378,7 @@ static int parse_body(struct http_session *http)
 	} else if (STARTS_WITH(content_type, "multipart/form-data")) {
 		parse_multipart(http, content_type);
 	} else if (!strcasecmp(content_type, "text/plain")) {
-		bbs_warning("The text/plain content type should be avoided!\n");
+		bbs_client_err("The text/plain content type should be avoided!\n");
 		return -1;
 	} else {
 		bbs_warning("Unsupported Content-Type: %s\n", content_type);
@@ -1790,12 +1790,12 @@ int http_parse_request(struct http_session *http, char *buf)
 		if (isspace(buf[0])) {
 			/* Continuation of previous header. Append data to previous line */
 			if (!headerlen) {
-				bbs_warning("Header continuation with no/empty header?\n");
+				bbs_client_err("Header continuation with no/empty header?\n");
 				return -1;
 			}
 			headerlen += (size_t) res;
 			if (headerlen > MAX_REQUEST_HEADER_LENGTH) {
-				bbs_warning("Header is too long (%lu+)\n", headerlen);
+				bbs_client_err("Header is too long (%lu+)\n", headerlen);
 				return HTTP_REQUEST_HEADERS_TOO_LARGE;
 			}
 			bbs_varlist_last_var_append(&http->req->headers, buf + 1); /* Skip first space */
@@ -1808,12 +1808,12 @@ int http_parse_request(struct http_session *http, char *buf)
 			*s++ = '\0';
 			ltrim(s); /* Trim leading whitespace between : and actual header value */
 			if (++http->req->numheaders > MAX_REQUEST_HEADERS) {
-				bbs_warning("Maximum number of request headers exceeded\n"); /* Somebody's being ridiculous */
+				bbs_client_err("Maximum number of request headers exceeded\n"); /* Somebody's being ridiculous */
 				return -1;
 			}
 			headerlen = (size_t) res;
 			if (headerlen > MAX_REQUEST_HEADER_LENGTH) {
-				bbs_warning("Header is too long (%lu+)\n", headerlen);
+				bbs_client_err("Header is too long (%lu+)\n", headerlen);
 				return HTTP_REQUEST_HEADERS_TOO_LARGE;
 			}
 			bbs_varlist_append(&http->req->headers, tmp, s);
@@ -2211,7 +2211,7 @@ static long int range_parse(char *range, long int size, long int *a, long int *b
 		start = strsep(&end, "-");
 	}
 	if (strlen_zero(start)) {
-		bbs_warning("No start for range?\n");
+		bbs_client_err("No start for range?\n");
 		return -1; /* Malformed request? */
 	}
 	*a = atoi(start);
@@ -2335,7 +2335,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 				/* Could also send Content-Type header */
 			} else if (rangebytes + overhead > (size_t) st->st_size) {
 				/* The number of bytes sent in range chunks is greater than if we were to just send the entire file. */
-				bbs_warning("Refusing to satisfy Range request: transferring entire file singularly would be more efficient (%ld bytes vs %lu+%lu)\n", st->st_size, rangebytes, overhead);
+				bbs_notice("Refusing to satisfy Range request: transferring entire file singularly would be more efficient (%ld bytes vs %lu+%lu)\n", st->st_size, rangebytes, overhead);
 				ranges = NULL;
 			} else if (rangeparts > 1) {
 				/* Already calculated the overhead. Just set the content type */

@@ -121,9 +121,9 @@ int bbs_smtp_client_expect_final(struct bbs_smtp_client *restrict smtpclient, in
 		bbs_debug(3, "Found '%s': %s\n", code, smtpclient->client.rldata.buf);
 	} while (!strncmp(smtpclient->client.rldata.buf, code, codelen) && smtpclient->client.rldata.buf[codelen] == '-');
 	if (res > 0) {
-		bbs_warning("Expected '%s', got: %s\n", code, smtpclient->client.rldata.buf);
+		bbs_notice("Expected '%s', got: %s\n", code, smtpclient->client.rldata.buf);
 	} else if (res < 0) {
-		bbs_warning("Failed to receive '%s'\n", code);
+		bbs_notice("Failed to receive '%s'\n", code);
 	}
 	return res;
 }
@@ -137,7 +137,7 @@ int bbs_smtp_client_handshake(struct bbs_smtp_client *restrict smtpclient, int r
 	res = bbs_tcp_client_expect(&smtpclient->client, "\r\n", 1, MIN_MS(5), "250"); /* Won't return 250 if ESMTP not supported */
 	if (res) { /* Fall back to HELO if EHLO not supported */
 		if (require_secure && !smtpclient->secure) { /* STARTTLS is only supported by EHLO, not HELO */
-			bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Aborting connection.\n", smtpclient->hostname);
+			bbs_notice("SMTP server %s does not support STARTTLS, but encryption is mandatory. Aborting connection.\n", smtpclient->hostname);
 			res = 1;
 			goto cleanup;
 		}

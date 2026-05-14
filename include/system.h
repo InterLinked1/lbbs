@@ -19,7 +19,7 @@ struct bbs_node;
 /*! \brief Decline to load, rather than failing at runtime if a required program is not available */
 #define BBS_REQUIRE_EXTERNAL_PROGRAM(progname) \
 	if (!bbs_program_available(progname)) { \
-		bbs_error("'%s' is not installed, declining to load\n", progname); \
+		bbs_missing_config_err("'%s' is not installed, declining to load\n", progname); \
 		return -1; \
 	}
 

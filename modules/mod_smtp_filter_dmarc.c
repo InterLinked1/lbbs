@@ -779,4 +779,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_DEPENDENT("RFC7489 DMARC Validation", "net_smtp.so");
+BBS_MODULE_INFO_DEPENDENT("RFC7489 DMARC Validation", "net_smtp.so,mod_curl.so");

@@ -633,7 +633,7 @@ static int subsystem_request(ssh_session session, ssh_channel channel, const cha
 		}
 
 		if (!cdata->user) {
-			bbs_warning("Rejecting unauthenticated SFTP access\n");
+			bbs_notice("Rejecting unauthenticated SFTP access\n");
 			return SSH_ERROR;
 		}
 
@@ -962,7 +962,7 @@ static void handle_session(ssh_event event, ssh_session session)
 				do_sftp(cdata.node, session, sdata.channel);
 				break; /* After we've handled an SFTP session, disconnect, there is nothing more */
 			} else {
-				bbs_warning("Rejecting anonymous SFTP access\n");
+				bbs_notice("Rejecting anonymous SFTP access\n");
 			}
 		} else {
 			/* If stdout valid, add stdout to be monitored by the poll event. */

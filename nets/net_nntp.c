@@ -1039,7 +1039,7 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename, size_t po
 	if (nntp->mode == NNTP_MODE_READER) {
 		/* Check the From header. */
 		if (!identity_allowed_for_posting(nntp, artinfo->from)) {
-			bbs_warning("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, artinfo->from);
+			bbs_notice("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, artinfo->from);
 			nntp_send(nntp, 441, "Identity not allowed for posting");
 			goto cleanup2;
 		}
@@ -2066,7 +2066,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			return 0;
 		}
 		if (!nntp->inpeer_any) {
-			bbs_warning("Sender %s/%s unauthorized to send us articles\n", bbs_username(nntp->node->user), nntp->node->ip);
+			bbs_notice("Sender %s/%s unauthorized to send us articles\n", bbs_username(nntp->node->user), nntp->node->ip);
 			nntp_send(nntp, 500, "Not authorized to relay articles");
 			return 0;
 		}

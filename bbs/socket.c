@@ -428,6 +428,9 @@ int bbs_node_wait_until_output_sent(struct bbs_node *node)
 	return 0;
 }
 
+#define LOG_GETADDRINFO_ERROR(hostname, e) \
+	bbs_notice("getaddrinfo(%s): %s\n", hostname, gai_strerror(e)); /* If a hostname doesn't exist, that's not an error, so log as notice */
+
 int bbs_hostname_has_ip(const char *hostname, const char *ip)
 {
 	char buf[256];
@@ -444,7 +447,7 @@ int bbs_hostname_has_ip(const char *hostname, const char *ip)
 
 	e = getaddrinfo(hostname, NULL, &hints, &res);
 	if (e) {
-		bbs_error("getaddrinfo(%s): %s\n", hostname, gai_strerror(e));
+		LOG_GETADDRINFO_ERROR(hostname, e);
 		return 0;
 	}
 
@@ -484,7 +487,7 @@ int bbs_resolve_hostname(const char *hostname, char *buf, size_t len)
 
 	e = getaddrinfo(hostname, NULL, &hints, &res);
 	if (e) {
-		bbs_error("getaddrinfo(%s): %s\n", hostname, gai_strerror(e));
+		LOG_GETADDRINFO_ERROR(hostname, e);
 		return -1;
 	}
 
@@ -530,7 +533,7 @@ int __bbs_tcp_connect(const char *hostname, int port, const char *file, int line
 
 	e = getaddrinfo(hostname, NULL, &hints, &res);
 	if (e) {
-		bbs_error("getaddrinfo (%s): %s\n", hostname, gai_strerror(e));
+		LOG_GETADDRINFO_ERROR(hostname, e);
 		return -1;
 	}
 
@@ -573,7 +576,7 @@ int __bbs_tcp_connect(const char *hostname, int port, const char *file, int line
 		}
 		if (connect(sfd, ai->ai_addr, ai->ai_addrlen)) {
 			if (errno == EINPROGRESS) {
-				bbs_warning("Aborting connection to %s:%d (timed out after %d second%s)\n", ip, port, option_connect_timeout, ESS(option_connect_timeout));
+				bbs_notice("Aborting connection to %s:%d (timed out after %d second%s)\n", ip, port, option_connect_timeout, ESS(option_connect_timeout));
 			} else {
 				bbs_error("connect: %s\n", strerror(errno));
 			}
@@ -632,7 +635,7 @@ int bbs_timed_accept(int socket, int ms, const char *ip)
 			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
 			bbs_debug(1, "Accepting new TCP connection from %s\n", new_ip);
 			if (!strlen_zero(ip) && strcmp(ip, new_ip)) {
-				bbs_warning("Rejecting connection from %s (not from %s)\n", new_ip, ip);
+				bbs_client_err("Rejecting connection from %s (not from %s)\n", new_ip, ip);
 				close(sfd);
 				return -1;
 			}
@@ -2514,7 +2517,11 @@ static ssize_t full_write(struct bbs_node *node, struct pollfd *pfd, int fd, con
 		 * In this particular case, a return value of 0 is logically
 		 * interpreted as a total failure and should result in disconnect. */
 		if (errno) { /* Not all nonpos returns are errors. Don't log spurious error for non-error branches (e.g. Exceptional activity, not writable) */
-			bbs_error("Failed to fully write %lu bytes to fd %d: %s\n", len, fd, strerror(errno));
+			if (errno == EPIPE) {
+				bbs_client_err("Failed to fully write %lu bytes to fd %d: %s\n", len, fd, strerror(errno));
+			} else {
+				bbs_warning("Failed to fully write %lu bytes to fd %d: %s\n", len, fd, strerror(errno));
+			}
 		}
 		return -1;
 	}
@@ -3051,7 +3058,7 @@ int bbs_node_up_one_line(struct bbs_node *node)
 		}
 		return bbs_node_set_pos(node, row, col);
 	}
-	bbs_warning("Unable to move terminal up one line (terminal does not support relevant ANSI escape sequences)\n");
+	bbs_client_err("Unable to move terminal up one line (terminal does not support relevant ANSI escape sequences)\n");
 	return 0; /* Don't return -1, or that could be interpreted as a node disconnect */
 }
 

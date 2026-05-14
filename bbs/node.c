@@ -1656,7 +1656,7 @@ static int __node_read_cursor_pos(struct bbs_node *node, int timeout, int *restr
 		return 0;
 	}
 	if (parse_cursor_pos(buf, row, col)) {
-		bbs_warning("Received invalid cursor position response\n");
+		bbs_client_err("Received invalid cursor position response\n");
 		return 0;
 	}
 	bbs_debug(3, "Cursor position response: row %d, col %d\n", *row, *col);

@@ -1164,7 +1164,7 @@ static int load_config(void)
 	struct bbs_config *cfg = bbs_config_load("mod_chanserv.conf", 0);
 
 	if (!cfg) {
-		bbs_error("mod_chanserv.conf is missing, module will decline to load\n");
+		bbs_notice("mod_chanserv.conf is missing, module will decline to load\n");
 		return -1;
 	}
 

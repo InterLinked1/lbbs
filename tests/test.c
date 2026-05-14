@@ -1131,7 +1131,7 @@ static void __sigchld_handler(int num)
 				write(notifypfd[1], &c, 1);
 			}
 		} else {
-			bbs_warning("No child process exited?\n");
+			bbs_debug(1, "No child process exited?\n"); /* This often happens when we call other programs in the test modules using system() under the hood */
 		}
 	}
 }

@@ -426,7 +426,7 @@ static void *ftp_handler(void *varg)
 			}
 		} else if (!node->user && !bbs_transfer_operation_allowed(node, TRANSFER_ACCESS, NULL)) {
 			/* All subsequent commands require authentication */
-			bbs_warning("Node %d issued FTP %s without authentication\n", node->id, command);
+			bbs_client_err("Node %d issued FTP %s without authentication\n", node->id, command);
 			res = ftp_write(ftp, 530, "Authentication Required\r\n");
 		} else if (!strcasecmp(command, "CWD")) { /* Change working directory */
 			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));

@@ -296,7 +296,7 @@ static int load_module(void)
 	 * But if it exists, /etc/spamassassin is bound to exist, so use that as a proxy.
 	 * Don't bother loading if SpamAssassin isn't even on the system. */
 	if (!bbs_file_exists(CONFIG_FILE)) {
-		bbs_error("%s doesn't exist, declining to load\n", CONFIG_FILE);
+		bbs_missing_config_err("%s doesn't exist, declining to load\n", CONFIG_FILE);
 		return -1;
 	}
 
