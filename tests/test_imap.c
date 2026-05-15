@@ -379,6 +379,11 @@ static int run(void)
 	SWRITE(client1, "a33 UID SEARCH LARGER 20 SEEN HEADER \"Content-Type\" \"plain\" BODY \"test\" OR OR SMALLER 200000 NOT FROM \"John Smith\" NOT FROM \"Paul Smith\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "a33 OK UID SEARCH");
 
+	/* This is equivalent to the simple search with all options enabled in Mozilla clients (Sender/Recipients/Subject/Body)
+	 * Here, we only test that this is recognized as syntatically valid. */
+	SWRITE(client1, "a33b UID SEARCH UNDELETED (OR (OR (OR FROM \"John Smith\" OR TO \"John Smith\" HEADER CC \"John Smith\") SUBJECT \"John Smith\") BODY \"John Smith\")" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "a33b OK UID SEARCH");
+
 	/* Keywords (custom flags) */
 	SWRITE(client1, "a34 STORE 1 +FLAGS ($label1)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label1");

@@ -201,7 +201,7 @@ static void imap_search_free(struct imap_search_keys *skeys)
 	struct imap_search_key *skey;
 
 	while ((skey = RWLIST_REMOVE_HEAD(skeys, entry))) {
-		if (skey->type == IMAP_SEARCH_OR || skey->type == IMAP_SEARCH_NOT) {
+		if (skey->type == IMAP_SEARCH_OR || skey->type == IMAP_SEARCH_AND || skey->type == IMAP_SEARCH_NOT) {
 			imap_search_free(skey->child.keys);
 			free(skey->child.keys);
 		}
@@ -441,23 +441,63 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 
 		/* Need to parse two strings from this, not just one */
 		if (!strcasecmp(next, "HEADER")) {
-			begin = *s + 1; /* Skip opening " */
-			begin = strchr(begin, '"');
-			if (!begin) {
-				bbs_client_err("Missing end quote for HEADER arg1\n");
-				return -1;
+			char *tmp, *hdrval;
+			char *origbegin = *s;
+			/* Since SEARCH_PARSE_STRING expects its entire argument in one either quoted or unquoted argument,
+			 * to use it we would need to remove any intermediate quotes while keeping outer quotes intact.
+			 * "Cc" "Tom" -> "Cc Tom"
+			 * CC "Tom" -> "CC Tom"
+			 *
+			 * This last case is more troublesome, since we would need to add a quote.
+			 * As such, we handle HEADER specially without using SEARCH_PARSE_STRING
+			 * (and we already do most of what that macro does anyways).
+			 */
+			if (**s == '"') {
+				begin = *s + 1; /* Skip opening " */
+				tmp = strchr(begin, '"');
+				if (!tmp) {
+					bbs_client_err("Missing end quote for HEADER arg1\n");
+					return -1;
+				}
+				*tmp++ = ' '; /* Don't null terminate, we need to be able to continue through the string. */
+			} else {
+				begin = *s;
+				tmp = strchr(*s, ' ');
+				if (!tmp) {
+					bbs_client_err("HEADER specified with header key but missing value\n");
+					return -1;
+				}
+				tmp++;
 			}
-			*begin++ = ' '; /* Don't null terminate, we need to be able to continue through the string. */
-			begin = strchr(begin, '"');
+			/* Strip opening quotes for header value, if present */
+			hdrval = strchr(tmp, '"');
 			/* There should be a "" for empty arg2, but the quotes should still be there */
-			if (!begin) {
+			if (!hdrval) {
 				bbs_client_err("Missing opening quote for HEADER arg2\n");
 				return -1;
 			}
-			*begin = ' ';
-		}
-
-		if (!strcasecmp(next, "ALL")) { /* This is only first so the macros can all use else if, not because it's particularly common. */
+			*hdrval = ' ';
+			next = strchr(hdrval, '"');
+			if (next) {
+				*next = '\0';
+				*s = next + 1;
+			} else {
+				*s = NULL;
+			}
+			if (*origbegin != '"') {
+				/* This is the case where the header name is not quoted but the header value is,
+				 * e.g. CC "Tom"
+				 * It is now Cc  Tom
+				 * Now that it's null-terminated, we need to remove the duplicate space in the middle separating the header name/value. */
+				memmove(hdrval, hdrval + 1, strlen(hdrval + 1) + 1); /* Shift the remainder of the string, including the NUL, forward one so there's only one space */
+			}
+			nk = imap_search_add(skeys, IMAP_SEARCH_HEADER);
+			if (!nk) {
+				return -1;
+			}
+			nk->child.string = begin;
+			listsize++;
+		} else if (!strcasecmp(next, "ALL")) { /* This is only first so the macros can all use else if, not because it's particularly common. */
 			/* Default */
 		} /* else: */
 		SEARCH_PARSE_FLAG(ANSWERED)
@@ -495,6 +535,7 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 		SEARCH_PARSE_STRING(SENTSINCE)
 		SEARCH_PARSE_STRING(SINCE)
 		SEARCH_PARSE_STRING(SUBJECT)
+		SEARCH_PARSE_STRING(TO)
 		SEARCH_PARSE_STRING(TEXT)
 		SEARCH_PARSE_RECURSE(OR)
 		SEARCH_PARSE_RECURSE(NOT)
