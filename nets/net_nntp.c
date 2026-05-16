@@ -19,6 +19,7 @@
  * \note Supports RFC 4642 STARTTLS
  * \note Supports RFC 4643 AUTHINFO
  * \note Supports RFC 6048 LIST extensions
+ * \note Supports RFC 8054 COMPRESS DEFLATE
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -2174,18 +2175,26 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		command = strsep(&s, " ");
 		REQUIRE_ARGS(command);
 		if (!strcasecmp(command, "READER")) {
-			nntp->mode = NNTP_MODE_READER;
-			nntp_send(nntp, 200, "Reader mode, posting permitted");
+			if (!bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) { /* RFC 8054 2.2.2: MUST NOT advertise MODE-READER after compression activated */
+				nntp->mode = NNTP_MODE_READER;
+				nntp_send(nntp, 200, "Reader mode, posting permitted");
+			} else {
+				nntp_send(nntp, 502, "MODE-READER cannot be activated after compression");
+			}
 		} else {
 			bbs_error("Unknown mode: %s\n", command);
+			nntp_send(nntp, 502, "Unknown mode");
 		}
 	} else if (!strcasecmp(command, "CAPABILITIES")) {
 		/* This is very reminiscent of the POP3 CAPABILITIES command: */
 		nntp_send(nntp, 101, "Capability list:");
 		_nntp_send(nntp, "VERSION 2\r\n"); /* Must be first */
 		_nntp_send(nntp, "IMPLEMENTATION %s\r\n", BBS_SHORTNAME);
-		if (!nntp->node->secure) {
-			_nntp_send(nntp, "STARTTLS\r\n");
+		if (!bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
+			if (!nntp->node->secure) {
+				_nntp_send(nntp, "STARTTLS\r\n");
+			}
+			_nntp_send(nntp, "COMPRESS DEFLATE\r\n");
 		}
 		/* Don't advertise MODE-READER, just READER */
 		if (nntp->mode == NNTP_MODE_READER) { /* Reader mode */
@@ -2193,7 +2202,9 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			_nntp_send(nntp, "POST\r\n");
 		} else { /* Transit mode */
 			_nntp_send(nntp, "IHAVE\r\n");
-			_nntp_send(nntp, "MODE-READER\r\n");
+			if (!bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) { /* RFC 8054 2.2.2: MUST NOT advertise MODE-READER after compression activated */
+				_nntp_send(nntp, "MODE-READER\r\n");
+			}
 		}
 		_nntp_send(nntp, "HDR\r\n");
 		_nntp_send(nntp, "XPAT\r\n");
@@ -2209,6 +2220,9 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		REQUIRE_NO_ARGS(s);
 		if (!ssl_available()) {
 			nntp_send(nntp, 580, "STARTTLS may not be used");
+		} else if (bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
+			/* RFC 8054 2.2.2: MUST reply with 502 if STARTTLS received while compression already active */
+			nntp_send(nntp, 502, "STARTTLS may not be activated after COMPRESS");
 		} else if (!nntp->node->secure) {
 			nntp_send(nntp, 382, "Ready to start TLS");
 			/* RFC 4642 */
@@ -2221,6 +2235,35 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			bbs_readline_flush(rldata); /* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade */
 		} else {
 			nntp_send(nntp, 502, "Already using TLS");
+		}
+	} else if (!strcasecmp(command, "COMPRESS")) {
+		REQUIRE_ARGS(s);
+		if (!strcasecmp(s, "DEFLATE")) {
+			if (!deflate_compression_available()) {
+				nntp_send(nntp, 403, "Compression unavailable");
+			} else if (bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
+				nntp_send(nntp, 502, "DEFLATE already enabled");
+			} else if (!bbs_io_transform_possible(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
+				nntp_send(nntp, 403, "Can't enable compression");
+			} else {
+				/* Go ahead and enable it */
+				int orig_wfd = nntp->node->wfd;
+				int err = bbs_io_transform_setup(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION, TRANSFORM_SERVER, &nntp->node->rfd, &nntp->node->wfd, NULL);
+				if (err) {
+					nntp_send(nntp, 403, "Can't enable compression");
+				} else {
+					/* We still need to reply with an OK before compression is active.
+					 * Since node->wfd has already been updated, manually write to the original file descriptor (which now sits post-compression).
+					 * Normally, this would be a bad idea, since we'd intersperse uncompressed data with compressed data managed by zlib,
+					 * but this should be before we've sent anything compressed. */
+					_nntp_send_fd(nntp, orig_wfd, "206 Compression active\r\n");
+					/* XXX As with IMAP, the RFC optionally recommends flushing dictionaries at particular points, though we do not at the moment.
+					 * Unlike IMAP, NNTP is less likely to encounter large uncompressible blobs (e.g. attachments).
+					 * An additional suggestion is to flush the dictionary when switching between public (Usenet) and private groups/articles. */
+				}
+			}
+		} else {
+			nntp_send(nntp, 503, "Unknown compression method");
 		}
 	} else if (!strcasecmp(command, "DATE")) {
 		char datestr[15];
@@ -2239,6 +2282,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		_nntp_send(nntp, " AUTHINFO USER name|PASS password\r\n");
 		_nntp_send(nntp, " BODY [message-ID|number]\r\n");
 		_nntp_send(nntp, " CAPABILITIES\r\n");
+		_nntp_send(nntp, " COMPRESS DEFLATE\r\n");
 		_nntp_send(nntp, " DATE\r\n");
 		_nntp_send(nntp, " GROUP newsgroup\r\n");
 		_nntp_send(nntp, " HDR header [message-ID|range]\r\n");
@@ -2296,16 +2340,18 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		RECHECK_TRANSIT_ACL(nntp);
 	} else if ((nntp->node->secure || !require_secure_login) && !strcasecmp(command, "AUTHINFO")) {
 		/* RFC 4643 AUTHINFO */
-		/* If this command is not implemented and we send a 480,
-		 * Thunderbirds will just go into a loop sending AUTH INFO commands, forever,
+		/* If this command is not implemented and we send a 480, Mozilla will just go into a loop sending AUTH INFO commands, forever,
 		 * even if AUTHINFO isn't listed as one of our capabilities.
-		 * But RFC 4643 does say we MUST NOT response to an AUTHINFO with a 480, so that's probably why...
+		 * But RFC 4643 does say we MUST NOT respond to an AUTHINFO with a 480, so that's probably why...
 		 */
 		int res;
 		char *pass, *domain;
 
 		if (bbs_user_is_registered(nntp->node->user)) {
 			nntp_send(nntp, 502, "Already authenticated"); /*! \todo Proper numeric response code? */
+			return 0;
+		} else if (bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
+			nntp_send(nntp, 502, "AUTHINFO not allowed after COMPRESS"); /* RFC 8054 2.2.2 */
 			return 0;
 		}
 

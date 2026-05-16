@@ -31,6 +31,7 @@
 #define NNTP_MODE_TRANSIT 0
 #define NNTP_MODE_READER 1
 
+#define _nntp_send_fd(nntp, fd, fmt, ...) ({ bbs_debug(4, "%p <= " fmt, nntp, ## __VA_ARGS__); bbs_node_fd_writef(nntp->node, fd, fmt, ## __VA_ARGS__); })
 #define _nntp_send(nntp, fmt, ...) bbs_debug(4, "%p <= " fmt, nntp, ## __VA_ARGS__); bbs_node_fd_writef(nntp->node, nntp->node->wfd, fmt, ## __VA_ARGS__);
 #define nntp_send(nntp, code, fmt, ...) _nntp_send(nntp, "%d " fmt "\r\n", code, ## __VA_ARGS__)
 
