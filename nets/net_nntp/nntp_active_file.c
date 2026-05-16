@@ -442,6 +442,7 @@ static int active_file_group_list_full(struct nntp_session *nntp, enum list_cate
 
 	switch (listcat) {
 		case LIST_ACTIVE:
+		case LIST_COUNTS:
 			nntp_send(nntp, newgroups ? 231 : 215, "Newsgroup listing follows in form \"group high low status\"");
 			break;
 		case LIST_ACTIVE_TIMES:
@@ -490,6 +491,10 @@ static int active_file_group_list_full(struct nntp_session *nntp, enum list_cate
 				 * to be lower than the low water mark. */
 				FIX_EMPTY_GROUP_STATS(g.high, g.low, g.count);
 				_nntp_send(nntp, "%s %d %d %c\r\n", group, g.high, g.low, g.status);
+				break;
+			case LIST_COUNTS:
+				FIX_EMPTY_GROUP_STATS(g.high, g.low, g.count);
+				_nntp_send(nntp, "%s %d %d %d %c\r\n", group, g.high, g.low, g.count, g.status);
 				break;
 			case LIST_ACTIVE_TIMES:
 				_nntp_send(nntp, "%s %lu %s\r\n", group, g.created, g.creator);

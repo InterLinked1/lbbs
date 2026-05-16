@@ -205,6 +205,10 @@ static int run(void)
 	CLIENT_EXPECT(client1, "215");
 	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test 1 1 y"); /* Should appear last alphabetically */
 
+	SWRITE(client1, "LIST COUNTS\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "215");
+	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test 1 1 1 y"); /* Should appear last alphabetically */
+
 	SWRITE(client1, "LIST ACTIVE.TIMES *test\r\n"); /* specify wildmat that will only match one group */
 	CLIENT_EXPECT(client1, "215");
 	CLIENT_EXPECT(client1, "Sysop");
@@ -215,12 +219,25 @@ static int run(void)
 
 	SWRITE(client1, "LIST DISTRIB.PATS\r\n");
 	CLIENT_EXPECT(client1, "215");
-	CLIENT_EXPECT_EVENTUALLY(client1, ".");
+	CLIENT_EXPECT_EVENTUALLY(client1, "local.*");
+
+	SWRITE(client1, "LIST DISTRIBUTIONS\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "215");
+	CLIENT_EXPECT_EVENTUALLY(client1, "local\t");
+
+	SWRITE(client1, "LIST MODERATORS\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "*:newsmoderator");
+
+	SWRITE(client1, "LIST MOTD\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "that happens to be multiline.");
+
+	SWRITE(client1, "LIST SUBSCRIPTIONS\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test");
 
 	/* Try reading that article: it should now exist. */
 	GROUP_EXPECT(client1, "misc.test", 1, 1, 1);
 	SWRITE(client1, "HEAD 1\r\n");
-	CLIENT_EXPECT(client1, "221");
+	CLIENT_EXPECT_EVENTUALLY(client1, "221");
 	CLIENT_EXPECT(client1, TEST_EMAIL); /* Our email should be in the response data */
 
 	SWRITE(client1, "NEWNEWS misc.* 29990101 123059 GMT\r\n");

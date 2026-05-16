@@ -95,6 +95,168 @@ static int check_identity = 1;
 static unsigned int max_post_groups = 25;
 
 static struct stringlist outpeers;
+static struct stringlist subscriptions; /* LIST SUBSCRIPTIONS */
+
+static char motd[NNTP_MAX_LINE_LENGTH + 1]; /* Note: This can be a multi-line message, so the protocol does not limit this to a certain size */
+
+struct distrib_pat {
+	const char *wildmat;
+	const char *value;
+	int weight;
+	RWLIST_ENTRY(distrib_pat) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(distrib_pats, distrib_pat);
+
+struct distribution {
+	const char *name;
+	const char *description;
+	RWLIST_ENTRY(distribution) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(distributions, distribution);
+
+struct moderator {
+	const char *wildmat;
+	const char *template; /* Submission template */
+	RWLIST_ENTRY(moderator) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(moderators, moderator);
+
+static int add_distrib_pat(const char *key)
+{
+	char buf[NNTP_BUFSIZ];
+	struct distrib_pat *p;
+	size_t wildmatlen, valuelen;
+	char *weightstr, *wildmat, *value;
+	int weight;
+
+	safe_strncpy(buf, key, sizeof(buf));
+	value = buf;
+	weightstr = strsep(&value, ":");
+	wildmat = strsep(&value, ":");
+
+	if (strlen_zero(weightstr) || strlen_zero(wildmat) || strlen_zero(value)) {
+		bbs_error("Invalid distribution pattern '%s'\n", key);
+		return -1;
+	}
+
+	weight = atoi(weightstr);
+	if (!weight && *weightstr != '0') {
+		bbs_error("Invalid distribution pattern weight '%s'\n", weightstr);
+		return -1;
+	}
+
+	wildmatlen = strlen(wildmat);
+	valuelen = strlen(value);
+
+	p = calloc(1, sizeof(*p) + wildmatlen + valuelen + 2);
+	if (ALLOC_FAILURE(p)) {
+		return -1;
+	}
+	strcpy(p->data, wildmat); /* Safe */
+	p->wildmat = p->data;
+	strcpy(p->data + wildmatlen + 1, value); /* Safe */
+	p->value = p->data + wildmatlen + 1;
+	p->weight = weight;
+	RWLIST_INSERT_TAIL(&distrib_pats, p, entry);
+	return 0;
+}
+
+static int add_distribution(const char *name, const char *description)
+{
+	struct distribution *d;
+	size_t namelen, desclen;
+
+	RWLIST_TRAVERSE(&distributions, d, entry) {
+		if (!strcmp(d->name, name)) {
+			bbs_error("Duplicate distribution '%s'\n", name);
+			return -1;
+		}
+	}
+
+	namelen = strlen(name);
+	desclen = strlen(description);
+
+	d = calloc(1, sizeof(*d) + namelen + desclen + 2);
+	if (ALLOC_FAILURE(d)) {
+		return -1;
+	}
+	strcpy(d->data, name); /* Safe */
+	d->name = d->data;
+	strcpy(d->data + namelen + 1, description); /* Safe */
+	d->description = d->data + namelen + 1;
+	RWLIST_INSERT_TAIL(&distributions, d, entry);
+	return 0;
+}
+
+static int distribution_exists(const char *name)
+{
+	struct distribution *d;
+	RWLIST_TRAVERSE(&distributions, d, entry) {
+		if (!strcmp(d->name, name)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void check_distributions(void)
+{
+	struct distrib_pat *p;
+	/* RFC 6048 2.3.2
+	 * All distributions present in distrib.pats list should also be described in the distributions list.
+	 * If that is not the case, log a warning.
+	 * (Note the RFC explicitly says the distributions list can describe distributions not present in distrib.pats) */
+	RWLIST_TRAVERSE(&distrib_pats, p, entry) {
+		if (!distribution_exists(p->value)) {
+			bbs_warning("DISTRIB.PATS includes distribution '%s' which is not included in [distributions]\n", p->value);
+		}
+	}
+}
+
+static int add_moderator(const char *wildmat, const char *template)
+{
+	struct moderator *m;
+	size_t patlen, templatelen;
+	const char *tmp;
+
+	/* First, check for invalid submission template.
+	 * Per RFC 6048 2.4.2, % is not allowed to appear in the template by itself,
+	 * except as part of %s, or followed by another % (in which case it is an escape).
+	 *
+	 * We impose no further restrictions on the submission template.
+	 * While RFC 6048 2.4.3 implies that newsgroups differing in name only by . or -
+	 * can't use %s in templates, this is not quite true; additionally, %s does
+	 * not have to be the sole user part. */
+	for (tmp = template; *tmp; tmp++) {
+		if (*tmp == '%') {
+			tmp++;
+			if (*tmp != 's' && *tmp != '%') {
+				bbs_error("Malformed moderator submission template '%s'\n", template);
+				return -1;
+			}
+		}
+	}
+
+	patlen = strlen(wildmat);
+	templatelen = strlen(template);
+
+	m = calloc(1, sizeof(*m) + patlen + templatelen + 2);
+	if (ALLOC_FAILURE(m)) {
+		return -1;
+	}
+	strcpy(m->data, wildmat); /* Safe */
+	m->wildmat = m->data;
+	strcpy(m->data + patlen + 1, template); /* Safe */
+	m->template = m->data + patlen + 1;
+	RWLIST_INSERT_TAIL(&moderators, m, entry); /* Tail insert is especially critical here as the order of the moderators list is significant */
+	return 0;
+}
 
 /* =============== Begin ACL Code =============== */
 
@@ -1162,16 +1324,26 @@ static enum list_category parse_list_category(const char *s)
 		return LIST_ACTIVE | LIST_PER_NEWSGROUP; /* RFC 2980 2.1.2 states that "LIST ACTIVE" is the same as "LIST" (with no keyword modifier) */
 	} else if (!strcasecmp(s, "ACTIVE")) {
 		return LIST_ACTIVE | LIST_PER_NEWSGROUP;
+	} else if (!strcasecmp(s, "COUNTS")) {
+		return LIST_COUNTS | LIST_PER_NEWSGROUP;
 	} else if (!strcasecmp(s, "ACTIVE.TIMES")) {
 		return LIST_ACTIVE_TIMES | LIST_PER_NEWSGROUP;
 	} else if (!strcasecmp(s, "NEWSGROUPS")) {
 		return LIST_NEWSGROUPS | LIST_PER_NEWSGROUP;
-	} else if (!strcasecmp(s, "DISTRIB.PATS")) {
-		return LIST_DISTRIB_PATS;
+	} else if (!strcasecmp(s, "SUBSCRIPTIONS")) {
+		return LIST_SUBSCRIPTIONS; /* This is newsgroup-based, but not per newsgroup since it's a hardcoded list */
 	} else if (!strcasecmp(s, "OVERVIEW.FMT")) {
 		return LIST_OVERVIEW_FMT;
 	} else if (!strcasecmp(s, "HEADERS")) {
 		return LIST_HEADERS;
+	} else if (!strcasecmp(s, "DISTRIB.PATS")) {
+		return LIST_DISTRIB_PATS;
+	} else if (!strcasecmp(s, "DISTRIBUTIONS")) {
+		return LIST_DISTRIBUTIONS;
+	} else if (!strcasecmp(s, "MODERATORS")) {
+		return LIST_MODERATORS;
+	} else if (!strcasecmp(s, "MOTD")) {
+		return LIST_MOTD;
 	} else {
 		/*! \todo Add additional categories as specified in RFC 2980 and RFC 6048 */
 		bbs_warning("Unknown LIST category '%s'\n", s);
@@ -1234,54 +1406,58 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 			}
 		}
 		return spool_overview_header_list(nntp, listcat, argument);
-	}
+	} else if (listcat & LIST_SUBSCRIPTIONS) {
+		const char *s;
+		struct stringitem *i = NULL;
 
-	if (listcat & LIST_DISTRIB_PATS) {
+		nntp_send(nntp, 215, "%s", "Recommended subscriptions in form \"group\"");
+		RWLIST_RDLOCK(&subscriptions);
+		while ((s = stringlist_next(&subscriptions, &i))) {
+			_nntp_send(nntp, "%s\r\n", s);
+		}
+		RWLIST_UNLOCK(&subscriptions);
+	} else if (listcat & LIST_DISTRIB_PATS) {
+		struct distrib_pat *p;
 		/* distrib.pats list assists clients to choose a value for the Distribution header of an article being posted.
 		 * <weight> <wildmat> <value for Distribution header content>
-		 * Client selects highest-weighted line with a matching wildmat. */
-		/* Note: Eternal September just responds with the 2nd line here, so for now we just do that as well instead of pulling from a file: */
-		nntp_send(nntp, 215, "%s", "Default distributions in form \"weight:group-pattern:distribution\"\r\n10:local.*:local");
-		_nntp_send(nntp, ".\r\n");
-		return 0;
-	}
-
-#if 0
-	FILE *fp;
-	const char *filename = NULL;
-	/*! \todo no code gets here currently, but if we had files for some of these (e.g. LIST MODERATORS) we may use in the future */
-
-	filename = NULL;
-	if (!filename) {
-		nntp_send(nntp, 503, "Data item not available");
-		return 1;
-	}
-
-	/* Before starting a 2xx response, try opening the file if there is one, so we can abort early on failure */
-	fp = fopen(filename, "r");
-	if (!fp) {
-		bbs_error("Failed to open %s: %s\n", filename, strerror(errno));
-		nntp_send(nntp, 503, "Data item not available");
-		return 1;
-	}
-	/* nntp_send(nntp, 215, "%s", resp); */
-	if (fp) {
-		int lineno = 0;
-		char *group, buf[NNTP_MAX_LINE_LENGTH + 1];
-		while ((fgets(buf, sizeof(buf), fp))) {
-			bbs_term_line(line);
-			/* We don't care what the rest of the line is, if the group matches, send it to the client
-			 * This file isn't newsgroup-based, so no ACL checks needed. */
-			_nntp_send(nntp, "%s %s\r\n", group, line);
+		 * The highest-weighted line with a matching wildmat is the value that gets used. */
+		nntp_send(nntp, 215, "%s", "Default distributions in form \"weight:group-pattern:distribution\"");
+		RWLIST_RDLOCK(&distrib_pats);
+		RWLIST_TRAVERSE(&distrib_pats, p, entry) {
+			_nntp_send(nntp, "%d:%s:%s\r\n", p->weight, p->wildmat, p->value);
 		}
-		fclose(fp);
-	}
-	if (res < 0) {
-		return res;
+		RWLIST_UNLOCK(&distrib_pats);
+	} else if (listcat & LIST_DISTRIBUTIONS) {
+		struct distribution *d;
+		nntp_send(nntp, 215, "%s", "Default distributions in form \"distribution description\"");
+		RWLIST_RDLOCK(&distributions);
+		RWLIST_TRAVERSE(&distributions, d, entry) {
+			_nntp_send(nntp, "%s\t%s\r\n", d->name, d->description);
+		}
+		RWLIST_UNLOCK(&distributions);
+	} else if (listcat & LIST_MODERATORS) {
+		struct moderator *m;
+		nntp_send(nntp, 215, "%s", "Newsgroup moderators in form \"group-pattern:submission-template\"");
+		RWLIST_RDLOCK(&moderators);
+		RWLIST_TRAVERSE(&moderators, m, entry) {
+			_nntp_send(nntp, "%s:%s\r\n", m->wildmat, m->template);
+		}
+		RWLIST_UNLOCK(&moderators);
+	} else if (listcat & LIST_MOTD) {
+		if (!s_strlen_zero(motd)) {
+			nntp_send(nntp, 215, "%s", "Message of the day text in UTF-8");
+			_nntp_send(nntp, "%s\r\n", motd);
+		} else {
+			nntp_send(nntp, 503, "No message of the day available");
+			return 0;
+		}
+	} else {
+		/* If we got here, something went wrong */
+		bbs_error("Couldn't generate response for LIST %s?\n", keyword);
+		return -1;
 	}
 	_nntp_send(nntp, ".\r\n");
-#endif
-	return res;
+	return 0;
 }
 
 #define REQUIRE_READER() \
@@ -1560,7 +1736,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		}
 		_nntp_send(nntp, "HDR\r\n");
 		_nntp_send(nntp, "XPAT\r\n");
-		_nntp_send(nntp, "LIST ACTIVE ACTIVE.TIMES DISTRIB.PATS HEADERS NEWSGROUPS OVERVIEW.FMT\r\n");
+		_nntp_send(nntp, "LIST ACTIVE ACTIVE.TIMES COUNTS DISTRIB.PATS DISTRIBUTIONS HEADERS MODERATORS MOTD NEWSGROUPS OVERVIEW.FMT SUBSCRIPTIONS\r\n");
 		_nntp_send(nntp, "OVER MSGID\r\n");
 		_nntp_send(nntp, "XSECRET\r\n");
 		if ((nntp->node->secure || !require_secure_login) && !bbs_user_is_registered(nntp->node->user)) {
@@ -1609,7 +1785,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		_nntp_send(nntp, " HELP\r\n");
 		_nntp_send(nntp, " IHAVE message-ID\r\n");
 		_nntp_send(nntp, " LAST\r\n");
-		_nntp_send(nntp, " LIST [ACTIVE [wildmat]|ACTIVE.TIMES [wildmat]|DISTRIB.PATS|NEWSGROUPS [wildmat]|HEADERS [MSGID|RANGE]|OVERVIEW.FMT\r\n");
+		_nntp_send(nntp, " LIST [ACTIVE [wildmat]|ACTIVE.TIMES [wildmat]|COUNT [wildmat]|DISTRIB.PATS|DISTRIBUTIONS|MODERATORS|MOTD|NEWSGROUPS [wildmat]|HEADERS [MSGID|RANGE]|OVERVIEW.FMT|SUBSCRIPTIONS [wildmat]]\r\n");
 		_nntp_send(nntp, " LISTGROUP [newsgroup [range]]\r\n");
 		_nntp_send(nntp, " MODE READER\r\n");
 		_nntp_send(nntp, " NEWGROUPS [yy]yymmdd hhmmss [GMT]\r\n");
@@ -2224,7 +2400,13 @@ static int load_config(void)
 
 	RWLIST_WRLOCK(&acls);
 	RWLIST_WRLOCK(&inpeers);
+	RWLIST_WRLOCK(&distributions);
+	RWLIST_WRLOCK(&distrib_pats);
+	RWLIST_WRLOCK(&moderators);
+
 	RWLIST_WRLOCK(&outpeers);
+	RWLIST_WRLOCK(&subscriptions);
+
 	while ((section = bbs_config_walk(cfg, section))) {
 		/* Skip sections already processed above */
 		SKIP_SECTION("general");
@@ -2241,6 +2423,33 @@ static int load_config(void)
 		} else if (!strcasecmp(bbs_config_section_name(section), "relayto")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				stringlist_push(&outpeers, bbs_keyval_val(keyval));
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "motd")) {
+			char *motdpos = motd;
+			size_t motdleft = sizeof(motd);
+			motd[0] = '\0'; /* Reset */
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				SAFE_FAST_APPEND(motd, sizeof(motd), motdpos, motdleft, "%s%s", motdpos > motd ? "\r\n" : "", bbs_keyval_val(keyval));
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "subscriptions")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				if (stringlist_contains(&subscriptions, bbs_keyval_key(keyval))) {
+					bbs_warning("Duplicate subscription '%s'\n", bbs_keyval_key(keyval));
+				} else {
+					stringlist_push(&subscriptions, bbs_keyval_key(keyval));
+				}
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "distrib.pats")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_distrib_pat(bbs_keyval_key(keyval));
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "distributions")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_distribution(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "moderators")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_moderator(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}
 		} else {
 			/* The only config section type that isn't defined by the section name is user ACLs */
@@ -2289,9 +2498,17 @@ static int load_config(void)
 			}
 		}
 	}
+
+	check_distributions();
+
 	RWLIST_UNLOCK(&acls);
 	RWLIST_UNLOCK(&inpeers);
+	RWLIST_UNLOCK(&distributions);
+	RWLIST_UNLOCK(&distrib_pats);
+	RWLIST_UNLOCK(&moderators);
+
 	RWLIST_UNLOCK(&outpeers);
+	RWLIST_UNLOCK(&subscriptions);
 
 	bbs_config_unlock(cfg);
 	return 0;
@@ -2301,13 +2518,25 @@ static void cleanup_lists(void)
 {
 	RWLIST_WRLOCK_REMOVE_ALL(&acls, entry, free_acl);
 	RWLIST_WRLOCK_REMOVE_ALL(&inpeers, entry, free);
+	RWLIST_WRLOCK_REMOVE_ALL(&distributions, entry, free);
+	RWLIST_WRLOCK_REMOVE_ALL(&distrib_pats, entry, free);
+	RWLIST_WRLOCK_REMOVE_ALL(&moderators, entry, free);
+
 	stringlist_empty_destroy(&outpeers);
+	stringlist_empty_destroy(&subscriptions);
 }
 
 static int load_module(void)
 {
+	RWLIST_HEAD_INIT(&acls);
 	RWLIST_HEAD_INIT(&inpeers);
+	RWLIST_HEAD_INIT(&distributions);
+	RWLIST_HEAD_INIT(&distrib_pats);
+	RWLIST_HEAD_INIT(&moderators);
+
 	stringlist_init(&outpeers);
+	stringlist_init(&subscriptions);
+
 	if (load_config()) {
 		active_cleanup();
 		spool_cleanup();

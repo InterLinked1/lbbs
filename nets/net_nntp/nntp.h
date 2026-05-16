@@ -233,12 +233,17 @@ int active_group_info(const char *groupname, int *last, int *high, int *low, int
 
 enum list_category {
 	LIST_INVALID = 0,
-	LIST_ACTIVE = (1U << 0), /* Same as origina LIST command in RFC 977 (all permitted groups): <name> <high water mark> <low water mark> <posting permitted: y/n/m> */
-	LIST_ACTIVE_TIMES = (1U << 1), /* active.times list provides creation information: <name> <epoch time of creation> <creator, i.e. email address> */
-	LIST_NEWSGROUPS = (1U << 2), /* <name> <short description about purpose of the group> (groups for which information is unavailable may be omitted, i.e. may miss groups included in LIST ACTIVE) */
-	LIST_DISTRIB_PATS = (1U << 3), /* distrib.pats list assists clients to choose a value for the Distribution header of an article being posted. */
+	LIST_ACTIVE = (1U << 0), /* Same as original LIST command in RFC 977 (all permitted groups): <name> <high water mark> <low water mark> <posting permitted: y/n/m> */
+	LIST_COUNTS = (1U << 1), /* Same as LIST ACTIVE but with article count */
+	LIST_ACTIVE_TIMES = (1U << 2), /* active.times list provides creation information: <name> <epoch time of creation> <creator, i.e. email address> */
+	LIST_NEWSGROUPS = (1U << 3), /* <name> <short description about purpose of the group> (groups for which information is unavailable may be omitted, i.e. may miss groups included in LIST ACTIVE) */
 	LIST_OVERVIEW_FMT = (1U << 4), /* format of overview file */
 	LIST_HEADERS = (1U << 5), /* list headers supported for HDR */
+	LIST_DISTRIB_PATS = (1U << 6), /* distrib.pats list assists clients to choose a value for the Distribution header of an article being posted. */
+	LIST_DISTRIBUTIONS = (1U << 7), /* Distributions list (name and description of each distribution) */
+	LIST_MODERATORS = (1U << 8), /* Moderators list */
+	LIST_MOTD = (1U << 9), /* Message of the day */
+	LIST_SUBSCRIPTIONS = (1U << 10), /* Subscriptions (recommended newsgroups) */
 	LIST_PER_NEWSGROUP = (1U << 15), /* This LIST command is per-newsgroup */
 };
 
