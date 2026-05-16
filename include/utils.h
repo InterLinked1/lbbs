@@ -271,6 +271,14 @@ int __bbs_delete_file(const char *path, const char *file, int line, const char *
 FILE *bbs_mkftemp(char *template, mode_t mode);
 
 /*!
+ * \brief Open a FILE* from a file descriptor, dup'ing the file descriptor first so that the original fd is intact after fclose
+ * \param fd Original file descriptor
+ * \param mode Typically "r" or "w+"
+ * \returns FILE* handle on success, NULL on failure
+ */
+FILE *bbs_fdopen_duped(int fd, const char *mode);
+
+/*!
  * \brief Efficiently copy part (or all) of a file between two file descriptors
  * \param srcfd File descriptor from which to copy. Must be a regular file.
  * \param destfd Destination file descriptor. Must be a regular file.

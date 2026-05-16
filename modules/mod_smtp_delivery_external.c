@@ -2332,7 +2332,6 @@ static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int 
 		int prependlen = 0;
 		char timestamp[40];
 		FILE *fp;
-		int newfd;
 		time_t now = time(NULL);
 
 		/* Still prepend a Received header, but less descriptive than normal (don't include Authenticated sender) since we're relaying */
@@ -2349,12 +2348,7 @@ static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int 
 		 * in this call site, we get a FILE* from the file descriptor to pass along.
 		 * Since we want to close it afterwards, that means we need to dup first. */
 
-		newfd = dup(srcfd); /* Since we don't want to close the underlying file descriptor when we're done, we need to dup */
-		if (newfd < 0) {
-			bbs_error("Failed to dup(%d): %s\n", srcfd, strerror(errno));
-			return -1;
-		}
-		fp = fdopen(newfd, "r");
+		fp = bbs_fdopen_duped(srcfd, "r"); /* Since we don't want to close the underlying file descriptor when we're done, we need to dup */
 		if (!fp) {
 			bbs_error("Failed to open file descriptor %d as FILE: %s\n", srcfd, strerror(errno));
 			return -1;

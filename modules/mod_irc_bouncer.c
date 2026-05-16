@@ -1358,7 +1358,6 @@ static int handle_bouncer_reply(struct smtp_session *smtp, struct smtp_response 
 	struct bouncer_user *bu = NULL;
 	struct bouncer_channel *bc = NULL;
 	int just_joined = 0, created_client = 0;
-	int newfd;
 
 	UNUSED(from);
 	UNUSED(recipient);
@@ -1388,15 +1387,8 @@ static int handle_bouncer_reply(struct smtp_session *smtp, struct smtp_response 
 	 * with fclose, that also closes the underlying file descriptor.
 	 * There is an fdclose function, but it's non-POSIX.
 	 * The POSIX way of dealing with this is to call fdopen on a dup'd file descriptor. */
-	newfd = dup(srcfd);
-	if (newfd < 0) {
-		bbs_error("Failed to dup file descriptor %d: %s\n", srcfd, strerror(errno));
-		smtp_abort(resp, 452, 4.3.1, "Temporary system error");
-		return -1;
-	}
-	fp = fdopen(newfd, "r");
+	fp = bbs_fdopen_duped(srcfd, "r");
 	if (!fp) {
-		bbs_error("Failed to open file descriptor %d: %s\n", newfd, strerror(errno));
 		smtp_abort(resp, 452, 4.3.1, "Temporary system error");
 		return -1;
 	}

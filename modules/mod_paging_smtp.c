@@ -149,7 +149,6 @@ static int receive_emailed_page(struct smtp_session *smtp, struct smtp_response 
 	char buf[SMTP_MAX_BUFSIZE];
 	char subject[SMTP_MAX_BUFSIZE] = "";
 	char fromhdr[SMTP_MAX_BUFSIZE] = "";
-	int newfd;
 	struct dyn_str dstr;
 	struct bbs_paging_recipient recip;
 	struct bbs_paging_data data;
@@ -171,15 +170,8 @@ static int receive_emailed_page(struct smtp_session *smtp, struct smtp_response 
 		return 0; /* Not for us */
 	}
 
-	newfd = dup(srcfd);
-	if (newfd < 0) {
-		bbs_error("Failed to dup file descriptor %d: %s\n", srcfd, strerror(errno));
-		smtp_abort(resp, 452, 4.3.1, "Temporary system error");
-		return -1;
-	}
-	fp = fdopen(newfd, "r");
+	fp = bbs_fdopen_duped(srcfd, "r");
 	if (!fp) {
-		bbs_error("Failed to open file descriptor %d: %s\n", newfd, strerror(errno));
 		smtp_abort(resp, 452, 4.3.1, "Temporary system error");
 		return -1;
 	}

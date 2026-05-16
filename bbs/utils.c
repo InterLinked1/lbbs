@@ -919,6 +919,23 @@ FILE *bbs_mkftemp(char *template, mode_t mode)
 	return p;
 }
 
+FILE *bbs_fdopen_duped(int fd, const char *mode)
+{
+	FILE *fp;
+	int duped = dup(fd);
+	if (duped < 0) {
+		bbs_error("dup(%d) failed: %s\n", fd, strerror(errno));
+		return NULL;
+	}
+	fp = fdopen(duped, mode);
+	if (!fp) {
+		bbs_error("fdopen(%d) failed: %s\n", duped, strerror(errno));
+		close(duped);
+		return NULL;
+	}
+	return fp;
+}
+
 int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 {
 	int copied;
