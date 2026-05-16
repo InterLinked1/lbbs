@@ -41,7 +41,7 @@ struct group_info {
 	int high; /*!< Reported high water mark */
 	int low; /*!< Reported low water mark */
 	int count; /*!< Reported article count */
-	char status; /*!< Posting status (y/n/m) */
+	const char *status; /*!< Posting status (y/n/m/x/j/=other.group) */
 	time_t created; /*!< Epoch of group creation on this server */
 	const char *creator; /*!< Creator name or email */
 	const char *description; /*!< Group description */
@@ -51,6 +51,7 @@ struct article_group {
 	const char *name; /*!< The newsgroup name */
 	int article_num; /*!< To be assigned when assigning the article number */
 	BBS_LIST_ENTRY(article_group) entry;
+	unsigned int moderated:1;
 	char data[];
 };
 
@@ -59,12 +60,14 @@ BBS_LIST_HEAD_NOLOCK(article_groups, article_group);
 /*! \brief Article overview metadata */
 struct article_info {
 	char *newsgroups;
+	char *approved;
+	char *control;
 	char *expires;
 	/* As ordered for overview (fields 2-8) */
 	char *subject;
 	char *from;
 	char *date;
-	const char *messageid;
+	char *messageid;
 	char *references;
 	size_t bytes; /* This is the reported size of the article, rather than the actual size on disk (which can be larger when an article includes dot stuffed lines) */
 	int lines;
@@ -96,6 +99,7 @@ extern char newsdir[256];
 enum nntp_acl_action {
 	NNTP_ACL_READ,
 	NNTP_ACL_POST,
+	NNTP_ACL_APPROVE,
 	/* Could be extended for more granular control over operations (e.g. LIST, NEWNEWS, etc.) */
 };
 
@@ -228,8 +232,8 @@ int active_init(void);
 void active_cleanup(void);
 int active_group_create(struct group_info *g);
 int active_group_delete(const char *groupname);
-int active_group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, char status, const char *description);
-int active_group_info(const char *groupname, int *last, int *high, int *low, int *count, char *status, time_t *created, char *creator, size_t creatorlen, char *description, size_t descriplen);
+int active_group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, const char *status, const char *description);
+int active_group_info(const char *groupname, int *last, int *high, int *low, int *count, char *status, size_t statuslen, time_t *created, char *creator, size_t creatorlen, char *description, size_t descriplen);
 
 enum list_category {
 	LIST_INVALID = 0,

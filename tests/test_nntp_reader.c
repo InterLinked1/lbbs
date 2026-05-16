@@ -91,9 +91,12 @@ static int pre(void)
 {
 	test_preload_module("mod_mail.so");
 	test_load_module("net_nntp.so");
+	test_load_module("net_smtp.so");
+	test_load_module("mod_smtp_delivery_local.so");
 	test_load_module("mod_sysop.so"); /* For creating newsgroups */
 
 	TEST_ADD_CONFIG("mod_mail.conf");
+	TEST_ADD_CONFIG("net_smtp.conf");
 	TEST_ADD_CONFIG("net_nntp.conf");
 
 	TEST_RESET_MKDIR(TEST_MAIL_DIR);
@@ -111,6 +114,12 @@ static int create_groups(void)
 	NEW_NEWSGROUP(sockfd, "misc.empty", "A miscellaneous empty group", "Sysop", "y");
 	NEW_NEWSGROUP(sockfd, "misc.restricted", "A miscellaneous restricted group", "Sysop", "y");
 	NEW_NEWSGROUP(sockfd, "misc.crossposts", "A miscellaneous group of crossposts", "Sysop", "y");
+
+	NEW_NEWSGROUP(sockfd, "test.moderated", "A moderated group", "Sysop", "m");
+	NEW_NEWSGROUP(sockfd, "test.closed", "A closed group", "Sysop", "x");
+	NEW_NEWSGROUP(sockfd, "test.junk", "A junk group", "Sysop", "j");
+	NEW_NEWSGROUP(sockfd, "test.nolocal", "A nolocal group", "Sysop", "n");
+	NEW_NEWSGROUP(sockfd, "test.aliased", "An aliased group", "Sysop", "=misc.test");
 
 	close(sockfd);
 	return 0;
@@ -591,13 +600,45 @@ static int run(void)
 	SWRITE(client1, "BODY 17\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, ".." ENDL);
 
-	/* Try some things that should be denied by ACL */
+	/* Try some posts that should be rejected */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "misc.restricted", 440); /* Disallowed by post wildmat */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.closed", 441); /* Denied by 'x' status */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.junk", 441); /* Denied by 'j' status */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.nolocal", 441); /* Denied by 'n' status */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.aliased", 441); /* Denied by '=' status */
+	GROUP_EXPECT(client1, "test.moderated", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", -1); /* doesn't exist yet */
+	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "test.moderated"); /* Will be accepted but not posted to the group, but should appear in "moderator's" inbox */
+	GROUP_EXPECT(client1, "test.moderated", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1);
 
-	/* Can't post to misc.restricted */
+	/* Can't add "Approved" headers to messages */
 	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT_EVENTUALLY(client1, "340");
-	POST_NEWS_ARTICLE(s, client1, TEST_EMAIL, "misc.restricted");
-	CLIENT_EXPECT(client1, "440");
+	CLIENT_EXPECT(client1, "340");
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
+		"Newsgroups: misc.test" ENDL \
+		"Approved: moderator@news.example.com" ENDL \
+		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
+		"Subject: I am just a test article" ENDL \
+		ENDL \
+		"This article tests dot-stuffing." ENDL \
+		"." ENDL; \
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT(client1, "441 You are not allowed to approve");
+
+	/* Can't add "Control" headers to messages */
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "340");
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
+		"Newsgroups: misc.test" ENDL \
+		"Control: cmsg newgroup foo.baz" ENDL \
+		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
+		"Subject: I am just a test article" ENDL \
+		ENDL \
+		"This article tests dot-stuffing." ENDL \
+		"." ENDL; \
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT(client1, "441");
 
 	/* User 3 isn't allowed to do anything, since he has no matching ACL */
 	client3 = test_make_socket(119);

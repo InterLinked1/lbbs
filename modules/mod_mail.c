@@ -653,11 +653,11 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 static struct mailbox *mailbox_get(unsigned int userid, const char *user, const char *domain, int include_catchall)
 {
 	char mboxpath[256];
+	char userpart[64];
 	struct mailbox *mbox = NULL;
 
 	/* If we have a user ID, use that directly. */
 	if (!userid && (!domain || smtp_domain_matches(bbs_hostname(), domain))) { /* Only for primary domain */
-		char userpart[64];
 		if (strlen_zero(user)) {
 			bbs_error("Must specify at least either a user ID or name\n");
 			return NULL;

@@ -25,6 +25,18 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#define SEND_ARTICLE_RESPONSE(fd, messageid, email, group, respcode) \
+	SWRITE(clientfd, "IHAVE " messageid "\r\n"); \
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "335"); \
+	IHAVE_NEWS_ARTICLE(s, fd, messageid, email, group); \
+	CLIENT_EXPECT_EVENTUALLY(fd, #respcode);
+
+#define SEND_ARTICLE_REFUSED(fd, messageid, email, group) \
+	SWRITE(clientfd, "IHAVE " messageid "\r\n"); \
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "435"); \
+
+#define SEND_ARTICLE(fd, messageid, email, group) SEND_ARTICLE_RESPONSE(fd, messageid, email, group, 235)
+
 static int pre(void)
 {
 	test_preload_module("mod_mail.so");
@@ -49,6 +61,12 @@ static int create_groups(void)
 	NEW_NEWSGROUP(sockfd, "misc.empty", "A miscellaneous empty group", "Sysop", "y");
 	NEW_NEWSGROUP(sockfd, "misc.restricted", "A miscellaneous restricted group", "Sysop", "y");
 
+	NEW_NEWSGROUP(sockfd, "test.moderated", "A moderated group", "Sysop", "m");
+	NEW_NEWSGROUP(sockfd, "test.closed", "A closed group", "Sysop", "x");
+	NEW_NEWSGROUP(sockfd, "test.junk", "A junk group", "Sysop", "j");
+	NEW_NEWSGROUP(sockfd, "test.nolocal", "A nolocal group", "Sysop", "n");
+	NEW_NEWSGROUP(sockfd, "test.aliased", "An aliased group", "Sysop", "=misc.test");
+
 	close(sockfd);
 	return 0;
 
@@ -69,33 +87,34 @@ static int run(void)
 	clientfd = test_make_socket(433);
 	REQUIRE_FD(clientfd);
 
-#define TEST_MESSAGE_ID "<test.message@" TEST_NEWS_HOSTNAME ">"
-
 	/* Initial connection */
 	CLIENT_EXPECT(clientfd, "200 " TEST_NEWS_HOSTNAME);
 	SWRITE(clientfd, "CAPABILITIES\r\n");
 	CLIENT_EXPECT(clientfd, "101");
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "IHAVE");
 
-	/* Offer new article that we don't currently have. */
-	SWRITE(clientfd, "IHAVE " TEST_MESSAGE_ID "\r\n");
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "335");
-	IHAVE_NEWS_ARTICLE(s, clientfd, TEST_MESSAGE_ID, TEST_EMAIL_UNAUTHORIZED, "misc.test"); /* This message is from RFC 3977 6.3.1.3 */
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "235");
-
-	/* Offer the same article again, it should be rejected. */
-	SWRITE(clientfd, "IHAVE " TEST_MESSAGE_ID "\r\n");
-	CLIENT_EXPECT(clientfd, "435");
-
-	/* Offer an article in a newsgroup for which peering is not authorized */
-	SWRITE(clientfd, "IHAVE <restricted.message@" TEST_HOSTNAME ">\r\n");
-	CLIENT_EXPECT(clientfd, "335");
-	IHAVE_NEWS_ARTICLE(s, clientfd, TEST_MESSAGE_ID, TEST_EMAIL_UNAUTHORIZED, "misc.restricted");
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "437");
+	SEND_ARTICLE(clientfd, "<test.message@" TEST_NEWS_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test"); /* Offer new article that we don't currently have. */
+	SEND_ARTICLE_REFUSED(clientfd, "<test.message@" TEST_NEWS_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test"); /* Offer the same article again, it should be rejected. */
+	SEND_ARTICLE_RESPONSE(clientfd, "<restricted.message@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.restricted", 437); /* Offer an article in a newsgroup for which peering is not authorized */
 
 	/* Shouldn't be able to read any articles from this group either */
 	SWRITE(clientfd, "GROUP misc.restricted\r\n");
 	CLIENT_EXPECT(clientfd, "502");
+
+	SEND_ARTICLE_RESPONSE(clientfd, "<testmessage.101@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.closed", 437); /* Can't post to closed group with status 'x' */
+	SEND_ARTICLE(clientfd, "<testmessage.102@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.junk"); /* Can post to a group that gets filed into junk (i.e. peered but not carried locally) */
+	SEND_ARTICLE(clientfd, "<testmessage.103@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.nolocal"); /* Can post to group with 'n' status */
+
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_NEWS_DIR "/misc/test", 2); /* Group has 1 article + overview file */
+	SEND_ARTICLE(clientfd, "<testmessage.104@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.aliased"); /* Can post to aliased group, should get filed into misc.test instead */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_NEWS_DIR "/misc/test", 3);
+
+	SEND_ARTICLE_RESPONSE(clientfd, "<testmessage.105@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.moderated", 437); /* Messages to moderated group should be rejected without Approved header */
+	SEND_ARTICLE(clientfd, "<testmessage.106@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.moderated\r\nApproved: moderator@bbs.example.com"); /* Add Approved header, and now it should work */
+
+	/* Attempt to create a new group, the message should get filed into control.newgroup. Not a properly formed newgroup cmsg, but it suffices for now. */
+	SEND_ARTICLE(clientfd, "<testmessage.ctl1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.newgroup\r\nControl: newgroup test.newgroup\r\nApproved: newsmaster@bbs.example.com");
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_NEWS_DIR "/control/newgroup", 2); /* Control message + overview file */
 
 	res = 0;
 

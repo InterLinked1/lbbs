@@ -69,14 +69,6 @@ void active_file_cleanup(void)
 	} \
 	var = atoi(tmp);
 
-#define PARSE_ACTIVE_CHAR(var) \
-	tmp = active_strsep(s); \
-	if (unlikely(strlen_zero(tmp))) { \
-		bbs_error("Active file line malformed, missing %s\n", #var); \
-		return 1; /* Line malformed */ \
-	} \
-	var = *tmp;
-
 #define PARSE_ACTIVE_STR(var) \
 	tmp = active_strsep(s); \
 	if (unlikely(strlen_zero(tmp))) { \
@@ -101,7 +93,7 @@ static inline int parse_active_line(char *s, struct group_info *restrict g)
 	PARSE_ACTIVE_NUM(g->high);
 	PARSE_ACTIVE_NUM(g->low);
 	PARSE_ACTIVE_NUM(g->count);
-	PARSE_ACTIVE_CHAR(g->status);
+	PARSE_ACTIVE_STR(g->status);
 	PARSE_ACTIVE_NUM(g->created);
 	PARSE_ACTIVE_STR(g->creator);
 	PARSE_ACTIVE_STR(desc);
@@ -115,7 +107,7 @@ static inline void write_active_file_line(FILE *fp, struct group_info *g)
 	/* We zero-pad any article numbers (last, high, low, count) to 10 digits so that the active file can be edited in place.
 	 * The epoch is also inherently 10 digits (was < 9 digits prior to 2001-09-09 01:46:39) and will be 10 digits until 2286-11-20 17:46:39.
 	 * Since the creator and description can have spaces, the whole line is tab-delimited. */
-	fprintf(fp, "%s\t%010d\t%010d\t%010d\t%010d\t%c\t%10ld\t%s\t%s\n", g->name, g->last, g->high, g->low, g->count, g->status, g->created, g->creator, g->description);
+	fprintf(fp, "%s\t%010d\t%010d\t%010d\t%010d\t%s\t%10ld\t%s\t%s\n", g->name, g->last, g->high, g->low, g->count, g->status, g->created, g->creator, g->description);
 }
 
 enum group_mod_type {
@@ -133,7 +125,7 @@ static inline void update_and_set_group(struct group_info *g, struct group_info 
 	DEFAULT_VALUE(high, -1);
 	DEFAULT_VALUE(low, -1);
 	DEFAULT_VALUE(count, -1);
-	DEFAULT_VALUE(status, 0);
+	DEFAULT_VALUE(status, NULL);
 	g->created = oldgroup->created; /* Doesn't change */
 	g->creator = oldgroup->creator; /* Doesn't change */
 	DEFAULT_VALUE(description, NULL);
@@ -202,7 +194,6 @@ static int regenerate_active_file(enum group_mod_type modtype, struct group_info
 				} else if (modtype == GROUP_MODIFY) {
 					/* Update existing group */
 					struct group_info oldgroup;
-					/* We don't need to trim off the trailing LF, because the status it the last bit, and we only look at the first char and stop */
 					if (parse_active_line(restofline, &oldgroup)) {
 						error = 1;
 					} else {
@@ -286,7 +277,6 @@ static int update_active_file(struct group_info *g, int *incrlast)
 		if (!strcmp(thisgroup, g->name)) {
 			/* Update existing group */
 			struct group_info oldgroup;
-			/* We don't need to trim off the trailing LF, because the status it the last bit, and we only look at the first char and stop */
 			if (parse_active_line(restofline, &oldgroup)) {
 				error = 1;
 			} else {
@@ -343,13 +333,20 @@ int active_file_group_delete(const char *groupname)
 	return regenerate_active_file(GROUP_DELETE, &g);
 }
 
-int active_file_group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, char status, const char *description)
+int active_file_group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, const char *status, const char *description)
 {
 	struct group_info g;
 	/* Assume if the description changes, we'll need to rewrite out the file again.
 	 * This may not be true if the length of the description is unchanged,
 	 * but we won't know that without checking, which would require a pass over the file first. */
 	int need_rewrite = description != NULL;
+
+	if (!need_rewrite && status) {
+		/* If the status has changed, we technically only need to rewrite the active file if the length of the status has changed,
+		 * i.e. we go from a single letter status to =other.group or vice versa.
+		 * At the moment, we just assume we always need to rewrite, but per the above note on description, this is not always true. */
+		need_rewrite = 1;
+	}
 
 	g.name = groupname;
 	g.last = last;
@@ -367,7 +364,7 @@ int active_file_group_update(const char *groupname, int *incrlast, int last, int
 	}
 }
 
-int active_file_group_info(const char *groupname, int *last, int *high, int *low, int *count, char *status, time_t *created, char *creator, size_t creatorlen, char *description, size_t descriplen)
+int active_file_group_info(const char *groupname, int *last, int *high, int *low, int *count, char *status, size_t statuslen, time_t *created, char *creator, size_t creatorlen, char *description, size_t descriplen)
 {
 	char buf[NNTP_MAX_LINE_LENGTH + 1];
 	FILE *fp;
@@ -411,7 +408,7 @@ int active_file_group_info(const char *groupname, int *last, int *high, int *low
 			*count = g.count;
 		}
 		if (status) {
-			*status = g.status;
+			safe_strncpy(status, g.status, statuslen);
 		}
 		if (created) {
 			*created = g.created;
@@ -490,11 +487,11 @@ static int active_file_group_list_full(struct nntp_session *nntp, enum list_cate
 				 * since if the group is empty, we need to adjust the high water mark
 				 * to be lower than the low water mark. */
 				FIX_EMPTY_GROUP_STATS(g.high, g.low, g.count);
-				_nntp_send(nntp, "%s %d %d %c\r\n", group, g.high, g.low, g.status);
+				_nntp_send(nntp, "%s %d %d %s\r\n", group, g.high, g.low, g.status);
 				break;
 			case LIST_COUNTS:
 				FIX_EMPTY_GROUP_STATS(g.high, g.low, g.count);
-				_nntp_send(nntp, "%s %d %d %d %c\r\n", group, g.high, g.low, g.count, g.status);
+				_nntp_send(nntp, "%s %d %d %d %s\r\n", group, g.high, g.low, g.count, g.status);
 				break;
 			case LIST_ACTIVE_TIMES:
 				_nntp_send(nntp, "%s %lu %s\r\n", group, g.created, g.creator);

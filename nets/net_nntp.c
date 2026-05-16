@@ -18,6 +18,7 @@
  * \note Supports RFC 3977 OVER (including MSGID)
  * \note Supports RFC 4642 STARTTLS
  * \note Supports RFC 4643 AUTHINFO
+ * \note Supports RFC 6048 LIST extensions
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -32,6 +33,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <limits.h>
+#include <sys/time.h> /* struct timeval for musl */
 
 #include "include/stringlist.h"
 #include "include/module.h"
@@ -42,6 +44,7 @@
 #include "include/user.h"
 #include "include/cli.h"
 #include "include/term.h"
+#include "include/mail.h"
 #include "include/test.h"
 
 #include "include/mod_mail.h"
@@ -75,6 +78,7 @@ static int nnsp_port = DEFAULT_NNSP_PORT;
 static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
 
 static bbs_rwlock_t nntp_lock;
+static FILE *newslog;
 
 /* General settings */
 char newsname[256] = ""; /* Non-static so other files can access it extern */
@@ -84,6 +88,7 @@ static unsigned int max_groups = 100;
 
 /* Relay in */
 static int requirerelaytls = 1;
+static int keepjunk = 0;
 
 /* Relay out */
 static unsigned int relayfrequency = 3600;
@@ -266,6 +271,7 @@ struct reader_acl {
 	const char *post; /*!< Wildmat of newsgroups for which this ACL authorizes posting */
 	int minreadpriv; /*!< Additional minimum privilege required for read access */
 	int minpostpriv; /*!< Additional minimum privilege required for post access */
+	int minapprovepriv; /*!< Additional minimum privilege required for approving articles (disabled if 0) */
 	struct stringlist guests; /*!< List of IPv4 CIDR ranges to which this ACL applies */
 	RWLIST_ENTRY(reader_acl) entry;
 	char data[];
@@ -279,7 +285,7 @@ static void free_acl(struct reader_acl *acl)
 	free(acl);
 }
 
-static int load_acl(const char *guests, const char *userswm, const char *readwm, const char *postwm, int minreadpriv, int minpostpriv)
+static int load_acl(const char *guests, const char *userswm, const char *readwm, const char *postwm, int minreadpriv, int minpostpriv, int minapprovepriv)
 {
 	struct reader_acl *acl;
 	size_t userslen, readlen, postlen;
@@ -303,6 +309,7 @@ static int load_acl(const char *guests, const char *userswm, const char *readwm,
 
 	acl->minreadpriv = minreadpriv;
 	acl->minpostpriv = minpostpriv;
+	acl->minapprovepriv = minapprovepriv;
 
 	stringlist_init(&acl->guests);
 	if (guests) {
@@ -362,6 +369,13 @@ int allowed_by_acl_locked(struct nntp_session *nntp, const char *group, enum nnt
 				case NNTP_ACL_POST:
 					if (acl->post && uwildmat(group, acl->post)) {
 						if (!acl->minpostpriv || (bbs_user_is_registered(nntp->node->user) && nntp->node->user->priv >= acl->minpostpriv)) {
+							return 1;
+						}
+					}
+					break;
+				case NNTP_ACL_APPROVE:
+					if (acl->minapprovepriv) { /* If 0, approvals are disabled */
+						if (bbs_user_is_registered(nntp->node->user) && nntp->node->user->priv >= acl->minapprovepriv) {
 							return 1;
 						}
 					}
@@ -541,12 +555,14 @@ static int authorized_inpeer_for_group(struct nntp_session *nntp, const char *gr
 static void artinfo_reset(struct article_info *artinfo)
 {
 	free_if(artinfo->newsgroups);
+	free_if(artinfo->approved);
+	free_if(artinfo->control);
 	free_if(artinfo->expires);
+
 	free_if(artinfo->subject);
 	free_if(artinfo->from);
 	free_if(artinfo->date);
-	/* artinfo->messageid is not dynamically allocated, do not free */
-	artinfo->messageid = NULL;
+	free_if(artinfo->messageid);
 	free_if(artinfo->references);
 	artinfo->bytes = 0;
 	artinfo->lines = 0;
@@ -765,7 +781,7 @@ static void nntp_destroy(struct nntp_session *nntp)
  *
  */
 
-static int group_create(const char *groupname, char status, const char *creator, const char *description)
+static int group_create(const char *groupname, const char *status, const char *creator, const char *description)
 {
 	struct group_info g;
 	int res;
@@ -828,13 +844,13 @@ static int group_exists(const char *groupname)
 
 /* group_update_count needs to be called by tradspool_delete_article_single after it deletes an article,
  * but since we're already locked there, we have variants here that are already locked */
-static int __group_update_locked(const char *groupname, int *incrlast, int last, int high, int low, int count, char status, const char *description)
+static int __group_update_locked(const char *groupname, int *incrlast, int last, int high, int low, int count, const char *status, const char *description)
 {
 	/*! \todo If status/description change, need to send control message to other servers with new status and description? */
 	return active_group_update(groupname, incrlast, last, high, low, count, status, description);
 }
 
-static int __group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, char status, const char *description)
+static int __group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, const char *status, const char *description)
 {
 	int res;
 	bbs_rwlock_wrlock(&nntp_lock);
@@ -843,7 +859,7 @@ static int __group_update(const char *groupname, int *incrlast, int last, int hi
 	return res;
 }
 
-static int group_update_status_description(const char *groupname, char status, const char *description)
+static int group_update_status_description(const char *groupname, const char *status, const char *description)
 {
 	return __group_update(groupname, NULL, -1, -1, -1, -1, status, description);
 }
@@ -888,13 +904,7 @@ static int group_delete_article(const char *groupname, int article_num)
 
 int group_get_stats_locked(const char *groupname, int *last, int *high, int *low, int *count)
 {
-	int res;
-	int localcount;
-	if (!count) {
-		count = &localcount;
-	}
-	res = active_group_info(groupname, last, high, low, count, NULL, NULL, NULL, 0, NULL, 0);
-
+	int res = active_group_info(groupname, last, high, low, count, NULL, 0, NULL, NULL, 0, NULL, 0);
 	FIX_EMPTY_GROUP_STATS(*high, *low, *count);
 	return res;
 }
@@ -919,7 +929,16 @@ static int group_get_stats(const char *groupname, int *high, int *low, int *coun
 	return res;
 }
 
-#define VALID_POSTING_STATUS(s) (s == 'y' || s == 'n' || s == 'm')
+static int group_get_status(const char *groupname, char *status, size_t statuslen)
+{
+	int res;
+	bbs_rwlock_rdlock(&nntp_lock);
+	res = active_group_info(groupname, NULL, NULL, NULL, NULL, status, statuslen, NULL, NULL, 0, NULL, 0);
+	bbs_rwlock_unlock(&nntp_lock);
+	return res;
+}
+
+#define VALID_POSTING_STATUS(s) (*s == 'y' || *s == 'n' || *s == 'm' || *s == 'x' || *s == 'j' || (*s == '=' && valid_newsgroup_name(s + 1)))
 
 static int valid_field(const char *s, const char *extrachars, int maxlen)
 {
@@ -944,8 +963,9 @@ static int valid_field(const char *s, const char *extrachars, int maxlen)
 static int valid_newsgroup_name(const char *s)
 {
 	/* Newsgroups cannot start with numbers since the tradspool method names articles by their number,
-	 * and groups can be nested within other groups. */
-	return valid_field(s, ".-+", NNTP_MAX_ARG_LENGTH) && !isdigit(*s); /* The max arg length is a ridiculously long limit, but it's the only one we have */
+	 * and groups can be nested within other groups.
+	 * The valid characters come from RFC 5536 3.1.4 */
+	return valid_field(s, ".-+_", NNTP_MAX_ARG_LENGTH) && !isdigit(*s); /* The max arg length is a ridiculously long limit, but it's the only one we have */
 }
 
 /*!
@@ -954,12 +974,12 @@ static int valid_newsgroup_name(const char *s)
  * \param name The name of the newsgroup.
  * \param description A short description about the purpose of the group
  * \param creator Entity that created the newsgroup; may be an email address (though not necessarily, often just 'usenet' in many Usenet groups)
- * \param posting The current status of the group on this server. (y = posting allowed, n = posting not allowed, m = posts forwarded to newsgroup moderator)
+ * \param status The current status of the group on this server.
  * \retval 0 Group created successfully
  * \retval 1 Group already exists
  * \retval -1 Error creating group
  */
-static int newgroup(const char *name, const char *description, const char *creator, char posting)
+static int newgroup(const char *name, const char *description, const char *creator, const char *status)
 {
 	int res;
 
@@ -972,22 +992,58 @@ static int newgroup(const char *name, const char *description, const char *creat
 	if (!valid_newsgroup_name(name)) {
 		bbs_error("Newsgroup name '%s' is invalid\n", S_IF(name));
 		return -1;
-	} else if (!valid_field(description, " ,.-+", NNTP_MAX_ARG_LENGTH)) {
+	} else if (!valid_field(description, " ,.-+()", NNTP_MAX_ARG_LENGTH)) {
 		bbs_error("Newsgroup description '%s' is invalid\n", S_IF(description));
 		return -1;
-	} else if (!valid_field(creator, " ,.<>@-+", NNTP_MAX_ARG_LENGTH)) {
+	} else if (!valid_field(creator, " ,.<>@-+()", NNTP_MAX_ARG_LENGTH)) {
 		bbs_error("Newsgroup creator '%s' is invalid\n", S_IF(creator));
 		return -1;
-	} else if (!VALID_POSTING_STATUS(posting)) {
-		bbs_error("Illegal posting setting '%c'\n", posting);
+	} else if (!VALID_POSTING_STATUS(status)) {
+		bbs_error("Illegal posting setting '%s'\n", status);
 		return -1;
 	}
 
-	res = group_create(name, posting, creator, description);
+	res = group_create(name, status, creator, description);
 	if (!res) {
 		bbs_verb(4, "Created newsgroup %s (%s)\n", name, description);
 	}
 	return 0;
+}
+
+struct group_list {
+	const char *name;
+	const char *description;
+} builtin_groups[] =
+{
+	{ "control", "Various control messages (no posting)." },
+	{ "control.cancel", "Cancel messages (no posting)." },
+	{ "control.checkgroups", "Hierarchy check control messages (no posting)." },
+	{ "control.newgroup", "Newsgroup creation control messages (no posting)." },
+	{ "control.rmgroup", "Newsgroup removal control messages (no posting)." },
+	{ "junk", "Unfiled articles (no posting)." },
+};
+
+static int is_builtin_group(const char *name)
+{
+	int i;
+	for (i = 0; ARRAY_LEN(builtin_groups); i++) {
+		if (!strcmp(name, builtin_groups[i].name)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int init_builtin_groups(void)
+{
+	int res = 0;
+	size_t i;
+	for (i = 0; i < ARRAY_LEN(builtin_groups); i++) {
+		if (!group_exists(builtin_groups[i].name)) {
+			res |= newgroup(builtin_groups[i].name, builtin_groups[i].description, "BBS", "n"); /* Built-in groups do not allowed local posts */
+		}
+	}
+	return res;
 }
 
 static int cli_newgroup(struct bbs_cli_args *a)
@@ -995,7 +1051,7 @@ static int cli_newgroup(struct bbs_cli_args *a)
 	char name[128];
 	char description[256];
 	char creator[64];
-	char posting[2];
+	char posting[128];
 	int res;
 	ssize_t rres;
 
@@ -1022,7 +1078,7 @@ static int cli_newgroup(struct bbs_cli_args *a)
 	PROMPT_AND_READ(creator, "Group Creator");
 	PROMPT_AND_READ(posting, "Posting Permitted (y = yes/n = no/m = moderated)");
 
-	res = newgroup(name, description, creator, posting[0]);
+	res = newgroup(name, description, creator, posting);
 	if (res < 0) {
 		bbs_dprintf(a->fdout, "Error occured creating newsgroup '%s'\n", name);
 		return -1;
@@ -1055,6 +1111,11 @@ static int cli_rmgroup(struct bbs_cli_args *a)
 		}
 	}
 
+	if (is_builtin_group(name)) {
+		bbs_dprintf(a->fdout, "Can't remove '%s' (builtin group)\n", name);
+		return -1;
+	}
+
 	res = group_delete(name);
 	if (res) {
 		bbs_dprintf(a->fdout, "Error occured deleting newsgroup '%s'\n", name);
@@ -1065,15 +1126,15 @@ static int cli_rmgroup(struct bbs_cli_args *a)
 	return 0;
 }
 
-static int cli_setpost(struct bbs_cli_args *a)
+static int cli_setstatus(struct bbs_cli_args *a)
 {
 	/* Posting status needs to be valid and must only be one character */
-	if (!VALID_POSTING_STATUS(a->argv[3][0]) || a->argv[3][1]) {
-		bbs_dprintf(a->fdout, "Invalid posting status (should be y/n/m)\n");
+	if (!VALID_POSTING_STATUS(a->argv[3]) || a->argv[3]) {
+		bbs_dprintf(a->fdout, "Invalid posting status (should be y/n/m/x/j/=other.group)\n");
 		return -1;
 	}
 	/* Update posting status, don't change the low or high water marks */
-	if (group_update_status_description(a->argv[2], a->argv[3][0], NULL)) {
+	if (group_update_status_description(a->argv[2], a->argv[3], NULL)) {
 		bbs_dprintf(a->fdout, "Failed to update group posting status\n");
 		return -1;
 	}
@@ -1149,7 +1210,7 @@ static int article_groups_contains(struct article_groups *groups, const char *na
 	return 0;
 }
 
-static int article_groups_add(struct article_groups *groups, const char *name)
+static int article_groups_add(struct article_groups *groups, const char *name, int moderated)
 {
 	struct article_group *g = calloc(1, sizeof(*g) + strlen(name) + 1);
 	if (ALLOC_FAILURE(g)) {
@@ -1157,98 +1218,414 @@ static int article_groups_add(struct article_groups *groups, const char *name)
 	}
 	strcpy(g->data, name); /* Safe */
 	g->name = g->data;
+	SET_BITFIELD(g->moderated, moderated);
 	BBS_LIST_INSERT_TAIL(groups, g, entry);
 	return 0;
 }
 
-/*! \brief Final processing of POST/IHAVE */
-static int do_post(struct nntp_session *nntp, const char *srcfilename, size_t postlen)
+static int construct_moderator_address(const char *group, const char *template, char *buf, size_t len)
 {
-	char *newsgroup, *newsgroups = NULL;
-	char *uuid = NULL;
-	int delivered = 0;
-	char articleidbuf[259];
-	int total_errors = 0, permission_errors = 0;
-	struct article_info *artinfo = &nntp->artinfo;
-	int srcfd;
-	unsigned int groupcount = 0;
-	struct article_groups groups;
+	do {
+		if (*template == '%') {
+			template++;
+			if (*template == 's') {
+				/* Copy the group name in place of '%s', replacing '.' with '-' */
+				const char *g = group;
+				while (*g) {
+					if (*g == '.') {
+						*buf++ = '-';
+					} else {
+						*buf++ = *g;
+					}
+					g++;
+					if (unlikely(!--len)) {
+						return -1;
+					}
+				}
+				template++;
+				continue;
+			} /* else, should be a literal '%', we verified this when loading the config */
+		}
+		*buf++ = *template++;
+		if (unlikely(!--len)) {
+			return -1;
+		}
+	} while (*template);
+	*buf = '\0';
+	return 0;
+}
 
-	memset(&groups, 0, sizeof(groups));
+static int test_moderator_templates(void)
+{
+	char buf[48];
+	bbs_test_assert_equals(0, construct_moderator_address("test.misc", "%s@example.com", buf, sizeof(buf)));
+	bbs_test_assert_str_equals("test-misc@example.com", buf);
+	bbs_test_assert_equals(0, construct_moderator_address("test.misc", "test+%s@example.com", buf, sizeof(buf)));
+	bbs_test_assert_str_equals("test+test-misc@example.com", buf);
+	bbs_test_assert_equals(0, construct_moderator_address("test.misc", "test@example.com", buf, sizeof(buf)));
+	bbs_test_assert_str_equals("test@example.com", buf);
+	bbs_test_assert_equals(-1, construct_moderator_address("test.misc", "test@template.that.is.too.long.for.buffer.example.com", buf, sizeof(buf)));
+	return 0;
 
+cleanup:
+	return -1;
+}
+
+static int build_moderator_address(const char *group, char *buf, size_t len)
+{
+	struct moderator *m;
+	int res = -1;
+	RWLIST_RDLOCK(&moderators);
+	RWLIST_TRAVERSE(&moderators, m, entry) {
+		/* First match wins */
+		if (uwildmat(group, m->wildmat)) {
+			res = construct_moderator_address(group, m->template, buf, len);
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&moderators);
+	return res;
+}
+
+static int process_moderated_group(struct article_group *g, int fd)
+{
+	char modaddr[256];
+	char template[64];
+	char buf[NNTP_MAX_LINE_LENGTH + 1];
+	char sender[256];
+	FILE *newfp, *artfp;
+	int res = -1;
+
+	/* First, determine the moderator address */
+	if (build_moderator_address(g->name, modaddr, sizeof(modaddr))) {
+		return -1;
+	}
+
+	/* Prepend To to the received article, and send it to the moderator, simple as that! */
+	strcpy(template, "/tmp/nntpmodXXXXXX"); /* Safe */
+	artfp = bbs_fdopen_duped(fd, "r");
+	if (!artfp) {
+		return -1;
+	}
+	newfp = bbs_mkftemp(template, 0600);
+	if (!newfp) {
+		fclose(artfp);
+		return -1;
+	}
+	fprintf(newfp, "To: %s\r\n", modaddr);
+	/* Can't use bbs_copy_file, even though it would be super-elegant here,
+	 * the source article retained its dot-stuffing, and we need to unstuff it here
+	 * (even though, ultimately, it may get stuffed again if it goes out SMTP) */
+	while ((fgets(buf, sizeof(buf), artfp))) {
+		const char *line = buf;
+		if (buf[0] == '.') {
+			line++;
+		}
+		fprintf(newfp, "%s", line); /* Includes CR LF already */
+	}
+	fclose(newfp);
+	/* XXX We should prefer newsname, if it's a valid domain for sending email, or smtp_hostname(), should that fail;
+	 * bbs_hostname() is only used here to avoid a hard dependency on net_smtp */
+	snprintf(sender, sizeof(sender), "%s@%s", "moderator-submissions", bbs_hostname()); /* Construct envelope sender */
+	res = bbs_mail_message(template, sender, NULL);
+
+	fclose(artfp);
+	unlink(template);
+	if (lseek(fd, SEEK_SET, 0)) { /* Be kind, rewind */
+		bbs_error("lseek(%d) failed: %s\n", fd, strerror(errno));
+	}
+	return res;
+}
+
+static int process_moderated_groups(struct article_groups *groups, int fd, int *errors, char *errorbuf, size_t errbuflen)
+{
+	int diverted = 0;
+	struct article_group *g;
+	BBS_LIST_TRAVERSE_SAFE_BEGIN(groups, g, entry) {
+		if (g->moderated) {
+			if (!process_moderated_group(g, fd)) {
+				diverted++;
+			} else {
+				snprintf(errorbuf, errbuflen, "No mailing address for \"%s\" - ask your newsmaster to fix this", g->name);
+				*errors += 1;
+			}
+			RWLIST_REMOVE_CURRENT(entry);
+			free(g);
+		}
+	}
+	BBS_LIST_TRAVERSE_SAFE_END;
+	return diverted;
+}
+
+static void log_article(struct nntp_session *nntp, struct article_info *artinfo, char code, const char *text)
+{
+	time_t now;
+	struct timeval tvnow;
+	char buf[26];
+
+#define LOG_REJECT '-'
+#define LOG_ACCEPT '+'
+#define LOG_JUNK 'j'
+#define LOG_DUPLICATE 'd'
+
+#pragma GCC diagnostic ignored "-Waggregate-return"
+	tvnow = bbs_tvnow();
+#pragma GCC diagnostic pop
+
+	now = time(NULL);
+	ctime_r(&now, buf);
+	/* No locking needed, fprintf will properly interleave writes */
+	fprintf(newslog, "%.15s.%03d %c %c %s %s%s%s\n", buf + 4, (int) (tvnow.tv_usec / 1000),
+		code, nntp->mode == NNTP_MODE_READER ? 'R' : 'T', nntp->node->ip, artinfo->messageid, text ? " " : "", S_IF(text));
+}
+
+/*! \brief Whether a client (reader or peer) can post to a group based on its status */
+static int status_allows_posting(struct nntp_session *nntp, const char *newsgroup, const char *status, char *errbuf, size_t errbuflen)
+{
+	/*
+	 * Posting statuses, as defined by RFC 3977 and extended by RFC 6048 Section 3:
+	 *
+	 * Posts allowed from:
+	 * y = Both
+	 * n = Peers, but not readers
+	 * m = Both (moderated)
+	 * x = Neither (i.e. group is closed)
+	 * j = Peers, but not readers
+	 *     Differs from 'n' as:
+	 *     - articles from peers crossposted to at least one valid group are filed only into the valid groups
+	 *     - articles from peers not crossposted to any valid groups are not filed into any newsgroup, but still propagated to other peers, if appropriate
+	 *       - may be filed into a catch-all group named "junk"
+	 *         - if "junk" exists, it contains all posts not filed in another group, regardless of the status of "junk" (explicit posts to "junk" respect its status as usual)
+	 *         - "junk" may be available to readers and often used to store articles that will be transmitted to peers
+	 *         - this allows accepting articles with invalid/foreign newsgroups and filing in "junk"
+	 * =other.group = Peers, but not readers; alias to another group
+	 *     - groups are distinct (articles/article numbers not shared)
+	 *     - posts accepted and filed into aliased group (Newsgroup header remains unchanged)
+	 *     - typically used during transition between two groups (e.g. rename)
+	 *     - status of alias target MUST NOT be taken into account, so aliases SHOULD NOT point to moderated groups
+	 *     - aliases SHOULD NOT point to themselves or other alias groups
+	 *     - alias target SHOULD exist and be visible to clients that can see original group (e.g. same permissions)
+	 *
+	 * "j" and "=junk" are different; if crossposting:
+	 * - "j" -> article is filed in "junk" only if there are no other valid groups
+	 * - "=junk" -> article is always filed in "junk", along with any other valid groups
+	 */
+	switch (*status) {
+		case 'm': /* May need to be moderated, but continue for now */
+		case 'y':
+			return 1;
+		case '=':
+			if (nntp->mode == NNTP_MODE_TRANSIT) {
+				return 1;
+			}
+			snprintf(errbuf, errbuflen, "The newsgroup \"%s\" has been renamed to \"%s\"", newsgroup, status + 1);
+			return 0;
+		case 'n':
+		case 'j':
+			if (nntp->mode == NNTP_MODE_TRANSIT) {
+				return 1;
+			}
+			/* Fall through */
+		case 'x':
+			snprintf(errbuf, errbuflen, "Postings to \"%s\" not allowed here", newsgroup);
+			return 0;
+		default:
+			bbs_error("Invalid status for group: '%s'\n", status);
+			return 0;
+	}
+}
+
+enum nntp_control_msg {
+	CMSG_UNKNOWN,
+	CMSG_NEWGROUP,
+	CMSG_RMGROUP,
+	CMSG_CHECKGROUPS,
+	CMSG_CANCEL,
+};
+
+static enum nntp_control_msg parse_cmsg(const char *s)
+{
+	/* We use starts with here instead of strcasecmp, so that we can parse even when the string hasn't been split up into tokens yet */
+	if (STARTS_WITH(s, "newgroup")) {
+		return CMSG_NEWGROUP;
+	} else if (STARTS_WITH(s, "rmgroup")) {
+		return CMSG_RMGROUP;
+	} else if (STARTS_WITH(s, "checkgroups")) {
+		return CMSG_CHECKGROUPS;
+	} else if (STARTS_WITH(s, "cancel")) {
+		return CMSG_CANCEL;
+	} else {
+		return CMSG_UNKNOWN;
+	}
+}
+
+static int check_article(struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen, enum nntp_control_msg *cmsg)
+{
 #define REQUIRE_ARTINFO_FIELD(field) \
 	if (!artinfo->field) { \
-		bbs_debug(1, "Missing field %s\n", #field); \
-		goto cleanup; \
+		nntp_send(nntp, 441, "Missing field %s\n", #field); \
+		return 1; \
 	}
 
 	REQUIRE_ARTINFO_FIELD(newsgroups);
 	REQUIRE_ARTINFO_FIELD(subject);
 	REQUIRE_ARTINFO_FIELD(from);
 	REQUIRE_ARTINFO_FIELD(date);
+	/* References header is optional, may not be present */
+
 	if (nntp->mode == NNTP_MODE_TRANSIT) {
+		/* For readers, we will add the Message-ID. For peers, we expect to have one already. */
 		REQUIRE_ARTINFO_FIELD(messageid);
 		if (artinfo->messageid[0] != '<' && !bbs_str_ends_with(artinfo->messageid, ">")) {
 			/* Invalid Message-ID */
-			bbs_debug(1, "Invalid Message-ID '%s'\n", artinfo->messageid);
-			goto cleanup;
+			snprintf(errbuf, errbuflen, "Invalid Message-ID '%s'", artinfo->messageid);
+			return 437;
 		}
-	}
-	/* References header is optional, may not be present */
 
-	/*! \todo Do further validation of fields here + group info (description, etc.) */
+		if (artinfo->control) {
+			/* If it has a Control header, it's a control message.
+			 * Here, we only validate that it's a known control message type and that it's approved. */
+			*cmsg = parse_cmsg(artinfo->control);
+			if (*cmsg == CMSG_UNKNOWN) {
+				snprintf(errbuf, errbuflen, "Unknown control message: %s", artinfo->control);
+				return 437;
+			} else if (!artinfo->approved) {
+				snprintf(errbuf, errbuflen, "Ignoring unapproved control message");
+				return 437;
+			}
+		}
 
-	if (nntp->mode == NNTP_MODE_READER) {
-		/* Check the From header. */
-		if (!identity_allowed_for_posting(nntp, artinfo->from)) {
-			bbs_notice("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, artinfo->from);
-			nntp_send(nntp, 441, "Identity not allowed for posting");
-			goto cleanup2;
-		}
-		uuid = bbs_uuid(); /* Use same UUID (and by extension, the same Article ID) for all newsgroups */
-		if (!uuid) {
-			goto cleanup;
-		}
-		/* We need to generate an article ID for this article, since this is its entry point into the news network */
-		snprintf(articleidbuf, sizeof(articleidbuf), "<%s@%s>", uuid, newsname);
-		artinfo->messageid = articleidbuf;
-		/*! \todo Do we need to inject the header into the file? snprintf(msgid, sizeof(msgid), "Message-ID: <%s@%s>", uuid, newsname); */
-	} else { /* else if TRANSIT, just trust what the other end says (presumably the original server validated the identity). */
 		/* Could be a race condition, maybe we didn't have the article when the client said IHAVE,
 		 * but now we do (possibly from some other server). Check again. */
 		if (spool_article_exists(artinfo->messageid)) {
-			bbs_debug(2, "Rejecting article %s from %s (duplicate)\n", artinfo->messageid, nntp->node->ip);
-			nntp_send(nntp, 435, "Duplicate");
-			goto cleanup2;
+			snprintf(errbuf, errbuflen, "Message \"%s\" is a duplicate", artinfo->messageid);
+			return 435;
+		}
+	} else {
+		/* Check the From header and reject it if it's not compliant with site policy. */
+		if (!identity_allowed_for_posting(nntp, artinfo->from)) {
+			bbs_notice("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, artinfo->from);
+			snprintf(errbuf, errbuflen, "Identity not allowed for posting");
+			return 441;
+		}
+
+		/* Reject articles with unapproved headers users are not allowed to add. */
+		if (artinfo->approved && !ACL_ALLOWED(nntp, NULL, NNTP_ACL_APPROVE)) {
+			snprintf(errbuf, errbuflen, "You are not allowed to approve postings");
+			return 441;
+		}
+		if (artinfo->control) {
+			snprintf(errbuf, errbuflen, "You are not allowed to inject control messages");
+			return 441;
+		}
+		if (STARTS_WITH(artinfo->subject, "cmsg ")) {
+			/* RFC 5537 says that contrary to RFC 1036, messages merely with Subjects beginning with "cmsg" are NOT control articles,
+			 * and we MAY reject such posts from users (RFC 5537 Section 5) */
+			snprintf(errbuf, errbuflen, "Message ambiguous (subject begins with cmsg, missing Control header)");
+			return 441;
 		}
 	}
 
+	/*! \todo Do further validation of fields here as needed.
+	 * Validate header validity itself in handle_post_ihave as we parse the header so we don't have to scan over all headers again */
+	return 0;
+}
+
+#define SET_POST_ERROR(fmt, ...) \
+	bbs_debug(3, fmt "\n", ## __VA_ARGS__); \
+	snprintf(errorbuf, sizeof(errorbuf), fmt, ## __VA_ARGS__); \
+	total_errors++;
+
+/*! \brief Final processing of POST/IHAVE */
+static int do_post(struct nntp_session *nntp, const char *srcfilename, size_t postlen)
+{
+	char *newsgroup, *newsgroups = NULL;
+	int delivered = 0;
+	char errorbuf[NNTP_MAX_LINE_LENGTH + 24] = "";
+	int total_errors = 0, permission_errors = 0;
+	struct article_info *artinfo = &nntp->artinfo;
+	int res, srcfd;
+	int temp_fail = 0; /* Have peer retry later? */
+	unsigned int groupcount = 0;
+	int was_junk = 0, junk_if_unfiled = 0;
+	enum nntp_control_msg cmsg = CMSG_UNKNOWN;
+	struct article_groups groups;
+
+	memset(&groups, 0, sizeof(groups));
+
+	/* Perform non-group specific checks for article and header validity. If any fail, the entire post is rejected. */
+	res = check_article(nntp, artinfo, errorbuf, sizeof(errorbuf), &cmsg);
+	if (res) {
+		nntp_send(nntp, res, "%s", errorbuf); /* errorbuf is set if we fail, send the error message now */
+		log_article(nntp, artinfo, res == 435 ? LOG_DUPLICATE : LOG_REJECT, errorbuf);
+		return 0;
+	}
+
 	/* Determine the newsgroups to which we'll add this article. */
-	newsgroups = artinfo->newsgroups; /* Duplicate pointer since we'll mutate it */
 	ACL_RDLOCK(nntp);
+	newsgroups = artinfo->newsgroups; /* Duplicate pointer since we'll mutate it */
 	while ((newsgroup = strsep(&newsgroups, ","))) {
+		char status[NNTP_BUFSIZ] = "y"; /* Default to 'y' in case it's a control message */
 		/* We don't ltrim here, as newsgroups should be comma-separated, without any spaces between them */
-		if (!group_exists(newsgroup)) {
-			bbs_debug(3, "Newsgroup '%s' does not exist\n", newsgroup); /* Try to deliver to any other groups listed */
+		if (group_get_status(newsgroup, status, sizeof(status))) {
+			/* If it's a newgroup/rmgroup message, group may not exist; that's fine, continue processing since we'll change the filing group shortly */
+			if (!(cmsg == CMSG_NEWGROUP || cmsg == CMSG_RMGROUP)) {
+				SET_POST_ERROR("Newsgroup '%s' does not exist", newsgroup); /* Try to deliver to any other groups listed */
+				continue;
+			}
+		}
+		if (!status_allows_posting(nntp, newsgroup, status, errorbuf, sizeof(errorbuf))) {
+			bbs_debug(3, "%s\n", errorbuf);
 			total_errors++;
+			if (nntp->mode == NNTP_MODE_TRANSIT) {
+				permission_errors++; /* If a group is rejected because of status, then it should get filed into junk; for readers though, we don't consider this a permissions error */
+			}
 			continue;
 		}
 		if (!ACL_ALLOWED_LOCKED(nntp, newsgroup, NNTP_ACL_POST)) {
-			bbs_debug(3, "ACL does not allow posting to %s\n", newsgroup);
+			SET_POST_ERROR("You are not allowed to post to %s", newsgroup);
 			permission_errors++;
-			total_errors++;
 			continue;
 		}
+		if (status[0] == 'j') {
+			/* If we don't end up with any valid groups, file it into junk */
+			junk_if_unfiled = 1;
+			continue;
+		} else if (status[0] == '=') {
+			/* Group is aliased to another group.
+			 * This has to come after the ACL check, since we don't check the permissions for the target group, only the original one. */
+			newsgroup = status + 1;
+		} else if (status[0] == 'm') {
+			/* If from a reader, need to send to moderator.
+			 * If from peer, should already have been approved. */
+			if (nntp->mode == NNTP_MODE_TRANSIT) {
+				if (!artinfo->approved) {
+					SET_POST_ERROR("Unapproved for \"%s\"", newsgroup);
+					permission_errors++;
+					continue;
+				}
+			} /* else, reader submissions are diverted to the moderator */
+		}
 		if (article_groups_contains(&groups, newsgroup)) {
-			bbs_debug(3, "Group '%s' is duplicated in Newsgroups list\n", newsgroup);
+			bbs_debug(3, "Group '%s' is duplicated in Newsgroups list\n", newsgroup); /* Not fatal so we don't set error */
 			total_errors++; /* The non-duplicated one may still succeed, so this doesn't necessarily mean we'll return failure */
 			continue;
 		}
 		if (groupcount++ < max_post_groups || (nntp->mode == NNTP_MODE_TRANSIT && groupcount < max_groups)) {
-			article_groups_add(&groups, newsgroup);
+			article_groups_add(&groups, newsgroup, status[0] == 'm');
 		}
 	}
 	ACL_UNLOCK(nntp);
+
+	/* If the message didn't include any valid groups on this server thus far, but either:
+	 * - we have a 'j' status for at least one of the attempted groups
+	 * - we are configured to file all received articles w/o any nonexistent groups to junk (implicit 'j' status for articles from peers, otherwise allowed by permissions)
+	 * then we go ahead and file into junk. */
+	if (!groupcount && (junk_if_unfiled || (nntp->mode == NNTP_MODE_TRANSIT && keepjunk && permission_errors < total_errors))) {
+		article_groups_add(&groups, "junk", 0);
+		groupcount++;
+		was_junk = 1; /* We'll know later we only accepted this because it went to junk */
+	}
 
 	if (nntp->mode == NNTP_MODE_READER && groupcount > max_post_groups) {
 		bbs_notice("Rejected post with %u groups (max allowed: %u)\n", groupcount, max_post_groups);
@@ -1258,40 +1635,108 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename, size_t po
 		goto cleanup;
 	}
 
+	if (!groupcount) {
+		goto cleanup; /* No point in proceeding if there are no groups */
+	}
+
+	if (artinfo->control) {
+		const char *ctlgrp;
+		/* If it's a control message that's in scope, it gets filed into a special control group.
+		 * We processed the groups above so that we could filter out anything we don't want. */
+		free_article_groups(&groups);
+		groupcount = 0;
+		switch (cmsg) {
+			case CMSG_NEWGROUP:
+				ctlgrp = "control.newgroup";
+				break;
+			case CMSG_RMGROUP:
+				ctlgrp = "control.rmgroup";
+				break;
+			case CMSG_CHECKGROUPS:
+				ctlgrp = "control.checkgroups";
+				break;
+			case CMSG_CANCEL:
+				ctlgrp = "control.cancel";
+				break;
+			case CMSG_UNKNOWN:
+				bbs_assert(0); /* Would have aborted already */
+				__builtin_unreachable(); /* Suppress maybe uninitialized usage of ctlgrp */
+		}
+		if (!group_exists(ctlgrp)) {
+			bbs_error("Control group '%s' doesn't exist, using '%s' instead\n", ctlgrp, "control");
+			ctlgrp = "control";
+			if (!group_exists(ctlgrp)) {
+				bbs_error("Control group '%s' doesn't exist, can't file control message\n", ctlgrp);
+				total_errors++;
+				goto cleanup;
+			}
+		}
+		groupcount++;
+		article_groups_add(&groups, ctlgrp, 0);
+		/*! \todo No further processing of control messages is currently done yet after filing into the appropriate control group */
+	}
+
 	/* Actually add message to groups */
 	srcfd = open(srcfilename, O_RDONLY);
 	if (srcfd < 0) {
 		bbs_error("Failed to open %s: %s\n", srcfilename, strerror(errno));
 		goto cleanup;
 	}
+
+	/* Process any moderated posts from readers and remove them from the list */
+	if (nntp->mode == NNTP_MODE_READER) {
+		int mod_errors = 0;
+		int mod_delivered = process_moderated_groups(&groups, srcfd, &mod_errors, errorbuf, sizeof(errorbuf));
+		/* If still have other unmoderated groups, continue, otherwise, we're done */
+		groupcount -= (unsigned int) (mod_delivered + mod_errors);
+		delivered += mod_delivered;
+		if (!groupcount) {
+			goto cleanup2; /* All groups were moderated, and may have failed or succeeded; on failure, errorbuf was set */
+		}
+		/* Some moderated deliveries may have failed, but we still have other groups, so continue nonetheless */
+	}
+
 	bbs_rwlock_wrlock(&nntp_lock);
-	delivered = spool_article_create(&groups, artinfo, srcfd, postlen);
+	delivered = spool_article_create(&groups, artinfo, srcfd, postlen); /* Assign article numbers, add Xref header, and deliver to spool */
 	bbs_rwlock_unlock(&nntp_lock);
+	if (delivered <= 0) {
+		temp_fail = 1; /* If we got this far and failed, for peers, this is a temporary failure, we want them to retry deliver later */
+	}
+
+cleanup2:
 	close(srcfd);
 
 cleanup:
-	if (!delivered) {
+	if (delivered <= 0) {
 		/* Should we instead do permanent error for transit (437), if newsgroup doesn't exist? But what if it's added later? */
+		log_article(nntp, artinfo, LOG_REJECT, errorbuf); /* Log in this log file, but since we use history for existence, temp failures will be accepted later (as desired) */
 		if (nntp->mode == NNTP_MODE_READER) {
-			if (permission_errors && total_errors == permission_errors) {
+			if (total_errors == 1 && errorbuf[0]) {
+				/* If attempted to post only to one group, use the specific error message we constructed */
+				nntp_send(nntp, permission_errors ? 440 : 441, "%s", errorbuf);
+			} else if (permission_errors && total_errors == permission_errors) {
 				/* We weren't authorized to post to the group(s) */
 				nntp_send(nntp, 440, "Posting not allowed");
 			} else {
 				nntp_send(nntp, 441, "Posting failed");
 			}
 		} else {
-			if (permission_errors && total_errors == permission_errors) {
-				nntp_send(nntp, 437, "Transfer rejected; do not retry");
-			} else {
+			if (temp_fail) {
 				nntp_send(nntp, 436, "Transfer failed; retry later");
+			} else {
+				if (total_errors == 1 && errorbuf[0]) {
+					nntp_send(nntp, 437, "%s", errorbuf);
+				} else {
+					nntp_send(nntp, 437, "Transfer rejected; do not retry");
+				}
 			}
 		}
 	} else {
 		/* Posting succeeded to at least one newsgroup. */
+		log_article(nntp, artinfo, was_junk ? LOG_JUNK : LOG_ACCEPT, errorbuf);
 		nntp_send(nntp, nntp->mode == NNTP_MODE_READER ? 240 : 235, "Article received OK");
 	}
-cleanup2:
-	free_if(uuid);
+
 	free_if(newsgroups);
 	free_article_groups(&groups);
 	return 0;
@@ -1553,6 +1998,20 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 			if (!len) {
 				artinfo->headerslen = postlen;
 				inheaders = 0; /* Got CR LF, end of headers */
+				/* Before reading the body, add any final headers that we require which aren't present yet: */
+				if (nntp->mode == NNTP_MODE_READER && !artinfo->messageid) {
+					/* Didn't get a Message-ID from the reader client, construct one for the article now. */
+					char articleidbuf[259];
+					char *uuid = bbs_uuid(); /* Use same UUID (and by extension, the same Article ID) for all newsgroups */
+					if (!uuid) {
+						postfail = 1;
+						continue;
+					}
+					/* We need to generate an article ID for this article, since this is its entry point into the news network */
+					snprintf(articleidbuf, sizeof(articleidbuf), "<%s@%s>", uuid, newsname);
+					free(uuid);
+					REPLACE(artinfo->messageid, articleidbuf);
+				}
 			} else if (STARTS_WITH(s, "Xref:")) {
 				/* Ignore any incoming Xref article, since we create our own rather than reuse.
 				 * The only exception to this would be when using a suck feed where we want to slave our article numbers off the feeder's. */
@@ -1565,22 +2024,24 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 			 * - Any lingering CR or LF is replaced with a single space (their presence is not legal, but for robustness, check/replace, RFC 3977 8.3.2)
 			 */
 			else SAVE_HEADER("Newsgroups", artinfo->newsgroups)
+			else SAVE_HEADER("Approved", artinfo->approved)
+			else SAVE_HEADER("Control", artinfo->control)
 			else SAVE_HEADER("Expires", artinfo->expires)
 			else SAVE_HEADER("Subject", artinfo->subject)
 			else SAVE_HEADER("From", artinfo->from)
 			else SAVE_HEADER("Date", artinfo->date)
 			else SAVE_HEADER("References", artinfo->references)
-			else if (nntp->mode == NNTP_MODE_TRANSIT && STARTS_WITH(s, "Message-ID:")) {
+			else if (STARTS_WITH(s, "Message-ID:")) {
 				const char *hval = s + STRLEN("Message-ID:");
 				ltrim(hval);
 				if (!strlen_zero(hval)) {
-					/* The article better be the article that the other server said it was in IHAVE */
-					if (strcmp(articleid, hval)) {
+					if (nntp->mode == NNTP_MODE_TRANSIT && strcmp(articleid, hval)) {
+						/* The article better be the article that the other server said it was in IHAVE */
 						bbs_debug(1, "Article Message-ID mismatch: IHAVE=%s, Message-ID=%s\n", articleid, s);
 						postfail = 1;
 						continue;
 					}
-					artinfo->messageid = articleid;
+					REPLACE(artinfo->messageid, hval);
 				}
 			}
 		} else {
@@ -2332,12 +2793,13 @@ static struct bbs_unit_test tests[] =
 {
 	{ "NNTP Wildmats", test_wildmats },
 	{ "NNTP Date Parsing", test_dateparsing },
+	{ "NNTP Moderator Submission Templates", test_moderator_templates },
 };
 
 static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_newgroup, "news newgroup", 2, "Create a new newsgroup", NULL),
 	BBS_CLI_COMMAND(cli_rmgroup, "news rmgroup", 3, "Remove a newsgroup", "news rmgroup <group> [confirm]"),
-	BBS_CLI_COMMAND(cli_setpost, "news setpost", 4, "Edit posting status for a newsgroup", "news setpost <group> <y/n/m>"),
+	BBS_CLI_COMMAND(cli_setstatus, "news setstatus", 4, "Edit posting status for a newsgroup", "news setstatus <group> <y/n/m>"),
 	BBS_CLI_COMMAND(cli_delarticle, "news delarticle", 4, "Delete an article", "news delarticle <group> <article number>"),
 };
 
@@ -2392,6 +2854,7 @@ static int load_config(void)
 	bbs_config_val_set_port(cfg, "nnsp", "port", &nnsp_port);
 
 	bbs_config_val_set_true(cfg, "relayin", "requiretls", &requirerelaytls);
+	bbs_config_val_set_true(cfg, "relayin", "keepjunk", &keepjunk);
 
 	bbs_config_val_set_uint(cfg, "relayout", "frequency", &relayfrequency);
 	bbs_config_val_set_uint(cfg, "relayout", "maxage", &relaymaxage);
@@ -2458,7 +2921,7 @@ static int load_config(void)
 				bbs_error("Unrecognized section name '%s' (if this is an ACL, add type=acl)\n", bbs_config_section_name(section));
 			} else if (!strcasecmp(type, "acl")) {
 				const char *guests = NULL, *userswm = NULL, *readwm = NULL, *postwm = NULL;
-				int tmp, minreadpriv = 0, minpostpriv = 0;
+				int tmp, minreadpriv = 0, minpostpriv = 0, minapprovepriv = 1;
 				while ((keyval = bbs_config_section_walk(section, keyval))) {
 					const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);
 					if (!strcasecmp(key, "type")) {
@@ -2485,6 +2948,13 @@ static int load_config(void)
 						} else {
 							minpostpriv = tmp;
 						}
+					} else if (!strcasecmp(key, "minapprovepriv")) {
+						tmp = atoi(val);
+						if (tmp < 0) {
+							bbs_error("Invalid %s: %s\n", key, val);
+						} else {
+							minapprovepriv = tmp;
+						}
 					}
 				}
 				if (!guests && !userswm) {
@@ -2492,7 +2962,7 @@ static int load_config(void)
 					continue;
 				}
 				/* Create the ACL */
-				load_acl(guests, userswm, readwm, postwm, minreadpriv, minpostpriv);
+				load_acl(guests, userswm, readwm, postwm, minreadpriv, minpostpriv, minapprovepriv);
 			} else {
 				bbs_error("Unrecognized section type '%s'\n", type);
 			}
@@ -2528,6 +2998,8 @@ static void cleanup_lists(void)
 
 static int load_module(void)
 {
+	char newslogpath[512];
+
 	RWLIST_HEAD_INIT(&acls);
 	RWLIST_HEAD_INIT(&inpeers);
 	RWLIST_HEAD_INIT(&distributions);
@@ -2553,6 +3025,19 @@ static int load_module(void)
 	}
 
 	bbs_rwlock_init(&nntp_lock, NULL);
+
+	if (init_builtin_groups()) {
+		bbs_rwlock_destroy(&nntp_lock);
+		goto cleanup;
+	}
+
+	snprintf(newslogpath, sizeof(newslogpath), "%s/nntp.log", BBS_LOG_DIR);
+	newslog = fopen(newslogpath, "a");
+	if (!newslog) {
+		bbs_error("Failed to open %s: %s\n", newslogpath, strerror(errno));
+		bbs_rwlock_destroy(&nntp_lock);
+		goto cleanup;
+	}
 
 	bbs_register_tests(tests);
 	bbs_cli_register_multiple(cli_commands_nntp);
@@ -2582,6 +3067,7 @@ static int unload_module(void)
 	cleanup_lists();
 	active_cleanup();
 	spool_cleanup();
+	fclose(newslog);
 	return 0;
 }
 

@@ -42,14 +42,14 @@ int active_group_delete(const char *groupname)
 	return active_file_group_delete(groupname);
 }
 
-int active_group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, char status, const char *description)
+int active_group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, const char *status, const char *description)
 {
 	return active_file_group_update(groupname, incrlast, last, high, low, count, status, description);
 }
 
-int active_group_info(const char *groupname, int *last, int *high, int *low, int *count, char *status, time_t *created, char *creator, size_t creatorlen, char *description, size_t descriplen)
+int active_group_info(const char *groupname, int *last, int *high, int *low, int *count, char *status, size_t statuslen, time_t *created, char *creator, size_t creatorlen, char *description, size_t descriplen)
 {
-	return active_file_group_info(groupname, last, high, low, count, status, created, creator, creatorlen, description, descriplen);
+	return active_file_group_info(groupname, last, high, low, count, status, statuslen, created, creator, creatorlen, description, descriplen);
 }
 
 int active_group_list(struct nntp_session *nntp, enum list_category listcat, const char *wildmat)

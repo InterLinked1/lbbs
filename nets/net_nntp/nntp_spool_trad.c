@@ -970,6 +970,9 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 	}
 	artinfo->bytes += xrefbytes;
 
+	/*! \todo FIXME If we fail below, then we should decrement at least the count for the failed groups,
+	 * otherwise the count will be out of sync with the spool */
+
 	/* Finally, actually add the article to the spool.
 	 * For the first group, we'll actually create a file in the spool;
 	 * subsequent groups (cross-posts) will just get a link to the file, to save space. */
