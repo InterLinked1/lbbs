@@ -567,7 +567,7 @@ static int run(void)
 	GROUP_EXPECT(client1, "misc.test", 8, 16, 7);
 	SWRITE(client1, "HDR :bytes 16\r\n");
 	CLIENT_EXPECT(client1, "225");
-	CLIENT_EXPECT(client1, "16 216");
+	CLIENT_EXPECT(client1, "16 287");
 
 	SWRITE(client1, "POST\r\n");
 	CLIENT_EXPECT(client1, "340");
@@ -594,11 +594,40 @@ static int run(void)
 	/* Same as previous message but with 6 extra lines that are dot-stuffed. 6 lines, 3 bytes each (. CR LF, but not including leading dot for dot-stuffing).
 	 * So, +18 bytes. */
 	CLIENT_EXPECT(client1, "225");
-	CLIENT_EXPECT(client1, "17 234");
+	CLIENT_EXPECT(client1, "17 305");
 
 	/* When requesting the article back, the lines with a '.' by themselves must be dot-stuffed back again */
 	SWRITE(client1, "BODY 17\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, ".." ENDL);
+
+	/* Test messages with multi-line headers */
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "340");
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
+		"Newsgroups: misc.test" ENDL \
+		"References: <ancestor1.foo>" ENDL \
+		"\t<ancestor2.foo> <ancestor3.foo>" ENDL \
+		" <ancestor4.foo>" ENDL \
+		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
+		"Xref: news.example.net misc.test:12" ENDL \
+		"Subject: I am just a test article" ENDL \
+		" that has multi-line headers" ENDL \
+		ENDL \
+		"This article tests dot-stuffing." ENDL \
+		"." ENDL; \
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT(client1, "240");
+
+	/* Ensure that we unfolded the multi-line References header and saved it properly: */
+	SWRITE(client1, "HDR References 18\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "18 <ancestor1.foo> <ancestor2.foo> <ancestor3.foo> <ancestor4.foo>" ENDL);
+
+	SWRITE(client1, "HDR Subject 18\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "18 I am just a test article that has multi-line headers" ENDL);
+
+	/* Test that the client-provided Xref header was properly ignored */
+	SWRITE(client1, "HDR Xref 18\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "18 Xref: news.example.com misc.test:18" ENDL);
 
 	/* Try some posts that should be rejected */
 	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "misc.restricted", 440); /* Disallowed by post wildmat */

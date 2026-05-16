@@ -1918,6 +1918,87 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		return 0; \
 	}
 
+static int save_header_value(struct nntp_session *nntp, struct article_info *artinfo, char *s, const char *articleid)
+{
+	char *hval;
+
+#define SAVE_HEADER(hdrname, var) \
+	if (STARTS_WITH(s, hdrname ":")) { \
+		hval = s + STRLEN(hdrname ":"); \
+		ltrim(hval); \
+		REPLACE(var, hval); \
+	}
+
+	/* CR LF pairs will not be present even in unfolded multi-line headers, since we appended with a space between lines.
+	 * We do a few other fixups if needed at the bottom of this function. */
+	SAVE_HEADER("Newsgroups", artinfo->newsgroups)
+	else SAVE_HEADER("Approved", artinfo->approved)
+	else SAVE_HEADER("Control", artinfo->control)
+	else SAVE_HEADER("Expires", artinfo->expires)
+	else SAVE_HEADER("Subject", artinfo->subject)
+	else SAVE_HEADER("From", artinfo->from)
+	else SAVE_HEADER("Date", artinfo->date)
+	else SAVE_HEADER("References", artinfo->references)
+	else if (STARTS_WITH(s, "Message-ID:")) {
+		hval = s + STRLEN("Message-ID:");
+		ltrim(hval);
+		if (!strlen_zero(hval)) {
+			if (nntp->mode == NNTP_MODE_TRANSIT && strcmp(articleid, hval)) {
+				/* The article better be the article that the other server said it was in IHAVE */
+				bbs_debug(1, "Article Message-ID mismatch: IHAVE=%s, Message-ID=%s\n", articleid, s);
+				return -1;
+			}
+			REPLACE(artinfo->messageid, hval);
+		}
+	} else {
+		return 0; /* Not a header of interest */
+	}
+
+	/* Fix up the header value saved in the variable, operating on it in place
+	 * The only thing we need to do at this point is replace any lingering tabs or stray CR or LF with a single space.
+	 * These should not be present as they are not legal, but we do this for robustness as suggested in RFC 3977 8.3.2,
+	 * as the values saved in artinfo variables will eventually make their way to being stored directly in the overview file.
+	 * This check is last so we don't need to do this for headers we aren't saving into a variable. */
+	while (*hval) {
+		if (*hval == '\t' || *hval == '\r' || *hval == '\n') {
+			*hval = ' ';
+		}
+		hval++;
+	}
+	return 0;
+}
+
+static int process_last_header(struct nntp_session *nntp, struct article_info *artinfo, char *s, FILE *fp, size_t *restrict postlen, const char *articleid)
+{
+	int res, len;
+
+	if (save_header_value(nntp, artinfo, s, articleid)) {
+		return -1;
+	}
+
+	/* Before reading the body (or if there is no body?), add any final headers that we require which aren't present yet: */
+	if (nntp->mode == NNTP_MODE_READER && !artinfo->messageid) {
+		/* Didn't get a Message-ID from the reader client, construct one for the article now. */
+		char articleidbuf[259];
+		char *uuid = bbs_uuid(); /* Use same UUID (and by extension, the same Article ID) for all newsgroups */
+		if (!uuid) {
+			return -1;
+		}
+		/* We need to generate an article ID for this article, since this is its entry point into the news network */
+		len = snprintf(articleidbuf, sizeof(articleidbuf), "Message-ID: <%s@%s>\r\n", uuid, newsname);
+		free(uuid);
+		res = bbs_append_line_message(fp, articleidbuf, (size_t) len); /* Should return len + 2 */
+		bbs_term_line(articleidbuf);
+		REPLACE(artinfo->messageid, articleidbuf + STRLEN("Message-ID: ")); /* Add to variable without CR LF */
+		if (res < 0) {
+			return -1;
+		}
+		*postlen += (size_t) res;
+	}
+
+	return 0;
+}
+
 /* articleid is only set for MODE_TRANSIT */
 static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rldata, const char *articleid)
 {
@@ -1927,6 +2008,9 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 	int postfail = 0;
 	size_t postlen = 0;
 	int lines = 0;
+	char headerbuf[4096]; /* Max header size for multi-line headers, this should be plenty - this isn't email! The main culprit is probably References... */
+	size_t headerleft = sizeof(headerbuf);
+	char *headerpos = headerbuf;
 	size_t dot_stuffed_lines = 0;
 	struct article_info *artinfo = &nntp->artinfo;
 
@@ -1948,13 +2032,6 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 	} else {
 		nntp_send(nntp, 335, "Send it; end with a period on its own line");
 	}
-
-#define SAVE_HEADER(hdrname, var) \
-		if (STARTS_WITH(s, hdrname ":")) { \
-			const char *hval = s + STRLEN(hdrname ":"); \
-			ltrim(hval); \
-			REPLACE(var, hval); \
-		}
 
 	for (;;) {
 		int res;
@@ -1999,50 +2076,38 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 			if (!len) {
 				artinfo->headerslen = postlen;
 				inheaders = 0; /* Got CR LF, end of headers */
-				/* Before reading the body, add any final headers that we require which aren't present yet: */
-				if (nntp->mode == NNTP_MODE_READER && !artinfo->messageid) {
-					/* Didn't get a Message-ID from the reader client, construct one for the article now. */
-					char articleidbuf[259];
-					char *uuid = bbs_uuid(); /* Use same UUID (and by extension, the same Article ID) for all newsgroups */
-					if (!uuid) {
-						postfail = 1;
-						continue;
-					}
-					/* We need to generate an article ID for this article, since this is its entry point into the news network */
-					snprintf(articleidbuf, sizeof(articleidbuf), "<%s@%s>", uuid, newsname);
-					free(uuid);
-					REPLACE(artinfo->messageid, articleidbuf);
+				if (process_last_header(nntp, artinfo, headerbuf, fp, &postlen, articleid)) {
+					postfail = 1;
+					continue;
 				}
-			} else if (STARTS_WITH(s, "Xref:")) {
-				/* Ignore any incoming Xref article, since we create our own rather than reuse.
-				 * The only exception to this would be when using a suck feed where we want to slave our article numbers off the feeder's. */
-				continue;
-			}
-			/*! \todo Need to properly parse any multi-line headers
-			 * Most of these fields will make their way into the overview file, which requires:
-			 * - CR LF be removed (multi-line headers)
-			 * - tabs be replaced with a single space
-			 * - Any lingering CR or LF is replaced with a single space (their presence is not legal, but for robustness, check/replace, RFC 3977 8.3.2)
-			 */
-			else SAVE_HEADER("Newsgroups", artinfo->newsgroups)
-			else SAVE_HEADER("Approved", artinfo->approved)
-			else SAVE_HEADER("Control", artinfo->control)
-			else SAVE_HEADER("Expires", artinfo->expires)
-			else SAVE_HEADER("Subject", artinfo->subject)
-			else SAVE_HEADER("From", artinfo->from)
-			else SAVE_HEADER("Date", artinfo->date)
-			else SAVE_HEADER("References", artinfo->references)
-			else if (STARTS_WITH(s, "Message-ID:")) {
-				const char *hval = s + STRLEN("Message-ID:");
-				ltrim(hval);
-				if (!strlen_zero(hval)) {
-					if (nntp->mode == NNTP_MODE_TRANSIT && strcmp(articleid, hval)) {
-						/* The article better be the article that the other server said it was in IHAVE */
-						bbs_debug(1, "Article Message-ID mismatch: IHAVE=%s, Message-ID=%s\n", articleid, s);
-						postfail = 1;
+			} else {
+				/* Another header, or continuation of one... */
+				if (s[0] == ' ' || s[0] == '\t') {
+					/* Continuation of previous header */
+					if (headerpos == headerbuf) { /* If we skipped a header (e.g. Xref), then we don't do anything here */
+						continue; /* Skipping rest of a header we don't want */
+					}
+					SAFE_FAST_APPEND(headerbuf, sizeof(headerbuf), headerpos, headerleft, "%s", s + 1); /* Append to existing header (skip first char, space or tab, since we already add a space) */
+				} else {
+					/* Flush any existing header */
+					if (headerpos > headerbuf) {
+						/* If this is a header we care about, save it into the artinfo structure with each header unfolded into a single line; otherwise ignore.
+						 * Of course, all the headers are saved as is in the file, unless we explicitly skip the header. */
+						if (save_header_value(nntp, artinfo, headerbuf, articleid)) {
+							postfail = 1;
+							continue;
+						}
+					}
+					/* New header */
+					headerbuf[0] = '\0'; /* Reset */
+					headerpos = headerbuf; /* Reset */
+					headerleft = sizeof(headerbuf); /* Reset */
+					if (STARTS_WITH(s, "Xref:")) {
+						/* Ignore any incoming Xref article, since we create our own rather than reuse.
+						 * The only exception to this would be when using a suck feed where we want to slave our article numbers off the feeder's. */
 						continue;
 					}
-					REPLACE(artinfo->messageid, hval);
+					SAFE_FAST_APPEND(headerbuf, sizeof(headerbuf), headerpos, headerleft, "%s", s);
 				}
 			}
 		} else {
