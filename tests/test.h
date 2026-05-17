@@ -138,7 +138,7 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 	CLI_SWRITE(sockfd, creator CLI_EOL); \
 	CLI_SWRITE(sockfd, posting CLI_EOL);
 
-#define IHAVE_NEWS_ARTICLE(s, fd, messageid, from, newsgroup, addl) \
+#define SEND_NEWS_ARTICLE(s, fd, messageid, from, newsgroup, addl) \
 	s = "From: \"Demo User\" <" from ">" ENDL \
 		"Newsgroups: " newsgroup ENDL \
 		addl \

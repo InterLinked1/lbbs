@@ -28,17 +28,17 @@
 #include "../nets/net_nntp/nntp.h"
 
 #define IHAVE_ADDITIONAL_RESPONSE(fd, messageid, email, group, addl, respcode) \
-	SWRITE(clientfd, "IHAVE " messageid "\r\n"); \
-	CLIENT_EXPECT_CODE(clientfd, NNTP_CONT_IHAVE); \
-	IHAVE_NEWS_ARTICLE(s, fd, messageid, email, group, addl); \
+	SWRITE(peer1, "IHAVE " messageid "\r\n"); \
+	CLIENT_EXPECT_CODE(peer1, NNTP_CONT_IHAVE); \
+	SEND_NEWS_ARTICLE(s, fd, messageid, email, group, addl); \
 	CLIENT_EXPECT_CODE(fd, respcode);
 
 #define IHAVE_RESPONSE(fd, messageid, email, group, respcode) \
 	IHAVE_ADDITIONAL_RESPONSE(fd, messageid, email, group, "", respcode)
 
 #define IHAVE_REFUSED(fd, messageid, email, group) \
-	SWRITE(clientfd, "IHAVE " messageid "\r\n"); \
-	CLIENT_EXPECT_CODE(clientfd, NNTP_FAIL_IHAVE_REFUSE); \
+	SWRITE(peer1, "IHAVE " messageid "\r\n"); \
+	CLIENT_EXPECT_CODE(peer1, NNTP_FAIL_IHAVE_REFUSE); \
 
 #define IHAVE(fd, messageid, email, group) IHAVE_RESPONSE(fd, messageid, email, group, NNTP_OK_IHAVE)
 
@@ -84,57 +84,94 @@ cleanup:
 static int run(void)
 {
 	const char *s;
-	int clientfd;
+	int peer1, peer2 = -1;
 	int res = -1;
 
 	if (create_groups()) {
 		return -1;
 	}
 
-	clientfd = test_make_socket(433);
-	REQUIRE_FD(clientfd);
+	peer1 = test_make_socket(433);
+	REQUIRE_FD(peer1);
 
 	/* Initial connection */
-	CLIENT_EXPECT(clientfd, XSTR(NNTP_OK_BANNER_POST) " " TEST_NEWS_HOSTNAME);
-	SWRITE(clientfd, "CAPABILITIES\r\n");
-	CLIENT_EXPECT_CODE(clientfd, NNTP_INFO_CAPABILITIES);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "IHAVE");
+	CLIENT_EXPECT(peer1, XSTR(NNTP_OK_BANNER_POST) " " TEST_NEWS_HOSTNAME);
+	SWRITE(peer1, "CAPABILITIES\r\n");
+	CLIENT_EXPECT_CODE(peer1, NNTP_INFO_CAPABILITIES);
+	CLIENT_EXPECT_EVENTUALLY(peer1, "IHAVE");
 
-	IHAVE(clientfd, "<test.message@" TEST_NEWS_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test"); /* Offer new article that we don't currently have. */
-	IHAVE_REFUSED(clientfd, "<test.message@" TEST_NEWS_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test"); /* Offer the same article again, it should be rejected. */
-	IHAVE_RESPONSE(clientfd, "<restricted.message@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.restricted", 437); /* Offer an article in a newsgroup for which peering is not authorized */
+	IHAVE(peer1, "<test.message@" TEST_NEWS_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test"); /* Offer new article that we don't currently have. */
+	IHAVE_REFUSED(peer1, "<test.message@" TEST_NEWS_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test"); /* Offer the same article again, it should be rejected. */
+	IHAVE_RESPONSE(peer1, "<restricted.message@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.restricted", 437); /* Offer an article in a newsgroup for which peering is not authorized */
 
 	/* Shouldn't be able to read any articles from this group either */
-	SWRITE(clientfd, "GROUP misc.restricted\r\n");
-	CLIENT_EXPECT_CODE(clientfd, NNTP_ERR_ACCESS);
+	SWRITE(peer1, "GROUP misc.restricted\r\n");
+	CLIENT_EXPECT_CODE(peer1, NNTP_ERR_ACCESS);
 
-	IHAVE_RESPONSE(clientfd, "<testmessage.101@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.closed", 437); /* Can't post to closed group with status 'x' */
-	IHAVE(clientfd, "<testmessage.102@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.junk"); /* Can post to a group that gets filed into junk (i.e. peered but not carried locally) */
-	IHAVE(clientfd, "<testmessage.103@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.nolocal"); /* Can post to group with 'n' status */
+	IHAVE_RESPONSE(peer1, "<testmessage.101@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.closed", 437); /* Can't post to closed group with status 'x' */
+	IHAVE(peer1, "<testmessage.102@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.junk"); /* Can post to a group that gets filed into junk (i.e. peered but not carried locally) */
+	IHAVE(peer1, "<testmessage.103@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.nolocal"); /* Can post to group with 'n' status */
 
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_NEWS_DIR "/misc/test", 2); /* Group has 1 article + overview file */
-	IHAVE(clientfd, "<testmessage.104@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.aliased"); /* Can post to aliased group, should get filed into misc.test instead */
+	IHAVE(peer1, "<testmessage.104@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.aliased"); /* Can post to aliased group, should get filed into misc.test instead */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_NEWS_DIR "/misc/test", 3);
 
-	IHAVE_RESPONSE(clientfd, "<testmessage.105@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.moderated", 437); /* Messages to moderated group should be rejected without Approved header */
-	IHAVE_ADDITIONAL(clientfd, "<testmessage.106@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.moderated", "Approved: moderator@bbs.example.com\r\n"); /* Add Approved header, and now it should work */
+	IHAVE_RESPONSE(peer1, "<testmessage.105@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.moderated", 437); /* Messages to moderated group should be rejected without Approved header */
+	IHAVE_ADDITIONAL(peer1, "<testmessage.106@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.moderated", "Approved: moderator@bbs.example.com\r\n"); /* Add Approved header, and now it should work */
 
 	/* Attempt to create a new group, the message should get filed into control.newgroup. Not a properly formed newgroup cmsg, but it suffices for now. */
-	IHAVE_ADDITIONAL(clientfd, "<testmessage.ctl1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.newgroup", "Control: newgroup test.newgroup\r\nApproved: newsmaster@bbs.example.com\r\n");
+	IHAVE_ADDITIONAL(peer1, "<testmessage.ctl1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.newgroup", "Control: newgroup test.newgroup\r\nApproved: newsmaster@bbs.example.com\r\n");
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_NEWS_DIR "/control/newgroup", 2); /* Control message + overview file */
 
 	/* Send an article with distributions. First, we include one that is accepted, but the second one time, we include only an unwanted distribution. */
 
 	/* Because dist1a is wanted, even though dist2a is not, article is accepted */
-	IHAVE_ADDITIONAL(clientfd, "<testmessage.dist1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test", "Distribution: dist1a,dist1b\r\n");
+	IHAVE_ADDITIONAL(peer1, "<testmessage.dist1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test", "Distribution: dist1a,dist1b\r\n");
 
 	/* Because dist2a is not wanted by any of the matching inpeer entries, article is rejected */
-	IHAVE_ADDITIONAL_RESPONSE(clientfd, "<testmessage.dist2@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test", "Distribution: dist1b\r\n", 437);
+	IHAVE_ADDITIONAL_RESPONSE(peer1, "<testmessage.dist2@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test", "Distribution: dist1b\r\n", 437);
+
+	/* Test article deferral for in-progress articles */
+	peer2 = test_make_socket(433);
+	REQUIRE_FD(peer2);
+	CLIENT_EXPECT_CODE(peer2, NNTP_OK_BANNER_POST);
+
+	SWRITE(peer2, "MODE STREAM" ENDL);
+	CLIENT_EXPECT_CODE(peer2, NNTP_OK_STREAM);
+
+	SWRITE(peer1, "CHECK <concurrently.delivered>" ENDL);
+	CLIENT_EXPECT(peer1, XSTR(NNTP_OK_CHECK) " <concurrently.delivered>");
+	SWRITE(peer2, "CHECK <concurrently.delivered>" ENDL);
+	CLIENT_EXPECT(peer2, XSTR(NNTP_OK_CHECK) " <concurrently.delivered>");
+	SWRITE(peer1, "IHAVE <concurrently.delivered>" ENDL);
+	CLIENT_EXPECT_CODE(peer1, NNTP_CONT_IHAVE); /* At this point, article delivery is now in progress */
+	SWRITE(peer2, "CHECK <concurrently.delivered>" ENDL);
+	CLIENT_EXPECT_CODE(peer2, NNTP_FAIL_CHECK_DEFER); /* Article should be deferred */
+	SEND_NEWS_ARTICLE(s, peer1, "<concurrently.delivered>", TEST_EMAIL_EXTERNAL, "misc.test", "");
+	CLIENT_EXPECT_CODE(peer1, NNTP_OK_IHAVE);
+	SWRITE(peer2, "CHECK <concurrently.delivered>" ENDL);
+	CLIENT_EXPECT_CODE(peer2, NNTP_FAIL_CHECK_REFUSE); /* Article should be now be rejected outright */
+
+	/* Peer 2 now sends the same article again anyways, should be rejected */
+	SWRITE(peer2, "TAKETHIS <concurrently.delivered>" ENDL);
+	SEND_NEWS_ARTICLE(s, peer2, "<concurrently.delivered>", TEST_EMAIL_EXTERNAL, "misc.test", "");
+	CLIENT_EXPECT(peer2, XSTR(NNTP_FAIL_TAKETHIS_REJECT) " <concurrently.delivered>");
+
+	/* A different article using TAKETHIS should succeed (not yet received) */
+	SWRITE(peer2, "TAKETHIS <nonconcurrently.delivered>" ENDL);
+	SEND_NEWS_ARTICLE(s, peer2, "<nonconcurrently.delivered>", TEST_EMAIL_EXTERNAL, "misc.test", "");
+	CLIENT_EXPECT(peer2, XSTR(NNTP_OK_TAKETHIS) " <nonconcurrently.delivered>");
+
+	/* Send malformed article, which will be rejected */
+	SWRITE(peer2, "TAKETHIS <malformed.message>" ENDL);
+	SWRITE(peer2, "Newsgroups: misc.test\r\n.\r\n");
+	CLIENT_EXPECT(peer2, XSTR(NNTP_FAIL_TAKETHIS_REJECT) " <malformed.message>");
 
 	res = 0;
 
 cleanup:
-	close(clientfd);
+	close(peer1);
+	close_if(peer2);
 	return res;
 }
 

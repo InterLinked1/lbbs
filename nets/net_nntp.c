@@ -18,6 +18,7 @@
  * \note Supports RFC 3977 OVER (including MSGID)
  * \note Supports RFC 4642 STARTTLS
  * \note Supports RFC 4643 AUTHINFO
+ * \note Supports RFC 4644 STREAMING
  * \note Supports RFC 6048 LIST extensions
  * \note Supports RFC 8054 COMPRESS DEFLATE
  *
@@ -1572,16 +1573,21 @@ static int process_moderated_groups(struct article_groups *groups, int fd, int *
 	return diverted;
 }
 
-static void log_article(struct nntp_session *nntp, struct article_info *artinfo, char code, const char *text)
+static void log_article(struct nntp_session *nntp, int streaming, size_t rxbytes, const char *messageid, char code, const char *text)
 {
 	time_t now;
 	struct timeval tvnow;
 	char buf[26];
 
+	if (unlikely(messageid == NULL)) {
+		return; /* Would only happen for certain rejected posts from readers, which we don't care about so much anyways */
+	}
+
 #define LOG_REJECT '-'
 #define LOG_ACCEPT '+'
 #define LOG_JUNK 'j'
-#define LOG_DUPLICATE 'd'
+#define LOG_DUPLICATE 'c'
+#define LOG_DEFER 'd'
 
 #pragma GCC diagnostic ignored "-Waggregate-return"
 	tvnow = bbs_tvnow();
@@ -1590,8 +1596,8 @@ static void log_article(struct nntp_session *nntp, struct article_info *artinfo,
 	now = time(NULL);
 	ctime_r(&now, buf);
 	/* No locking needed, fprintf will properly interleave writes */
-	fprintf(newslog, "%.15s.%03d %c %c %s %s%s%s\n", buf + 4, (int) (tvnow.tv_usec / 1000),
-		code, nntp->mode == NNTP_MODE_READER ? 'R' : 'T', nntp->node->ip, artinfo->messageid, text ? " " : "", S_IF(text));
+	fprintf(newslog, "%.15s.%03d %c %c %s %lu %s%s%s\n", buf + 4, (int) (tvnow.tv_usec / 1000),
+		code, nntp->mode == NNTP_MODE_READER ? 'R' : streaming ? 'S' : 'T', nntp->node->ip, rxbytes, messageid, text ? " " : "", S_IF(text));
 }
 
 /*! \brief Whether a client (reader or peer) can post to a group based on its status */
@@ -1674,11 +1680,9 @@ static enum nntp_control_msg parse_cmsg(const char *s)
 	}
 }
 
-/*! \retval 0 on success, NNTP error code on failure or -1 for the default error code depending on mode */
+/*! \retval 0 on success, or 1 on duplicate or -1 for the default error code depending on mode */
 static int check_article(struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen, enum nntp_control_msg *cmsg)
 {
-	int reader = nntp->mode == NNTP_MODE_READER;
-
 #define REQUIRE_ARTINFO_FIELD(field) \
 	if (!artinfo->field) { \
 		snprintf(errbuf, errbuflen, "Missing field %s\n", #field); \
@@ -1742,15 +1746,15 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 		}
 	}
 
-	/* Could be a race condition, maybe we didn't have the article when the client said IHAVE,
-	 * but now we do (possibly from some other server). Check again. */
+	/* Could be a race condition, maybe we didn't have the article when the client said CHECK/IHAVE,
+	 * but now we do (possibly from some other server). Check again before we attempt to store it in the spool. */
 	if (spool_article_exists(artinfo->messageid)) {
 		snprintf(errbuf, errbuflen, "Message %s is a duplicate", artinfo->messageid);
-		return reader ? NNTP_FAIL_POST_REJECT : NNTP_FAIL_IHAVE_REFUSE;
+		return 1; /* Use specific response to refuse articles with IHAVE, otherwise use default */
 	}
 
 	/*! \todo Do further validation of fields here as needed.
-	 * Validate header validity itself in handle_post_ihave as we parse the header so we don't have to scan over all headers again */
+	 * Validate header validity itself in receive_article as we parse the header so we don't have to scan over all headers again */
 	return 0;
 }
 
@@ -1759,8 +1763,30 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 	snprintf(errorbuf, sizeof(errorbuf), fmt, ## __VA_ARGS__); \
 	total_errors++;
 
-/*! \brief Final processing of POST/IHAVE */
-static int do_post(struct nntp_session *nntp, const char *srcfilename, size_t postlen)
+#define RX_REJECT(nntp, streaming) (streaming ? NNTP_FAIL_TAKETHIS_REJECT : nntp->mode == NNTP_MODE_TRANSIT ? NNTP_FAIL_IHAVE_REJECT : NNTP_FAIL_POST_REJECT)
+
+#define nntp_rx_reply(nntp, postlen, messageid, logcode, code, msg) nntp_rx_reply_streaming(nntp, streaming, postlen, messageid, logcode, code, msg)
+
+#define nntp_rx_reply_streaming(nntp, streaming, postlen, messageid, logcode, code, msg) \
+	log_article(nntp, streaming, postlen, messageid, logcode, msg); \
+	nntp_send(nntp, code, msg)
+
+/* Send a custom error message to client (unless streaming) and do NOT include it in the log */
+#define nntp_rx_reply2(nntp, postlen, messageid, logcode, code, msg) nntp_rx_reply2_streaming(nntp, streaming, postlen, messageid, logcode, code, msg)
+
+/* Send a custom error message to client (unless streaming) but include it in the log */
+#define nntp_rx_reply3(nntp, postlen, messageid, logcode, code, msg) nntp_rx_reply3_streaming(nntp, streaming, postlen, messageid, logcode, code, msg)
+
+#define nntp_rx_reply2_streaming(nntp, streaming, postlen, messageid, logcode, code, msg) \
+	log_article(nntp, streaming, postlen, messageid, logcode, ""); \
+	nntp_send(nntp, code, "%s", streaming ? messageid : msg)
+
+#define nntp_rx_reply3_streaming(nntp, streaming, postlen, messageid, logcode, code, msg) \
+	log_article(nntp, streaming, postlen, messageid, logcode, msg); \
+	nntp_send(nntp, code, "%s", streaming ? messageid : msg)
+
+/*! \brief Final processing of POST/IHAVE/TAKETHIS */
+static int process_article(struct nntp_session *nntp, const char *srcfilename, size_t postlen, const char *articleid, int streaming)
 {
 	char *newsgroup, *newsgroups = NULL;
 	int delivered = 0;
@@ -1779,11 +1805,14 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename, size_t po
 	/* Perform non-group specific checks for article and header validity. If any fail, the entire post is rejected. */
 	res = check_article(nntp, artinfo, errorbuf, sizeof(errorbuf), &cmsg);
 	if (res) {
+		/* errorbuf is set if we fail, send the error message now (except for TAKETHIS, where we only send Message-ID) */
 		if (res == -1) {
-			res = nntp->mode == NNTP_MODE_READER ? NNTP_FAIL_POST_REJECT : NNTP_FAIL_IHAVE_REJECT;
+			res = RX_REJECT(nntp, streaming); /* Use the default error for rejecting an article depending on mode (reader/transit and streaming or not) */
+			nntp_rx_reply3(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, res, errorbuf);
+		} else if (res == 1) {
+			res = nntp->mode == NNTP_MODE_TRANSIT && !streaming ? NNTP_FAIL_IHAVE_REFUSE : RX_REJECT(nntp, streaming); /* Duplicate */
+			nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_DUPLICATE, res, errorbuf);
 		}
-		nntp_send(nntp, res, "%s", errorbuf); /* errorbuf is set if we fail, send the error message now */
-		log_article(nntp, artinfo, res == NNTP_FAIL_IHAVE_REFUSE ? LOG_DUPLICATE : LOG_REJECT, errorbuf);
 		return 0;
 	}
 
@@ -1933,38 +1962,41 @@ cleanup2:
 	close(srcfd);
 
 cleanup:
+	free_article_groups(&groups);
 	if (delivered <= 0) {
 		/* Should we instead do permanent error for transit (437), if newsgroup doesn't exist? But what if it's added later? */
-		log_article(nntp, artinfo, LOG_REJECT, errorbuf); /* Log in this log file, but since we use history for existence, temp failures will be accepted later (as desired) */
 		if (nntp->mode == NNTP_MODE_READER) {
 			if (total_errors == 1 && errorbuf[0]) {
 				/* If attempted to post only to one group, use the specific error message we constructed */
-				nntp_send(nntp, permission_errors ? NNTP_FAIL_POST_AUTH : NNTP_FAIL_POST_REJECT, "%s", errorbuf);
+				nntp_rx_reply3(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, permission_errors ? NNTP_FAIL_POST_AUTH : NNTP_FAIL_POST_REJECT, errorbuf);
 			} else if (permission_errors && total_errors == permission_errors) {
 				/* We weren't authorized to post to the group(s) */
-				nntp_send(nntp, NNTP_FAIL_POST_AUTH, "Posting not allowed");
+				nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, NNTP_FAIL_POST_AUTH, "Posting not allowed");
 			} else {
-				nntp_send(nntp, NNTP_FAIL_POST_REJECT, "Posting failed");
+				nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, NNTP_FAIL_POST_REJECT, "Posting failed");
 			}
 		} else {
 			if (temp_fail) {
-				nntp_send(nntp, NNTP_FAIL_IHAVE_DEFER, "Transfer failed; retry later");
+				if (streaming) {
+					/* RFC 4644 2.5.2 says to defer with TAKETHIS, we MUST send a 400 response and disconnect */
+					nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_DEFER, NNTP_FAIL_TERMINATING, "Service temporarily unavailable");
+					return -1;
+				}
+				nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Transfer failed; retry later");
 			} else {
+				/* If multiple errors occured, use a generic error response, otherwise provide the specific message */
 				if (total_errors == 1 && errorbuf[0]) {
-					nntp_send(nntp, NNTP_FAIL_IHAVE_REJECT, "%s", errorbuf);
+					nntp_rx_reply3(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, streaming ? NNTP_FAIL_TAKETHIS_REJECT : NNTP_FAIL_IHAVE_REJECT, errorbuf);
 				} else {
-					nntp_send(nntp, NNTP_FAIL_IHAVE_REJECT, "Transfer rejected; do not retry");
+					nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, streaming ? NNTP_FAIL_TAKETHIS_REJECT : NNTP_FAIL_IHAVE_REJECT, "Transfer rejected; do not retry");
 				}
 			}
 		}
 	} else {
-		/* Posting succeeded to at least one newsgroup. */
-		log_article(nntp, artinfo, was_junk ? LOG_JUNK : LOG_ACCEPT, errorbuf);
-		nntp_send(nntp, nntp->mode == NNTP_MODE_READER ? NNTP_OK_POST : NNTP_OK_IHAVE, "Article received OK");
+		/* Posting succeeded to at least one newsgroup (in which case Message-ID must be set). */
+		nntp_rx_reply2(nntp, postlen, artinfo->messageid, was_junk ? LOG_JUNK : LOG_ACCEPT,
+			streaming ? NNTP_OK_TAKETHIS : nntp->mode == NNTP_MODE_TRANSIT ? NNTP_OK_IHAVE : NNTP_OK_POST, "Article received OK");
 	}
-
-	free_if(newsgroups);
-	free_article_groups(&groups);
 	return 0;
 }
 
@@ -2136,6 +2168,21 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		return 0; \
 	}
 
+#define REQUIRE_TRANSIT() \
+	if (nntp->mode != NNTP_MODE_TRANSIT) { \
+		nntp_send(nntp, NNTP_FAIL_WRONG_MODE, "Readers must use POST, not IHAVE"); \
+		return 0; \
+	} \
+	if (requirerelaytls && !nntp->node->secure) { \
+		nntp_send(nntp, NNTP_FAIL_PRIVACY_NEEDED, "Secure connection required"); \
+		return 0; \
+	} \
+	if (!nntp->inpeer_any) { \
+		bbs_notice("Sender %s/%s unauthorized to send us articles\n", bbs_username(nntp->node->user), nntp->node->ip); \
+		nntp_send(nntp, NNTP_ERR_ACCESS, "Not authorized to relay articles"); \
+		return 0; \
+	}
+
 #define REQUIRE_GROUP() \
 	if (!nntp->currentgroup) { \
 		nntp_send(nntp, NNTP_FAIL_NO_GROUP, "No newsgroup selected"); \
@@ -2251,7 +2298,7 @@ static int process_last_header(struct nntp_session *nntp, struct article_info *a
 	if (nntp->mode == NNTP_MODE_TRANSIT && artinfo->messageid && strcmp(artinfo->messageid, articleid)) {
 		/* The article better be the article that the other server said it was in IHAVE */
 		bbs_debug(1, "Article Message-ID mismatch: IHAVE=%s, Message-ID=%s\n", articleid, s);
-		return -1;
+		return 1; /* Permanently reject message */
 	}
 
 	if (nntp->mode == NNTP_MODE_READER && !artinfo->messageid) {
@@ -2270,12 +2317,12 @@ static int process_last_header(struct nntp_session *nntp, struct article_info *a
 }
 
 /* articleid is only set for MODE_TRANSIT */
-static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rldata, const char *articleid)
+static int receive_article(struct nntp_session *nntp, struct readline_data *rldata, const char *articleid, int streaming)
 {
 	char template[64];
 	FILE *fp;
 	int inheaders = 1;
-	int postfail = 0;
+	int permerror = 0, postfail = 0;
 	size_t postlen = 0;
 	int lines = 0;
 	char headerbuf[4096]; /* Max header size for multi-line headers, this should be plenty - this isn't email! The main culprit is probably References... */
@@ -2289,18 +2336,23 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 
 	fp = bbs_mkftemp(template, 0600);
 	if (!fp) {
-		if (nntp->mode == NNTP_MODE_READER) {
-			nntp_send(nntp, NNTP_FAIL_POST_AUTH, "Server error, posting temporarily unavailable");
+		if (streaming) { /* TAKETHIS */
+			nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_TERMINATING, "Service temporarily unavailable"); /* RFC 4644 2.5.2 says to defer with TAKETHIS, we MUST send a 400 response and disconnect */
+			return -1;
+		} else if (nntp->mode == NNTP_MODE_READER) {
+			nntp_rx_reply(nntp, 0, articleid,LOG_DEFER, NNTP_FAIL_POST_AUTH, "Server error, posting temporarily unavailable");
 		} else {
-			nntp_send(nntp, NNTP_FAIL_IHAVE_DEFER, "Temporary server error, try again later");
+			nntp_rx_reply(nntp, 0, articleid,LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Temporary server error, try again later");
 		}
 		return 0;
 	}
 
-	if (nntp->mode == NNTP_MODE_READER) {
-		nntp_send(nntp, NNTP_CONT_POST, "Input article; end with a period on its own line");
-	} else {
-		nntp_send(nntp, NNTP_CONT_IHAVE, "Send it; end with a period on its own line");
+	if (!streaming) {
+		if (nntp->mode == NNTP_MODE_READER) {
+			nntp_send(nntp, NNTP_CONT_POST, "Input article");
+		} else {
+			nntp_send(nntp, NNTP_CONT_IHAVE, "Send it");
+		}
 	}
 
 	for (;;) {
@@ -2316,16 +2368,27 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 		if (!strcmp(s, ".")) {
 			fclose(fp);
 			if (postfail) {
-				if (inheaders || postlen >= max_post_size) {
-					/* Permanent error */
-					nntp_send(nntp, nntp->mode == NNTP_MODE_TRANSIT ? NNTP_FAIL_IHAVE_REJECT : NNTP_FAIL_POST_REJECT,
-						"Transfer rejected (%s); do not retry", inheaders ? "article mismatch" : "too large");
-				} else if (nntp->mode == NNTP_MODE_TRANSIT) {
-					nntp_send(nntp, NNTP_FAIL_IHAVE_DEFER, "Transfer not possible; try again later"); /* Temporary error */
-				} else {
-					nntp_send(nntp, NNTP_FAIL_POST_REJECT, "Posting failed%s", postlen >= max_post_size ? " (too large)" : "");
-				}
 				unlink(template);
+				if (inheaders || permerror || postlen >= max_post_size) {
+					/* Permanent error */
+					if (inheaders) {
+						nntp_rx_reply(nntp, postlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected (ill-formed article); do not retry");
+					} else if (postlen >= max_post_size) {
+						nntp_rx_reply(nntp, postlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected (too large); do not retry");
+					} else {
+						nntp_rx_reply(nntp, postlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected; do not retry"); /* Catch-all, but I don't think this case is possible */
+					}
+				} else {
+					/* Temporary error */
+					if (streaming) {
+						nntp_rx_reply(nntp, postlen, articleid, LOG_DEFER, NNTP_FAIL_TERMINATING, "Transfer failed; retry later");
+						return -1;
+					} else if (nntp->mode == NNTP_MODE_TRANSIT) {
+						nntp_rx_reply(nntp, postlen, articleid, LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Transfer not possible; retry later");
+					} else {
+						nntp_rx_reply(nntp, postlen, articleid, LOG_DEFER, NNTP_FAIL_POST_REJECT, "Posting failed");
+					}
+				}
 				return 0;
 			}
 			/* We handle dot-stuffing mostly transparently, i.e. the leading dots are stored in the spool
@@ -2334,19 +2397,23 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 			 * This is intended (see RFC 3977 8.1.1, :bytes is not supposed to include dot-stuffing). */
 			artinfo->bytes = postlen - dot_stuffed_lines;
 			artinfo->lines = lines;
-			res = do_post(nntp, template, postlen);
+			res = process_article(nntp, template, postlen, articleid, streaming);
 			unlink(template);
 			return res;
 		}
 
 		if (postfail) {
+			postlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
 			continue; /* Corruption already happened, just ignore the rest of the message for now. */
 		} else if (inheaders) {
 			if (!len) {
+				int hres;
 				artinfo->headerslen = postlen;
 				inheaders = 0; /* Got CR LF, end of headers */
-				if (process_last_header(nntp, artinfo, headerbuf, fp, &postlen, articleid)) {
+				hres = process_last_header(nntp, artinfo, headerbuf, fp, &postlen, articleid);
+				if (hres) {
 					postfail = 1;
+					permerror = hres == 1;
 					continue;
 				}
 			} else {
@@ -2388,7 +2455,7 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 
 		if ((unsigned int) (postlen + (long unsigned int) len + 2) >= max_post_size) {
 			postfail = 1;
-			postlen = max_post_size; /* This isn't really true, this is so we can detect that the message was too large. */
+			postlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
 			continue;
 		}
 
@@ -2417,6 +2484,96 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 		}
 		postlen += (size_t) res;
 	}
+}
+
+/*! \brief "Work in progress" article currently being received */
+struct wip_article {
+	const char *msgid;
+	RWLIST_ENTRY(wip_article) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(wip_articles, wip_article);
+
+/* No more than 25 articles being delivered to us concurrently, or we start rate-limiting */
+#define MAX_WIP_ARTICLES 25
+
+static struct wip_article *wip_add(const char *articleid)
+{
+	struct wip_article *w;
+	int wip_count;
+
+	RWLIST_WRLOCK(&wip_articles);
+	wip_count = RWLIST_SIZE(&wip_articles, w, entry);
+	if (wip_count > MAX_WIP_ARTICLES) {
+		bbs_notice("Deferring article delivery for (%s), already have %d in-progress articles\n", articleid, wip_count);
+		return NULL;
+	}
+	w = calloc(1, sizeof(*w) + strlen(articleid) + 1);
+	if (ALLOC_FAILURE(w)) {
+		return NULL;
+	}
+	strcpy(w->data, articleid); /* Safe */
+	w->msgid = w->data;
+	RWLIST_INSERT_HEAD(&wip_articles, w, entry);
+	RWLIST_UNLOCK(&wip_articles);
+	return w;
+}
+
+static int is_wip_article(const char *articleid)
+{
+	struct wip_article *w;
+	RWLIST_RDLOCK(&wip_articles);
+	RWLIST_TRAVERSE(&wip_articles, w, entry) {
+		if (!strcmp(articleid, w->msgid)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&wip_articles);
+	return w ? 1 : 0;
+}
+
+static void wip_remove(struct wip_article *w)
+{
+	RWLIST_WRLOCK(&wip_articles);
+	RWLIST_REMOVE(&wip_articles, w, entry); /* Constant time removal, because we already have a pointer to the item to remove */
+	RWLIST_UNLOCK(&wip_articles);
+	free(w);
+}
+
+static int handle_ihave_takethis(struct nntp_session *nntp, struct readline_data *rldata, const char *articleid, int streaming)
+{
+	int res;
+	struct wip_article *w;
+
+	/* Keep track that we are currently receiving this article, so if another peer offers it to us, we can defer it.
+	 * Note that we already checked previously if the article exists in the spool, and a race condition is possible here,
+	 * whereby two peers might CHECK if an article exists, and it isn't in the spool (or in progress),
+	 * so both now begin to attempt to deliver it. However, there is no real harm in having duplicates in the in progress
+	 * list; whichever finishes first will win, and the second article will be rejected. */
+	w = wip_add(articleid);
+	if (unlikely(w == NULL)) {
+		nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Retry later"); /* Temporary failure */
+		return 0;
+	}
+	res = receive_article(nntp, rldata, articleid, streaming);
+	wip_remove(w);
+	return res;
+}
+
+static int handle_check(struct nntp_session *nntp, const char *articleid)
+{
+	/* Just because it doesn't exist, doesn't necessarily mean we want it right now.
+	 * If another peer is currently sending us the same article, then we should defer
+	 * it from this peer until we've received it successfully. */
+	if (spool_article_exists(articleid)) {
+		nntp_send(nntp, NNTP_FAIL_CHECK_REFUSE, "%s", articleid);
+	} else if (is_wip_article(articleid)) {
+		nntp_rx_reply2_streaming(nntp, 1, 0, articleid, LOG_DEFER, NNTP_FAIL_CHECK_DEFER, ""); /* Defer due to in-progress delivery */
+	} else {
+		nntp_send(nntp, NNTP_OK_CHECK, "%s", articleid);
+	}
+	return 0;
 }
 
 static time_t parse_datetime(const char *date, const char *hour, int utc)
@@ -2499,6 +2656,7 @@ cleanup:
 
 static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata, char *s)
 {
+	char scratch[NNTP_BUFSIZ];
 	char *command = strsep(&s, " ");
 
 	if (!strcasecmp(command, "QUIT")) {
@@ -2515,6 +2673,9 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			} else {
 				nntp_send(nntp, NNTP_ERR_ACCESS, "MODE-READER cannot be activated after compression");
 			}
+		} else if (!strcasecmp(command, "STREAM")) {
+			REQUIRE_NO_ARGS(s);
+			nntp_send(nntp, NNTP_OK_STREAM, "Streaming permitted"); /* Not a mode change, just indicates we support streaming (RFC 4644 2.3.2) */
 		} else {
 			bbs_error("Unknown mode: %s\n", command);
 			nntp_send(nntp, NNTP_ERR_ACCESS, "Unknown mode");
@@ -2539,6 +2700,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			if (!bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) { /* RFC 8054 2.2.2: MUST NOT advertise MODE-READER after compression activated */
 				_nntp_send(nntp, "MODE-READER\r\n");
 			}
+			_nntp_send(nntp, "STREAMING\r\n");
 		}
 		_nntp_send(nntp, "HDR\r\n");
 		_nntp_send(nntp, "XPAT\r\n");
@@ -2616,6 +2778,9 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		_nntp_send(nntp, " AUTHINFO USER name|PASS password\r\n");
 		_nntp_send(nntp, " BODY [message-ID|number]\r\n");
 		_nntp_send(nntp, " CAPABILITIES\r\n");
+		if (nntp->mode == NNTP_MODE_TRANSIT) {
+			_nntp_send(nntp, " CHECK message-ID\r\n");
+		}
 		_nntp_send(nntp, " COMPRESS DEFLATE\r\n");
 		_nntp_send(nntp, " DATE\r\n");
 		_nntp_send(nntp, " GROUP newsgroup\r\n");
@@ -2626,7 +2791,11 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		_nntp_send(nntp, " LAST\r\n");
 		_nntp_send(nntp, " LIST [ACTIVE [wildmat]|ACTIVE.TIMES [wildmat]|COUNT [wildmat]|DISTRIB.PATS|DISTRIBUTIONS|MODERATORS|MOTD|NEWSGROUPS [wildmat]|HEADERS [MSGID|RANGE]|OVERVIEW.FMT|SUBSCRIPTIONS [wildmat]]\r\n");
 		_nntp_send(nntp, " LISTGROUP [newsgroup [range]]\r\n");
-		_nntp_send(nntp, " MODE READER\r\n");
+		if (nntp->mode == NNTP_MODE_TRANSIT) {
+			_nntp_send(nntp, " MODE READER|STREAM\r\n");
+		} else {
+			_nntp_send(nntp, " MODE READER\r\n");
+		}
 		_nntp_send(nntp, " NEWGROUPS [yy]yymmdd hhmmss [GMT]\r\n");
 		_nntp_send(nntp, " NEWNEWS wildmat [yy]yymmdd hhmmss [GMT]\r\n");
 		_nntp_send(nntp, " NEXT\r\n");
@@ -2635,6 +2804,9 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		_nntp_send(nntp, " QUIT\r\n");
 		_nntp_send(nntp, " STARTTLS\r\n");
 		_nntp_send(nntp, " STAT [message-ID|number]\r\n");
+		if (nntp->mode == NNTP_MODE_TRANSIT) {
+			_nntp_send(nntp, " TAKETHIS message-ID\r\n");
+		}
 		_nntp_send(nntp, " XHDR header [message-ID|range]\r\n");
 		_nntp_send(nntp, " XOVER [range]\r\n");
 		_nntp_send(nntp, " XPAT header message-ID|range pattern [pattern ...]\r\n");
@@ -2646,7 +2818,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		char *user, *pass, *domain;
 
 		if (!nntp->node->secure && require_secure_login) {
-			nntp_send(nntp, NNTP_ERR_ACCESS, "Must STARTTLS first");
+			nntp_send(nntp, NNTP_FAIL_PRIVACY_NEEDED, "Must STARTTLS first");
 			return 0;
 		} else if (bbs_user_is_registered(nntp->node->user)) {
 			nntp_send(nntp, NNTP_ERR_ACCESS, "Already authenticated");
@@ -2681,7 +2853,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		char *pass, *domain;
 
 		if (!nntp->node->secure && require_secure_login) {
-			nntp_send(nntp, NNTP_ERR_ACCESS, "Must STARTTLS first");
+			nntp_send(nntp, NNTP_FAIL_PRIVACY_NEEDED, "Must STARTTLS first");
 			return 0;
 		} else if (bbs_user_is_registered(nntp->node->user)) {
 			nntp_send(nntp, NNTP_ERR_ACCESS, "Already authenticated");
@@ -3074,32 +3246,25 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			nntp_send(nntp, NNTP_FAIL_AUTH_NEEDED, "Must authenticate first");
 			return 0;
 		}
-		return handle_post_ihave(nntp, rldata, NULL);
+		return receive_article(nntp, rldata, NULL, 0);
 	} else if (!strcasecmp(command, "IHAVE")) {
-		char articleid[NNTP_BUFSIZ];
-		if (nntp->mode != NNTP_MODE_TRANSIT) {
-			nntp_send(nntp, NNTP_FAIL_WRONG_MODE, "Readers must use POST, not IHAVE");
-			return 0;
-		}
-		/* Check if client is authorized to relay us articles. */
-		if (requirerelaytls && !nntp->node->secure) {
-			nntp_send(nntp, NNTP_FAIL_PRIVACY_NEEDED, "Secure connection required");
-			return 0;
-		}
-		if (!nntp->inpeer_any) {
-			bbs_notice("Sender %s/%s unauthorized to send us articles\n", bbs_username(nntp->node->user), nntp->node->ip);
-			nntp_send(nntp, NNTP_ERR_ACCESS, "Not authorized to relay articles");
-			return 0;
-		}
-		/* Group not required, the headers will say group(s) to which message should be posted. */
+		REQUIRE_TRANSIT();
 		REQUIRE_ARGS(s); /* Do not strip <> around Message-ID, as that is part of the Message-ID */
-		/* Check if any message with this ID exists in any newsgroup. */
 		if (spool_article_exists(s)) {
-			nntp_send(nntp, NNTP_FAIL_IHAVE_REFUSE, "Duplicate");
+			nntp_rx_reply2_streaming(nntp, 0, 0, s, LOG_DUPLICATE, NNTP_FAIL_IHAVE_REFUSE, "Duplicate");
 			return 0;
 		}
-		safe_strncpy(articleid, s, sizeof(articleid)); /* duplicate since handle_post_ihave will call bbs_readline and clobber the buffer this is in */
-		return handle_post_ihave(nntp, rldata, articleid);
+		safe_strncpy(scratch, s, sizeof(scratch)); /* duplicate into scratch buf since receive_article will call bbs_readline and clobber the buffer this is in */
+		return handle_ihave_takethis(nntp, rldata, scratch, 0);
+	} else if (!strcasecmp(command, "TAKETHIS")) {
+		REQUIRE_TRANSIT();
+		REQUIRE_ARGS(s);
+		safe_strncpy(scratch, s, sizeof(scratch));
+		return handle_ihave_takethis(nntp, rldata, scratch, 1);
+	} else if (!strcasecmp(command, "CHECK")) {
+		REQUIRE_TRANSIT();
+		REQUIRE_ARGS(s);
+		handle_check(nntp, s);
 	} else {
 		nntp_send(nntp, NNTP_ERR_COMMAND, "Unknown command");
 	}
