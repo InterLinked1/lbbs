@@ -1472,11 +1472,10 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 	REQUIRE_ARTINFO_FIELD(subject);
 	REQUIRE_ARTINFO_FIELD(from);
 	REQUIRE_ARTINFO_FIELD(date);
+	REQUIRE_ARTINFO_FIELD(messageid); /* Even if reader didn't provide one, we would already have added it by now */
 	/* References header is optional, may not be present */
 
 	if (nntp->mode == NNTP_MODE_TRANSIT) {
-		/* For readers, we will add the Message-ID. For peers, we expect to have one already. */
-		REQUIRE_ARTINFO_FIELD(messageid);
 		if (artinfo->messageid[0] != '<' && !bbs_str_ends_with(artinfo->messageid, ">")) {
 			/* Invalid Message-ID */
 			snprintf(errbuf, errbuflen, "Invalid Message-ID '%s'", artinfo->messageid);
@@ -1485,13 +1484,13 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 
 		if (artinfo->control) {
 			/* If it has a Control header, it's a control message.
-			 * Here, we only validate that it's a known control message type and that it's approved. */
+			 * Here, we only validate that it's a known control message type and that it's approved (if required). */
 			*cmsg = parse_cmsg(artinfo->control);
 			if (*cmsg == CMSG_UNKNOWN) {
 				snprintf(errbuf, errbuflen, "Unknown control message: %s", artinfo->control);
 				return 437;
-			} else if (!artinfo->approved) {
-				snprintf(errbuf, errbuflen, "Ignoring unapproved control message");
+			} else if (!artinfo->approved && (*cmsg == CMSG_NEWGROUP || *cmsg == CMSG_RMGROUP)) {
+				snprintf(errbuf, errbuflen, "Ignoring unapproved newgroup/rmgroup message");
 				return 437;
 			}
 		}
@@ -1791,7 +1790,6 @@ static enum list_category parse_list_category(const char *s)
 	} else if (!strcasecmp(s, "MOTD")) {
 		return LIST_MOTD;
 	} else {
-		/*! \todo Add additional categories as specified in RFC 2980 and RFC 6048 */
 		bbs_warning("Unknown LIST category '%s'\n", s);
 		return LIST_INVALID; /* Unknown or invalid */
 	}
@@ -2369,15 +2367,18 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		_nntp_send(nntp, " XHDR header [message-ID|range]\r\n");
 		_nntp_send(nntp, " XOVER [range]\r\n");
 		_nntp_send(nntp, " XPAT header message-ID|range pattern [pattern ...]\r\n");
+		_nntp_send(nntp, " XSECRET username password\r\n");
 		_nntp_send(nntp, ".\r\n");
 	} else if (!strcasecmp(command, "XSECRET")) {
-		/* XSECRET appears in RFC 3977, in passing, but there is no actual documentation anywhere of it that I can find.
-		 * My newsreader seems to use AUTHINFO instead, so if XSECRET/XENCRYPT are not widely used
-		 * or are long deprecated, this can probably be removed. */
+		/* XSECRET appears in RFC 3977, in passing with an example, but this is not a documented or official extension. It is not even supported by INN. */
 		int res;
 		char *user, *pass, *domain;
-		if (bbs_user_is_registered(nntp->node->user)) {
-			nntp_send(nntp, 480, "Already authenticated"); /*! \todo Proper numeric response code? */
+
+		if (!nntp->node->secure && require_secure_login) {
+			nntp_send(nntp, 502, "Must STARTTLS first");
+			return 0;
+		} else if (bbs_user_is_registered(nntp->node->user)) {
+			nntp_send(nntp, 502, "Already authenticated");
 			return 0;
 		}
 		user = strsep(&s, " ");
@@ -2391,29 +2392,28 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		if (domain) {
 			*domain++ = '\0';
 			if (improper_auth_hostname(domain)) {
-				nntp_send(nntp, 452, "Authorization rejected"); /*! \todo right code? */
+				nntp_send(nntp, 452, "Authorization rejected");
 				return 0;
 			}
 		}
 		res = bbs_authenticate(nntp->node, user, pass);
 		bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
 		if (res) {
-			nntp_send(nntp, 452, "Authorization rejected"); /*! \todo right code? */
+			nntp_send(nntp, 452, "Authorization rejected"); /* XXX As this extension is not documented, I do not know what the intended response code on error was */
 			return 0;
 		}
 		nntp_send(nntp, 290, "Password for %s accepted", user); /*! \todo Is this really the right response code? */
 		RECHECK_TRANSIT_ACL(nntp);
-	} else if ((nntp->node->secure || !require_secure_login) && !strcasecmp(command, "AUTHINFO")) {
+	} else if (!strcasecmp(command, "AUTHINFO")) {
 		/* RFC 4643 AUTHINFO */
-		/* If this command is not implemented and we send a 480, Mozilla will just go into a loop sending AUTH INFO commands, forever,
-		 * even if AUTHINFO isn't listed as one of our capabilities.
-		 * But RFC 4643 does say we MUST NOT respond to an AUTHINFO with a 480, so that's probably why...
-		 */
 		int res;
 		char *pass, *domain;
 
-		if (bbs_user_is_registered(nntp->node->user)) {
-			nntp_send(nntp, 502, "Already authenticated"); /*! \todo Proper numeric response code? */
+		if (!nntp->node->secure && require_secure_login) {
+			nntp_send(nntp, 502, "Must STARTTLS first");
+			return 0;
+		} else if (bbs_user_is_registered(nntp->node->user)) {
+			nntp_send(nntp, 502, "Already authenticated");
 			return 0;
 		} else if (bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
 			nntp_send(nntp, 502, "AUTHINFO not allowed after COMPRESS"); /* RFC 8054 2.2.2 */
@@ -2439,7 +2439,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			if (domain) {
 				*domain++ = '\0';
 				if (improper_auth_hostname(domain)) {
-					nntp_send(nntp, 452, "Authorization rejected"); /*! \todo right code? */
+					nntp_send(nntp, 481, "Authorization rejected");
 					return 0;
 				}
 			}
@@ -2828,10 +2828,6 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		safe_strncpy(articleid, s, sizeof(articleid)); /* duplicate since handle_post_ihave will call bbs_readline and clobber the buffer this is in */
 		return handle_post_ihave(nntp, rldata, articleid);
 	} else {
-		/*! \todo add:
-		 * RFC 2980 extensions
-		 * Also see RFC 5536
-		 */
 		nntp_send(nntp, 500, "Unknown command");
 	}
 	return 0;
