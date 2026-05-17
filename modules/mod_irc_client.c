@@ -753,7 +753,7 @@ static void *client_relay(void *varg)
 	struct bbs_irc_client *client = varg;
 	char logfile[256];
 
-	snprintf(logfile, sizeof(logfile), "%s/irc_%s.txt", BBS_LOG_DIR, client->name);
+	snprintf(logfile, sizeof(logfile), "%s/irc_%s.txt", bbs_log_dir(), client->name);
 
 	if (client->log) {
 		client->logfile = fopen(logfile, "a"); /* Create or append */

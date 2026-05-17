@@ -83,7 +83,9 @@ extern int high_concurrency_mode;
 FILE *locklogfp; /* This is never closed anywhere, but this is just a hack to dump lock interactions for debugging */
 #define lock_log(res) { \
 	if (unlikely(!locklogfp)) { \
-		locklogfp = fopen(DIRCAT(BBS_LOG_DIR, "locklog.txt"), "w"); \
+		char locklogpath[1024]; \
+		snprintf(locklogpath, sizeof(locklogpath), "%s/%s", bbs_log_dir(), "locklog.txt"); \
+		locklogfp = fopen(locklogpath, "w"); \
 	} \
 	fprintf(locklogfp, "%ld [%d] [%s:%d %s] %s(%s) = %d\n", time(NULL), bbs_gettid(), filename, lineno, func, __func__, name, res); \
 	fflush(locklogfp); \

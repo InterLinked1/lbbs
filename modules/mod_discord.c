@@ -1799,7 +1799,7 @@ static void *load_discord(void *varg)
 	/* If needed, overwrite user settings */
 	concord_loglevel = LOGMOD_LEVEL_TRACE;
 	if (s_strlen_zero(concord_tracefile_path)) {
-		safe_strncpy(concord_tracefile_path, DIRCAT(BBS_LOG_DIR, "discord.log"), sizeof(concord_tracefile_path));
+		snprintf(concord_tracefile_path, sizeof(concord_tracefile_path), "%s/discord.log", bbs_log_dir());
 	}
 #endif
 

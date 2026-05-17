@@ -3579,7 +3579,7 @@ static int load_module(void)
 		goto cleanup;
 	}
 
-	snprintf(newslogpath, sizeof(newslogpath), "%s/nntp.log", BBS_LOG_DIR);
+	snprintf(newslogpath, sizeof(newslogpath), "%s/nntp.log", bbs_log_dir());
 	newslog = fopen(newslogpath, "a");
 	if (!newslog) {
 		bbs_error("Failed to open %s: %s\n", newslogpath, strerror(errno));

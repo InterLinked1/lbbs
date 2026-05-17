@@ -153,8 +153,6 @@ jobs:
       - name: Install service
         run: |
           sudo adduser -c "BBS" bbs --disabled-password --shell /usr/sbin/nologin --gecos ""
-          # Remove the bbs.log from test suite executions since that is owned by root
-          sudo rm /var/log/lbbs/bbs.log
           sudo make service
   with-sanitizer:
     needs: rootfs

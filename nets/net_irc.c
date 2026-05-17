@@ -3283,7 +3283,7 @@ static struct irc_channel *find_or_create_channel_locked(struct irc_user *user, 
 		bbs_mutex_init(&channel->recurse.lock, NULL);
 		if (log_channels) {
 			char logfile[256];
-			snprintf(logfile, sizeof(logfile), "%s/irc_channel_%s.txt", BBS_LOG_DIR, name);
+			snprintf(logfile, sizeof(logfile), "%s/irc_channel_%s.txt", bbs_log_dir(), name);
 			channel->fp = fopen(logfile, "a"); /* Append to existing file if it already exists */
 			if (!channel->fp) {
 				bbs_error("Failed to open log file %s: %s\n", logfile, strerror(errno));

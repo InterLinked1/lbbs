@@ -63,12 +63,12 @@
 #define SEMVER_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
 
 /* Needed (only) by bbs.c and logger.c */
-#define BBS_LOG_DIR DIRCAT("/var/log", BBS_NAME)
 #define MAX_VERBOSE 10
 #define MAX_DEBUG 10
 
-/* Used only by config.c */
-#define BBS_CONFIG_DIR "/etc/lbbs"
+/* Used only by bbs.c */
+#define DEFAULT_BBS_CONFIG_DIR "/etc/lbbs"
+#define DEFAULT_BBS_LOG_DIR DIRCAT("/var/log", BBS_NAME)
 
 /* Used only by bbs.c and test/test.c */
 #if defined(BBS_IN_CORE) || defined(TEST_IN_CORE)
@@ -539,6 +539,9 @@ time_t bbs_starttime(void);
 
 /*! \brief Get BBS config directory */
 const char *bbs_config_dir(void);
+
+/*! \brief Get BBS log directory */
+const char *bbs_log_dir(void);
 
 /*! \brief Print current BBS settings */
 int bbs_view_settings(int fd);

@@ -129,13 +129,13 @@ static int open_logfile(void)
 	static char logfile[PATH_MAX];
 	DIR *dir;
 
-	/* If BBS_LOG_DIR doesn't exist, create it first. */
-	dir = opendir(BBS_LOG_DIR);
+	/* If log dir doesn't exist, create it first. */
+	dir = opendir(bbs_log_dir());
 	if (dir) {
 		closedir(dir);
 	} else if (errno == ENOENT) {
 		/* Shouldn't happen since bbs.c creates if needed */
-		if (mkdir(BBS_LOG_DIR, 0744)) { /* Directory must be executable to be able to create files in it */
+		if (mkdir(bbs_log_dir(), 0744)) { /* Directory must be executable to be able to create files in it */
 			fprintf(stderr, "Unable to create log directory: %s\n", strerror(errno));
 			return -1;
 		}
@@ -145,7 +145,7 @@ static int open_logfile(void)
 	}
 
 	/* Open the log file */
-	snprintf(logfile, sizeof(logfile), "%s/%s", BBS_LOG_DIR, "bbs.log");
+	snprintf(logfile, sizeof(logfile), "%s/%s", bbs_log_dir(), "bbs.log");
 	if (!(logfp = fopen(logfile, "a"))) {
 		fprintf(stderr, "Unable to open log file: %s (%s)\n", logfile, strerror(errno));
 		return -1;

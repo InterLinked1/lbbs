@@ -707,7 +707,7 @@ static int mysql_spawn(void)
 
 static char listen_backlog_str[16];
 
-static int test_bbs_spawn(const char *directory)
+static int test_bbs_spawn(const char *configdir, const char *logdir)
 {
 	pid_t child;
 	char **argv = NULL;
@@ -716,7 +716,8 @@ static int test_bbs_spawn(const char *directory)
 		/* Begin options */
 		"-b", /* Force reuse bind ports */
 		"-c", /* Don't daemonize */
-		"-C", (char*) directory, /* Custom config directory */
+		"-C", (char*) configdir, /* Custom config directory */
+		"-L", (char*) logdir, /* Custom logging directory */
 		"-g", /* Dump core on crash */
 		"-vvvvvvvvv", /* Very verbose */
 		"-l", listen_backlog_str,
@@ -734,7 +735,8 @@ static int test_bbs_spawn(const char *directory)
 		/* Begin options */
 		"-b", /* Force reuse bind ports */
 		"-c", /* Don't daemonize */
-		"-C", (char*) directory, /* Custom config directory */
+		"-C", (char*) configdir, /* Custom config directory */
+		"-L", (char*) logdir, /* Custom logging directory */
 		"-g", /* Dump core on crash */
 		"-vvvvvvvvv", /* Very verbose */
 		"-l", listen_backlog_str,
@@ -778,7 +780,8 @@ static int test_bbs_spawn(const char *directory)
 		/* Begin options */
 		"-b", /* Force reuse bind ports */
 		"-c", /* Don't daemonize */
-		"-C", (char*) directory, /* Custom config directory */
+		"-C", (char*) configdir, /* Custom config directory */
+		"-L", (char*) logdir, /* Custom logging directory */
 		"-g", /* Dump core on crash */
 		"-vvvvvvvvv", /* Very verbose */
 		rand_alloc_fails ? "-A" : "-v", /* If not, add an option that won't do anything */
@@ -906,9 +909,16 @@ static int reset_test_configs(void)
 			bbs_error("mkdir(%s) failed: %s\n", TEST_CONFIG_DIR, strerror(errno));
 			return -1;
 		}
+		if (mkdir(TEST_LOG_DIR, 0600)) {
+			bbs_error("mkdir(%s) failed: %s\n", TEST_LOG_DIR, strerror(errno));
+			return -1;
+		}
 	} else { /* If it does, remove anything currently in it so we start fresh. */
 		/* Yuck, but why reinvent the wheel? */
 		if (system("rm " TEST_CONFIG_DIR "/*.conf")) {
+			bbs_error("Failed to delete files: %s\n", strerror(errno));
+		}
+		if (system("rm " TEST_LOG_DIR "/*")) {
 			bbs_error("Failed to delete files: %s\n", strerror(errno));
 		}
 	}
@@ -1266,7 +1276,7 @@ static int run_test(const char *filename, int multiple)
 			if (listen_backlog) {
 				bbs_debug(2, "Set listen backlog to %d\n", listen_backlog);
 			}
-			childpid = test_bbs_spawn(TEST_CONFIG_DIR);
+			childpid = test_bbs_spawn(TEST_CONFIG_DIR, TEST_LOG_DIR);
 			if (childpid < 0) {
 				res = -1;
 				goto cleanup;

@@ -95,7 +95,7 @@ int max_logfile_debug_level = MAX_DEBUG;
 extern int listen_backlog; /* in socket.c */
 int high_concurrency_mode = 0; /* used extern in lock.c */
 
-char *rungroup = NULL, *runuser = NULL, *config_dir = NULL;
+char *rungroup = NULL, *runuser = NULL, *config_dir = NULL, *log_dir = NULL;
 
 static pid_t bbs_pid;
 
@@ -346,13 +346,13 @@ static int run_init(int argc, char *argv[])
 				return -1;
 			}
 		}
-		if (eaccess(BBS_LOG_DIR, R_OK)) {
-			if (mkdir(BBS_LOG_DIR, 0744)) { /* Directory must be executable to be able to create files in it */
+		if (eaccess(bbs_log_dir(), R_OK)) {
+			if (mkdir(bbs_log_dir(), 0744)) { /* Directory must be executable to be able to create files in it */
 				fprintf(stderr, "Unable to create log directory: %s\n", strerror(errno));
 				return -1;
 			}
 		}
-		if (chown(BBS_LOG_DIR, pw->pw_uid, -1)) {
+		if (chown(bbs_log_dir(), pw->pw_uid, -1)) {
 			fprintf(stderr, "Unable to chown log directory to %d (%s)\n", (int) pw->pw_uid, runuser);
 			return -1;
 		}
@@ -403,9 +403,17 @@ time_t bbs_starttime(void)
 const char *bbs_config_dir(void)
 {
 	if (strlen_zero(config_dir)) {
-		return BBS_CONFIG_DIR;
+		return DEFAULT_BBS_CONFIG_DIR;
 	}
 	return config_dir;
+}
+
+const char *bbs_log_dir(void)
+{
+	if (strlen_zero(log_dir)) {
+		return DEFAULT_BBS_LOG_DIR;
+	}
+	return log_dir;
 }
 
 int bbs_view_settings(int fd)
@@ -469,6 +477,7 @@ static void show_help(void)
 	printf("  -G        Specify run group\n");
 	printf("  -h        Display this help and exit\n");
 	printf("  -l        Set custom listen backlog\n");
+	printf("  -L        Set custom logging directory\n");
 	printf("  -T        Run unit tests on startup\n");
 	printf("  -U        Specify run user\n");
 	printf("  -v        Increase verbosity level\n");
@@ -476,7 +485,7 @@ static void show_help(void)
 	printf("  -?        Display this help and exit\n");
 }
 
-static const char *getopt_settings = "?AbcC:dG:ghl:TU:Vv";
+static const char *getopt_settings = "?AbcC:dG:ghl:L:TU:Vv";
 
 static int parse_options_pre(int argc, char *argv[])
 {
@@ -487,6 +496,9 @@ static int parse_options_pre(int argc, char *argv[])
 		case 'C':
 			/* Affects what config we load in load_config, so do before that */
 			REPLACE(config_dir, optarg);
+			break;
+		case 'L':
+			REPLACE(log_dir, optarg);
 			break;
 		case 'V':
 			fprintf(stderr, BBS_TAGLINE " " BBS_VERSION "\n");
@@ -559,6 +571,8 @@ static int parse_options(int argc, char *argv[])
 				high_concurrency_mode = 1;
 			}
 			break;
+		case 'L':
+			break; /* Already processed in parse_options_pre, skip */
 		case 'T':
 			option_run_unit_tests = 1;
 			break;
@@ -585,6 +599,7 @@ static void free_options(void)
 	free_if(runuser);
 	free_if(rungroup);
 	free_if(config_dir);
+	free_if(log_dir);
 }
 
 /* Whether we successfully started the BBS */
