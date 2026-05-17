@@ -35,6 +35,75 @@
 #define _nntp_send(nntp, fmt, ...) bbs_debug(4, "%p <= " fmt, nntp, ## __VA_ARGS__); bbs_node_fd_writef(nntp->node, nntp->node->wfd, fmt, ## __VA_ARGS__);
 #define nntp_send(nntp, code, fmt, ...) _nntp_send(nntp, "%d " fmt "\r\n", code, ## __VA_ARGS__)
 
+/*! \brief NNTP response codes as defined in RFC 3977 and elsewhere. */
+/* Note: These are #define's instead of in an enum,
+ * because we do not use it as an enum in the code,
+ * and this way XSTR can be used to replace the constant with the number
+ * (which is used in the tests). */
+#define NNTP_INFO_HELP              100
+#define NNTP_INFO_CAPABILITIES      101
+#define NNTP_INFO_DATE              111
+#define NNTP_OK_BANNER_POST         200
+#define NNTP_OK_BANNER_NOPOST       201
+#define NNTP_OK_QUIT                205
+#define NNTP_OK_COMPRESS            206
+#define NNTP_OK_GROUP               211
+#define NNTP_OK_LIST                215
+#define NNTP_OK_ARTICLE             220
+#define NNTP_OK_HEAD                221
+#define NNTP_OK_BODY                222
+#define NNTP_OK_STAT                223
+#define NNTP_OK_OVER                224
+#define NNTP_OK_HDR                 225
+#define NNTP_OK_NEWNEWS             230
+#define NNTP_OK_NEWGROUPS           231
+#define NNTP_OK_IHAVE               235
+#define NNTP_OK_POST                240
+#define NNTP_CONT_IHAVE             335
+#define NNTP_CONT_POST              340
+#define NNTP_FAIL_TERMINATING       400
+#define NNTP_FAIL_WRONG_MODE        401 /* Wrong mode (e.g. not reader) */
+#define NNTP_FAIL_ACTION            403 /* Internal fault, temporary problem */
+#define NNTP_FAIL_BAD_GROUP         411 /* Group unknown */
+#define NNTP_FAIL_NO_GROUP          412 /* Not in a newsgroup */
+#define NNTP_FAIL_ARTNUM_INVALID    420 /* Current article is invalid */
+#define NNTP_FAIL_NEXT              421
+#define NNTP_FAIL_PREV              422
+#define NNTP_FAIL_ARTNUM_NOTFOUND   423 /* Article not found (by art number) */
+#define NNTP_FAIL_MSGID_NOTFOUND    430 /* Article not found (by Message-ID) */
+#define NNTP_FAIL_IHAVE_REFUSE      435 /* IHAVE article not wanted */
+#define NNTP_FAIL_IHAVE_DEFER       436 /* IHAVE article deferred */
+#define NNTP_FAIL_IHAVE_REJECT      437 /* IHAVE article rejected */
+#define NNTP_FAIL_POST_AUTH         440 /* Posting not allowed */
+#define NNTP_FAIL_POST_REJECT       441 /* POST article rejected */
+#define NNTP_ERR_COMMAND            500
+#define NNTP_ERR_SYNTAX             501
+#define NNTP_ERR_ACCESS             502
+#define NNTP_ERR_UNAVAILABLE        503
+#define NNTP_ERR_BASE64             504
+
+/* Streaming extension. */
+#define NNTP_OK_STREAM              203
+#define NNTP_OK_CHECK               238
+#define NNTP_OK_TAKETHIS            239
+#define NNTP_FAIL_CHECK_DEFER       431
+#define NNTP_FAIL_CHECK_REFUSE      438
+#define NNTP_FAIL_TAKETHIS_REJECT   439
+
+/* Authentication extensions */
+#define NNTP_OK_AUTHINFO            281
+#define NNTP_OK_SASL                283
+#define NNTP_CONT_AUTHINFO          381
+#define NNTP_CONT_SASL              383
+#define NNTP_FAIL_AUTH_NEEDED       480
+#define NNTP_FAIL_AUTHINFO_BAD      481
+#define NNTP_FAIL_AUTHINFO_REJECT   482
+
+/* Privacy extensions */
+#define NNTP_CONT_STARTTLS          382
+#define NNTP_FAIL_PRIVACY_NEEDED    483
+#define NNTP_ERR_STARTTLS           580
+
 /*! \brief Newsgroup metadata */
 struct group_info {
 	const char *name; /*!< Group name */

@@ -73,7 +73,7 @@
 
 #define GROUP_EXPECT(fd, group, low, high, count) \
 	SWRITE(fd, "GROUP " group ENDL); \
-	CLIENT_EXPECT(fd, "211 " #count " " XSTR(low) " " XSTR(high) " " group)
+	CLIENT_EXPECT(fd, XSTR(NNTP_OK_GROUP) " " #count " " XSTR(low) " " XSTR(high) " " group)
 
 #define GROUP_AND_LIST_ACTIVE_EXPECT(fd, group, low, high, count) \
 	GROUP_EXPECT(fd, group, low, high, count); \
@@ -81,11 +81,11 @@
 
 #define POST_ARTICLE_TO_GROUP_RESPONSE(fd, email, group, respcode) \
 	SWRITE(client1, "POST\r\n"); \
-	CLIENT_EXPECT(client1, "340"); \
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST); \
 	POST_NEWS_ARTICLE(s, client1, email, group); \
-	CLIENT_EXPECT(client1, #respcode);
+	CLIENT_EXPECT_CODE(client1, respcode);
 
-#define POST_ARTICLE_TO_GROUP(fd, email, group) POST_ARTICLE_TO_GROUP_RESPONSE(fd, email, group, 240)
+#define POST_ARTICLE_TO_GROUP(fd, email, group) POST_ARTICLE_TO_GROUP_RESPONSE(fd, email, group, NNTP_OK_POST)
 
 static int pre(void)
 {
@@ -146,31 +146,31 @@ static int run(void)
 	REQUIRE_FD(client1);
 
 	/* Initial connection */
-	CLIENT_EXPECT(client1, "200 " TEST_NEWS_HOSTNAME);
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_BANNER_POST) " " TEST_NEWS_HOSTNAME);
 	SWRITE(client1, "CAPABILITIES\r\n");
-	CLIENT_EXPECT(client1, "101");
+	CLIENT_EXPECT_CODE(client1, NNTP_INFO_CAPABILITIES);
 	CLIENT_EXPECT_EVENTUALLY(client1, "POST");
 
 	/* Posting without logging in should fail */
 	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT_EVENTUALLY(client1, "480");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_FAIL_AUTH_NEEDED);
 
 	/* Log in now */
 	SWRITE(client1, "AUTHINFO USER " TEST_USER "@" TEST_HOSTNAME "\r\n");
-	CLIENT_EXPECT(client1, "381");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_AUTHINFO);
 	SWRITE(client1, "AUTHINFO PASS " TEST_PASS "\r\n");
-	CLIENT_EXPECT(client1, "281");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_AUTHINFO);
 
 	/* LISTGROUP without arguments should fail since no group is selected yet */
 	SWRITE(client1, "LISTGROUP\r\n");
-	CLIENT_EXPECT(client1, "412");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_NO_GROUP);
 
 	SWRITE(client1, "HELP\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "." ENDL);
 	SWRITE(client1, "DATE\r\n");
-	CLIENT_EXPECT(client1, "111 2"); /* This test will work until the year 3000... good enough? */
+	CLIENT_EXPECT(client1, XSTR(NNTP_INFO_DATE) " 2"); /* This test will work until the year 3000... good enough? */
 	SWRITE(client1, "NEWGROUPS\r\n");
-	CLIENT_EXPECT(client1, "501");
+	CLIENT_EXPECT_CODE(client1, NNTP_ERR_SYNTAX);
 	SWRITE(client1, "NEWGROUPS 260109 123059\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test");
 	SWRITE(client1, "NEWGROUPS 20260109 123059\r\n");
@@ -180,60 +180,60 @@ static int run(void)
 	SWRITE(client1, "NEWGROUPS 20260109 123059 GMT\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "." ENDL); /* 231 response with several groups */
 	SWRITE(client1, "NEWGROUPS 30000109 123059 GMT\r\n"); /* Some date far in the future */
-	CLIENT_EXPECT(client1, "231");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_NEWGROUPS);
 	CLIENT_EXPECT(client1, "." ENDL);
 
 	SWRITE(client1, "NEWNEWS * 19990101 123059 GMT\r\n");
-	CLIENT_EXPECT(client1, "230");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_NEWNEWS);
 	CLIENT_EXPECT(client1, "." ENDL); /* no articles yet, so no new news */
 
 	/* Try posting an article under an unauthorized identity */
-	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL_UNAUTHORIZED, "misc.test", 441);
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL_UNAUTHORIZED, "misc.test", NNTP_FAIL_POST_REJECT);
 
 	/* Ensure the article wasn't accepted and stored */
 	SWRITE(client1, "ARTICLE 1\r\n");
-	CLIENT_EXPECT(client1, "412"); /* No group currently selected */
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_NO_GROUP); /* No group currently selected */
 	GROUP_EXPECT(client1, "misc.test", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0); /* Select a group. Group is empty and this server responds with all 0s since it has never had articles */
 
 	/* Attempts to fetch nonexistent articles should fail */
 	SWRITE(client1, "ARTICLE 1\r\n");
-	CLIENT_EXPECT(client1, "423");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_ARTNUM_NOTFOUND);
 
 	/* Try again with an authorized identity */
 	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.test");
 
 	/* Try to a non-existent group */
-	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "misc.nonexistent", 441);
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "misc.nonexistent", NNTP_FAIL_POST_REJECT);
 
 	/* Try querying all the newsgroups */
 	SWRITE(client1, "LIST\r\n");
-	CLIENT_EXPECT(client1, "215");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_LIST);
 	/* Should be sorted, so misc.empty should be in the first line. */
 	CLIENT_EXPECT(client1, "misc.empty 0 " XSTR(ALWAYS_EMPTY_LOW_WATERMARK) " y"); /* Don't also wait for misc.test, etc. since it's probably part of the same read() output and we don't chunk per line */
 
 	/* Ask for different LIST variants */
 	SWRITE(client1, "LIST ACTIVE\r\n");
-	CLIENT_EXPECT(client1, "215");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_LIST);
 	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test 1 1 y"); /* Should appear last alphabetically */
 
 	SWRITE(client1, "LIST COUNTS\r\n");
-	CLIENT_EXPECT_EVENTUALLY(client1, "215");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_OK_LIST);
 	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test 1 1 1 y"); /* Should appear last alphabetically */
 
 	SWRITE(client1, "LIST ACTIVE.TIMES *test\r\n"); /* specify wildmat that will only match one group */
-	CLIENT_EXPECT(client1, "215");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_LIST);
 	CLIENT_EXPECT(client1, "Sysop");
 
 	SWRITE(client1, "LIST NEWSGROUPS\r\n");
-	CLIENT_EXPECT(client1, "215");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_LIST);
 	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test\tA miscellaneous test group");
 
 	SWRITE(client1, "LIST DISTRIB.PATS\r\n");
-	CLIENT_EXPECT(client1, "215");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_LIST);
 	CLIENT_EXPECT_EVENTUALLY(client1, "local.*");
 
 	SWRITE(client1, "LIST DISTRIBUTIONS\r\n");
-	CLIENT_EXPECT_EVENTUALLY(client1, "215");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_OK_LIST);
 	CLIENT_EXPECT_EVENTUALLY(client1, "local\t");
 
 	SWRITE(client1, "LIST MODERATORS\r\n");
@@ -248,11 +248,11 @@ static int run(void)
 	/* Try reading that article: it should now exist. */
 	GROUP_EXPECT(client1, "misc.test", 1, 1, 1);
 	SWRITE(client1, "HEAD 1\r\n");
-	CLIENT_EXPECT_EVENTUALLY(client1, "221");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_OK_HEAD);
 	CLIENT_EXPECT(client1, TEST_EMAIL); /* Our email should be in the response data */
 
 	SWRITE(client1, "NEWNEWS misc.* 29990101 123059 GMT\r\n");
-	CLIENT_EXPECT(client1, "230");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_NEWNEWS);
 	CLIENT_EXPECT(client1, "."); /* No articles newer than the provided timestamp */
 
 	SWRITE(client1, "NEWNEWS misc.* 19990101 123059 GMT\r\n"); /* Repeat, but now it should include the article */
@@ -261,22 +261,22 @@ static int run(void)
 	SWRITE(client1, "ARTICLE 1\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, ".\r\n");
 	SWRITE(client1, "STAT 1\r\n");
-	CLIENT_EXPECT(client1, "223");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_STAT);
 
 	/* No previous */
 	SWRITE(client1, "LAST\r\n");
-	CLIENT_EXPECT(client1, "422");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_PREV);
 
 	/* No next */
 	SWRITE(client1, "NEXT\r\n");
-	CLIENT_EXPECT(client1, "421");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_NEXT);
 
 	/* Post again, using a different From identity that is an alias of our mailbox,
 	 * so we should be allowed to post using it. */
 	POST_ARTICLE_TO_GROUP(client1, "nntpalias@" TEST_HOSTNAME, "misc.test");
 
 	SWRITE(client1, "LIST ACTIVE misc.test\r\n");
-	CLIENT_EXPECT(client1, "215");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_LIST);
 	CLIENT_EXPECT_EVENTUALLY(client1, "misc.test 2 1 y");
 
 	/* Delete articles and confirm LIST ACTIVE and GROUP report what we expect for low, high, and count
@@ -321,22 +321,22 @@ static int run(void)
 	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.test"); /* Post article 13 */
 
 	SWRITE(client1, "LAST\r\n");
-	CLIENT_EXPECT(client1, "422");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_PREV);
 
 	SWRITE(client1, "NEXT\r\n");
-	CLIENT_EXPECT(client1, "223 9");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 9");
 
 	SWRITE(client1, "NEXT\r\n");
-	CLIENT_EXPECT(client1, "223 10");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 10");
 
 	SWRITE(client1, "NEXT\r\n");
-	CLIENT_EXPECT(client1, "223 11");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 11");
 
 	SWRITE(client1, "NEXT\r\n");
-	CLIENT_EXPECT(client1, "223 12");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 12");
 
 	SWRITE(client1, "LAST\r\n");
-	CLIENT_EXPECT(client1, "223 11");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 11");
 
 	SWRITE(client1, "XOVER 11\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, TEST_EMAIL);
@@ -344,22 +344,22 @@ static int run(void)
 	DELETE_ARTICLE("misc.test", 10);
 
 	SWRITE(client1, "LAST\r\n");
-	CLIENT_EXPECT(client1, "223 9"); /* Should jump right back to 9 */
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 9"); /* Should jump right back to 9 */
 
 	SWRITE(client1, "HEAD\r\n"); /* HEAD 9 (without args) */
 	CLIENT_EXPECT_EVENTUALLY(client1, "." ENDL);
 
 	/* Article doesn't exist anymore, all these commands should fail: */
 	SWRITE(client1, "XOVER 10\r\n");
-	CLIENT_EXPECT(client1, "420"); /* Article shouldn't be in overview anymore */
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_ARTNUM_INVALID); /* Article shouldn't be in overview anymore */
 	SWRITE(client1, "ARTICLE 10\r\n");
-	CLIENT_EXPECT(client1, "423");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_ARTNUM_NOTFOUND);
 	SWRITE(client1, "HEAD 10\r\n");
-	CLIENT_EXPECT(client1, "423");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_ARTNUM_NOTFOUND);
 	SWRITE(client1, "BODY 10\r\n");
-	CLIENT_EXPECT(client1, "423");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_ARTNUM_NOTFOUND);
 	SWRITE(client1, "STAT 10\r\n");
-	CLIENT_EXPECT(client1, "423");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_ARTNUM_NOTFOUND);
 
 	/* Check format of overview */
 	SWRITE(client1, "LIST OVERVIEW.FMT\r\n");
@@ -379,14 +379,14 @@ static int run(void)
 
 	/* Request articles by article number. This should also change the current article number. */
 	SWRITE(client1, "BODY 13\r\n");
-	CLIENT_EXPECT(client1, "220");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_BODY);
 	CLIENT_EXPECT(client1, "This is just a test article");
 	SWRITE(client1, "LAST\r\n");
-	CLIENT_EXPECT(client1, "12");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 12");
 	SWRITE(client1, "STAT 13\r\n");
-	CLIENT_EXPECT(client1, "223 13");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 13");
 	SWRITE(client1, "STAT\r\n"); /* Repeat without arguments, for current article (13) */
-	CLIENT_EXPECT(client1, "223 13");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 13");
 	SWRITE(client1, "LAST\r\n");
 	CLIENT_EXPECT(client1, "12");
 
@@ -413,20 +413,20 @@ static int run(void)
 
 	/* Request article by Message-ID in the current group */
 	FMT_WRITE(client1, "ARTICLE %s\r\n", xmsgid);
-	CLIENT_EXPECT(client1, "220 9 <"); /* We know this is article number 9 in the current group, and although the RFC allows this to be 0, it should fill in the article number in this case */
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_ARTICLE) " 9 <"); /* We know this is article number 9 in the current group, and although the RFC allows this to be 0, it should fill in the article number in this case */
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article."); /* Read the rest of the response */
 
 	FMT_WRITE(client1, "STAT %s\r\n", xmsgid);
-	CLIENT_EXPECT(client1, "223 9 <");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 9 <");
 
 	/* Change groups and re-issue the command, the article number should be 0 since the article isn't in that group */
 	GROUP_EXPECT(client1, "misc.empty", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0);
 	FMT_WRITE(client1, "ARTICLE %s\r\n", xmsgid);
-	CLIENT_EXPECT(client1, "220 0 <");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_ARTICLE)  " 0 <");
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article."); /* Read the rest of the response */
 
 	FMT_WRITE(client1, "STAT %s\r\n", xmsgid);
-	CLIENT_EXPECT(client1, "223 0 <");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_STAT) " 0 <");
 
 	/* Test behavior of cross-posted articles */
 	GROUP_EXPECT(client1, "misc.test", 8, 13, 5); /* 11 was deleted, rest are still there */
@@ -455,36 +455,36 @@ static int run(void)
 
 	/* Use OVER to get overview for a range of articles */
 	SWRITE(client1, "OVER <nonexistent.message>\r\n");
-	CLIENT_EXPECT_EVENTUALLY(client1, "430");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_FAIL_MSGID_NOTFOUND);
 
 	SWRITE(client1, "HDR Subject <nonexistent.message>\r\n");
-	CLIENT_EXPECT_EVENTUALLY(client1, "430");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_FAIL_MSGID_NOTFOUND);
 
 	SWRITE(client1, "OVER 13-12\r\n");
-	CLIENT_EXPECT(client1, "423");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_ARTNUM_NOTFOUND);
 
 	FMT_WRITE(client1, "OVER %s\r\n", xmsgid);
 	CLIENT_EXPECT_EVENTUALLY(client1, "9\t");
 
 	FMT_WRITE(client1, "HDR Content-Type %s\r\n", xmsgid);
-	CLIENT_EXPECT_EVENTUALLY(client1, "503"); /* Not supported for HDR */
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_ERR_UNAVAILABLE); /* Not supported for HDR */
 
 	FMT_WRITE(client1, "HDR :bytes %s\r\n", xmsgid);
-	CLIENT_EXPECT(client1, "225");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_HDR);
 	FMT_WRITE(client1, "HDR Subject %s\r\n", xmsgid);
-	CLIENT_EXPECT_EVENTUALLY(client1, "225");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_OK_HDR);
 	FMT_WRITE(client1, "XHDR :bytes %s\r\n", xmsgid);
-	CLIENT_EXPECT_EVENTUALLY(client1, "503"); /* XHDR doesn't support metadata */
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_ERR_UNAVAILABLE); /* XHDR doesn't support metadata */
 	FMT_WRITE(client1, "XHDR Subject %s\r\n", xmsgid);
-	CLIENT_EXPECT(client1, "221"); /* Both HDR and XHDR should work, but response codes are different */
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_HEAD); /* Both HDR and XHDR should work, but response codes are different */
 	FMT_WRITE(client1, "XPAT :bytes %s 1\r\n", xmsgid);
-	CLIENT_EXPECT_EVENTUALLY(client1, "503");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_ERR_UNAVAILABLE);
 	FMT_WRITE(client1, "XPAT Subject %s *test art*\r\n", xmsgid);
 	CLIENT_EXPECT_EVENTUALLY(client1, "test article");
 	SWRITE(client1, "XPAT Subject 10-12 *test art*\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "12 I am just a test article" ENDL);
 	SWRITE(client1, "XPAT Subject 10-12 test art\r\n");
-	CLIENT_EXPECT_EVENTUALLY(client1, "221");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client1, NNTP_OK_HEAD);
 	CLIENT_EXPECT(client1, "." ENDL); /* No matches */
 
 	/* The articles don't have a References header (but should still appear in HDR response) */
@@ -514,21 +514,21 @@ static int run(void)
 	xmsgid = strsep(&xfields, "\t"); /* Field 5 = Message-ID */
 
 	FMT_WRITE(client1, "ARTICLE %s\r\n", xmsgid);
-	CLIENT_EXPECT(client1, "220 15 <"); /* The server will say it's article 15 because the first link created was in this group */
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_ARTICLE) " 15 <"); /* The server will say it's article 15 because the first link created was in this group */
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article.");
 
 	GROUP_EXPECT(client1, "misc.crossposts", 1, 1, 1); /* Switch groups to misc.crossposts */
 	FMT_WRITE(client1, "ARTICLE %s\r\n", xmsgid);
-	CLIENT_EXPECT(client1, "220 1 <"); /* The same article is article 1 in this group (not required by the RFC, could've returned 0, but the server tries to be as helpful as possible) */
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_ARTICLE) " 1 <"); /* The same article is article 1 in this group (not required by the RFC, could've returned 0, but the server tries to be as helpful as possible) */
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article.");
 
 	SWRITE(client1, "ARTICLE 1\r\n"); /* Should work with article number as well */
-	CLIENT_EXPECT(client1, "220 1 <");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_ARTICLE) " 1 <");
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article.");
 
 	GROUP_EXPECT(client1, "misc.empty", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0); /* Switch groups to misc.crossposts */
 	FMT_WRITE(client1, "ARTICLE %s\r\n", xmsgid);
-	CLIENT_EXPECT(client1, "220 0 <"); /* The article isn't in this group, so article number MUST be 0 */
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_ARTICLE) " 0 <"); /* The article isn't in this group, so article number MUST be 0 */
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article.");
 
 	FMT_WRITE(client1, "OVER %s\r\n", xmsgid); /* Ditto with OVER MSGID */
@@ -540,23 +540,23 @@ static int run(void)
 
 	/* Actually request the article to make sure we still have it and not just the metadata */
 	SWRITE(client1, "ARTICLE 1\r\n");
-	CLIENT_EXPECT(client1, "220 1 <");
+	CLIENT_EXPECT(client1, XSTR(NNTP_OK_ARTICLE) " 1 <");
 	CLIENT_EXPECT_EVENTUALLY(client1, "This is just a test article.");
 
 	/* But article shouldn't exist here anymore, at least if we request it by article number */
 	GROUP_EXPECT(client1, "misc.test", 8, 14, 6);
 	SWRITE(client1, "ARTICLE 15\r\n");
-	CLIENT_EXPECT(client1, "423");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_ARTNUM_NOTFOUND);
 
 	/* Now delete it in the other group as well */
 	DELETE_ARTICLE("misc.crossposts", 1);
 	GROUP_EXPECT(client1, "misc.crossposts", EMPTY_LOW_WATERMARK(2), EMPTY_HIGH_WATERMARK(1), 0);
 	SWRITE(client1, "ARTICLE 1\r\n");
-	CLIENT_EXPECT(client1, "423");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_ARTNUM_NOTFOUND);
 
 	/* Test dot-stuffing */
 	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT(client1, "340");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
 	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
 		"Newsgroups: misc.test" ENDL \
 		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
@@ -565,14 +565,14 @@ static int run(void)
 		"This article tests dot-stuffing." ENDL \
 		"." ENDL; \
 	write(client1, s, strlen(s));
-	CLIENT_EXPECT(client1, "240");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_POST);
 	GROUP_EXPECT(client1, "misc.test", 8, 16, 7);
 	SWRITE(client1, "HDR :bytes 16\r\n");
-	CLIENT_EXPECT(client1, "225");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_HDR);
 	CLIENT_EXPECT(client1, "16 285");
 
 	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT(client1, "340");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
 	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
 		"Newsgroups: misc.test" ENDL \
 		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
@@ -590,12 +590,12 @@ static int run(void)
 
 		"." ENDL; \
 	write(client1, s, strlen(s));
-	CLIENT_EXPECT(client1, "240");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_POST);
 	GROUP_EXPECT(client1, "misc.test", 8, 17, 8);
 	SWRITE(client1, "HDR :bytes 17\r\n");
 	/* Same as previous message but with 6 extra lines that are dot-stuffed. 6 lines, 3 bytes each (. CR LF, but not including leading dot for dot-stuffing).
 	 * So, +18 bytes. */
-	CLIENT_EXPECT(client1, "225");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_HDR);
 	CLIENT_EXPECT(client1, "17 303");
 
 	/* When requesting the article back, the lines with a '.' by themselves must be dot-stuffed back again */
@@ -604,7 +604,7 @@ static int run(void)
 
 	/* Test messages with multi-line headers */
 	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT(client1, "340");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
 	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
 		"Newsgroups: misc.test" ENDL \
 		"References: <ancestor1.foo>" ENDL \
@@ -618,7 +618,7 @@ static int run(void)
 		"This article tests dot-stuffing." ENDL \
 		"." ENDL; \
 	write(client1, s, strlen(s));
-	CLIENT_EXPECT(client1, "240");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_POST);
 
 	/* Ensure that we unfolded the multi-line References header and saved it properly: */
 	SWRITE(client1, "HDR References 18\r\n");
@@ -633,7 +633,7 @@ static int run(void)
 
 	/* See if the correct Distribution header gets added (and we also include our own Message-ID) */
 	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT(client1, "340");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
 	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
 		"Newsgroups: misc.crossposts" ENDL \
 		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
@@ -644,7 +644,7 @@ static int run(void)
 		"This article tests dot-stuffing." ENDL \
 		"." ENDL; \
 	write(client1, s, strlen(s));
-	CLIENT_EXPECT(client1, "240");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_POST);
 
 	/* Our Message-ID should have been preserved */
 	SWRITE(client1, "HDR Message-ID <unique.messageid>\r\n");
@@ -656,7 +656,7 @@ static int run(void)
 
 	/* Repeat, should be rejected */
 	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT(client1, "340");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
 	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
 		"Newsgroups: misc.crossposts" ENDL \
 		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
@@ -667,14 +667,14 @@ static int run(void)
 		"This article tests dot-stuffing." ENDL \
 		"." ENDL; \
 	write(client1, s, strlen(s));
-	CLIENT_EXPECT(client1, "441"); /* Should be rejected since server should reject message with duplicate Message-ID, even from a reader */
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_POST_REJECT); /* Should be rejected since server should reject message with duplicate Message-ID, even from a reader */
 
 	/* Try some posts that should be rejected */
-	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "misc.restricted", 440); /* Disallowed by post wildmat */
-	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.closed", 441); /* Denied by 'x' status */
-	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.junk", 441); /* Denied by 'j' status */
-	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.nolocal", 441); /* Denied by 'n' status */
-	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.aliased", 441); /* Denied by '=' status */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "misc.restricted", NNTP_FAIL_POST_AUTH); /* Disallowed by post wildmat */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.closed", NNTP_FAIL_POST_REJECT); /* Denied by 'x' status */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.junk", NNTP_FAIL_POST_REJECT); /* Denied by 'j' status */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.nolocal", NNTP_FAIL_POST_REJECT); /* Denied by 'n' status */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "test.aliased", NNTP_FAIL_POST_REJECT); /* Denied by '=' status */
 	GROUP_EXPECT(client1, "test.moderated", ALWAYS_EMPTY_LOW_WATERMARK, 0, 0);
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", -1); /* doesn't exist yet */
 	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "test.moderated"); /* Will be accepted but not posted to the group, but should appear in "moderator's" inbox */
@@ -683,7 +683,7 @@ static int run(void)
 
 	/* Can't add "Approved" headers to messages */
 	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT(client1, "340");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
 	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
 		"Newsgroups: misc.test" ENDL \
 		"Approved: moderator@news.example.com" ENDL \
@@ -693,11 +693,11 @@ static int run(void)
 		"This article tests dot-stuffing." ENDL \
 		"." ENDL; \
 	write(client1, s, strlen(s));
-	CLIENT_EXPECT(client1, "441 You are not allowed to approve");
+	CLIENT_EXPECT(client1, XSTR(NNTP_FAIL_POST_REJECT) " You are not allowed to approve");
 
 	/* Can't add "Control" headers to messages */
 	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT(client1, "340");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
 	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
 		"Newsgroups: misc.test" ENDL \
 		"Control: cmsg newgroup foo.baz" ENDL \
@@ -707,32 +707,32 @@ static int run(void)
 		"This article tests dot-stuffing." ENDL \
 		"." ENDL; \
 	write(client1, s, strlen(s));
-	CLIENT_EXPECT(client1, "441");
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_POST_REJECT);
 
 	/* User 3 isn't allowed to do anything, since he has no matching ACL */
 	client3 = test_make_socket(119);
 	REQUIRE_FD(client3);
-	CLIENT_EXPECT(client3, "200 " TEST_NEWS_HOSTNAME);
+	CLIENT_EXPECT(client3, XSTR(NNTP_OK_BANNER_POST) " " TEST_NEWS_HOSTNAME);
 
 	SWRITE(client3, "AUTHINFO USER " TEST_USER3 "@" TEST_NEWS_HOSTNAME "\r\n");
-	CLIENT_EXPECT(client3, "381");
+	CLIENT_EXPECT_CODE(client3, NNTP_CONT_AUTHINFO);
 	SWRITE(client3, "AUTHINFO PASS " TEST_PASS3 "\r\n");
-	CLIENT_EXPECT(client3, "281");
+	CLIENT_EXPECT_CODE(client3, NNTP_OK_AUTHINFO);
 
 	SWRITE(client3, "LIST ACTIVE misc.test\r\n");
-	CLIENT_EXPECT(client3, "215");
+	CLIENT_EXPECT_CODE(client3, NNTP_OK_LIST);
 	CLIENT_EXPECT(client3, ".");
 
 	SWRITE(client3, "GROUP misc.test\r\n");
-	CLIENT_EXPECT(client3, "502");
+	CLIENT_EXPECT_CODE(client3, NNTP_ERR_ACCESS);
 
 	/* Permission should be denied if performing operations directly with Message-ID since not authorized for containing group */
 	FMT_WRITE(client3, "OVER %s\r\n", xmsgid);
-	CLIENT_EXPECT_EVENTUALLY(client3, "430");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client3, NNTP_FAIL_MSGID_NOTFOUND);
 	FMT_WRITE(client3, "STAT %s\r\n", xmsgid);
-	CLIENT_EXPECT_EVENTUALLY(client3, "430");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client3, NNTP_FAIL_MSGID_NOTFOUND);
 	FMT_WRITE(client3, "HDR Subject %s\r\n", xmsgid);
-	CLIENT_EXPECT_EVENTUALLY(client3, "430");
+	CLIENT_EXPECT_CODE_EVENTUALLY(client3, NNTP_FAIL_MSGID_NOTFOUND);
 
 	/* Lastly, "spoof" an almost full group so we can test its behavior.
 	 * Here, we use misc.empty since it has thus far been empty so we know what to replace. */

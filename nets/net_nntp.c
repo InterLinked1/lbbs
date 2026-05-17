@@ -432,6 +432,25 @@ static int guests_can_post_at_all(void)
 	return guests_can_post;
 }
 
+static int can_post_at_all(void)
+{
+	static int computed = 0;
+	static int can_post = 0;
+	if (!computed) {
+		struct reader_acl *acl;
+		RWLIST_RDLOCK(&acls);
+		RWLIST_TRAVERSE(&acls, acl, entry) {
+			if (acl->post) {
+				can_post = 1; /* Some ACL allows somebody to post */
+				break;
+			}
+		}
+		RWLIST_UNLOCK(&acls);
+		computed = 1;
+	}
+	return can_post;
+}
+
 /* For inpeers, we use a slightly less expressive form of ACL that is equivalent to treating read and post the same (without some of the other reader ACL options)
  * In theory, we COULD have used the same ACL structure and allowed for the same configuration, but it's not quite the same use case.
  * In particular, reading clients will generally authenticate, while transit clients generally won't.
@@ -779,13 +798,13 @@ static void nntp_destroy(struct nntp_session *nntp)
 
 #define REQUIRE_ARGS(s) \
 	if (strlen_zero(s)) { \
-		nntp_send(nntp, 501, "Arguments required"); \
+		nntp_send(nntp, NNTP_ERR_SYNTAX, "Arguments required"); \
 		return 0; \
 	}
 
 #define REQUIRE_NO_ARGS(s) \
 	if (!strlen_zero(s)) { \
-		nntp_send(nntp, 501, "Syntax is: %s (no argument allowed)\r\n", command); \
+		nntp_send(nntp, NNTP_ERR_SYNTAX, "Syntax is: %s (no argument allowed)\r\n", command); \
 		return 0; \
 	}
 
@@ -1655,14 +1674,15 @@ static enum nntp_control_msg parse_cmsg(const char *s)
 	}
 }
 
+/*! \retval 0 on success, NNTP error code on failure or -1 for the default error code depending on mode */
 static int check_article(struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen, enum nntp_control_msg *cmsg)
 {
 	int reader = nntp->mode == NNTP_MODE_READER;
 
 #define REQUIRE_ARTINFO_FIELD(field) \
 	if (!artinfo->field) { \
-		nntp_send(nntp, 441, "Missing field %s\n", #field); \
-		return 1; \
+		snprintf(errbuf, errbuflen, "Missing field %s\n", #field); \
+		return -1; \
 	}
 
 	REQUIRE_ARTINFO_FIELD(newsgroups);
@@ -1676,13 +1696,13 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 		if (artinfo->messageid[0] != '<' && !bbs_str_ends_with(artinfo->messageid, ">")) {
 			/* Invalid Message-ID */
 			snprintf(errbuf, errbuflen, "Invalid Message-ID %s", artinfo->messageid);
-			return reader ? 441 : 437;
+			return -1;
 		}
 
 		/* If we limit what distributions we get from this peer, check if we want this article or not. */
 		if (artinfo->distribution && !we_want_distribution(nntp, artinfo->distribution)) {
 			snprintf(errbuf, errbuflen, "Unwanted distribution \"%s\"", artinfo->distribution);
-			return reader ? 441 : 437;
+			return -1;
 		}
 
 		if (artinfo->control) {
@@ -1691,10 +1711,10 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 			*cmsg = parse_cmsg(artinfo->control);
 			if (*cmsg == CMSG_UNKNOWN) {
 				snprintf(errbuf, errbuflen, "Unknown control message: %s", artinfo->control);
-				return reader ? 441 : 437;
+				return -1;
 			} else if (!artinfo->approved && (*cmsg == CMSG_NEWGROUP || *cmsg == CMSG_RMGROUP)) {
 				snprintf(errbuf, errbuflen, "Ignoring unapproved newgroup/rmgroup message");
-				return reader ? 441 : 437;
+				return -1;
 			}
 		}
 	} else {
@@ -1702,23 +1722,23 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 		if (!identity_allowed_for_posting(nntp, artinfo->from)) {
 			bbs_notice("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, artinfo->from);
 			snprintf(errbuf, errbuflen, "Identity not allowed for posting");
-			return reader ? 441 : 437;
+			return -1;
 		}
 
 		/* Reject articles with unapproved headers users are not allowed to add. */
 		if (artinfo->approved && !ACL_ALLOWED(nntp, NULL, NNTP_ACL_APPROVE)) {
 			snprintf(errbuf, errbuflen, "You are not allowed to approve postings");
-			return reader ? 441 : 437;
+			return -1;
 		}
 		if (artinfo->control) {
 			snprintf(errbuf, errbuflen, "You are not allowed to inject control messages");
-			return reader ? 441 : 437;
+			return -1;
 		}
 		if (STARTS_WITH(artinfo->subject, "cmsg ")) {
 			/* RFC 5537 says that contrary to RFC 1036, messages merely with Subjects beginning with "cmsg" are NOT control articles,
 			 * and we MAY reject such posts from users (RFC 5537 Section 5) */
 			snprintf(errbuf, errbuflen, "Message ambiguous (subject begins with cmsg, missing Control header)");
-			return reader ? 441 : 437;
+			return -1;
 		}
 	}
 
@@ -1726,7 +1746,7 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 	 * but now we do (possibly from some other server). Check again. */
 	if (spool_article_exists(artinfo->messageid)) {
 		snprintf(errbuf, errbuflen, "Message %s is a duplicate", artinfo->messageid);
-		return reader ? 441 : 435;
+		return reader ? NNTP_FAIL_POST_REJECT : NNTP_FAIL_IHAVE_REFUSE;
 	}
 
 	/*! \todo Do further validation of fields here as needed.
@@ -1759,8 +1779,11 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename, size_t po
 	/* Perform non-group specific checks for article and header validity. If any fail, the entire post is rejected. */
 	res = check_article(nntp, artinfo, errorbuf, sizeof(errorbuf), &cmsg);
 	if (res) {
+		if (res == -1) {
+			res = nntp->mode == NNTP_MODE_READER ? NNTP_FAIL_POST_REJECT : NNTP_FAIL_IHAVE_REJECT;
+		}
 		nntp_send(nntp, res, "%s", errorbuf); /* errorbuf is set if we fail, send the error message now */
-		log_article(nntp, artinfo, res == 435 ? LOG_DUPLICATE : LOG_REJECT, errorbuf);
+		log_article(nntp, artinfo, res == NNTP_FAIL_IHAVE_REFUSE ? LOG_DUPLICATE : LOG_REJECT, errorbuf);
 		return 0;
 	}
 
@@ -1916,28 +1939,28 @@ cleanup:
 		if (nntp->mode == NNTP_MODE_READER) {
 			if (total_errors == 1 && errorbuf[0]) {
 				/* If attempted to post only to one group, use the specific error message we constructed */
-				nntp_send(nntp, permission_errors ? 440 : 441, "%s", errorbuf);
+				nntp_send(nntp, permission_errors ? NNTP_FAIL_POST_AUTH : NNTP_FAIL_POST_REJECT, "%s", errorbuf);
 			} else if (permission_errors && total_errors == permission_errors) {
 				/* We weren't authorized to post to the group(s) */
-				nntp_send(nntp, 440, "Posting not allowed");
+				nntp_send(nntp, NNTP_FAIL_POST_AUTH, "Posting not allowed");
 			} else {
-				nntp_send(nntp, 441, "Posting failed");
+				nntp_send(nntp, NNTP_FAIL_POST_REJECT, "Posting failed");
 			}
 		} else {
 			if (temp_fail) {
-				nntp_send(nntp, 436, "Transfer failed; retry later");
+				nntp_send(nntp, NNTP_FAIL_IHAVE_DEFER, "Transfer failed; retry later");
 			} else {
 				if (total_errors == 1 && errorbuf[0]) {
-					nntp_send(nntp, 437, "%s", errorbuf);
+					nntp_send(nntp, NNTP_FAIL_IHAVE_REJECT, "%s", errorbuf);
 				} else {
-					nntp_send(nntp, 437, "Transfer rejected; do not retry");
+					nntp_send(nntp, NNTP_FAIL_IHAVE_REJECT, "Transfer rejected; do not retry");
 				}
 			}
 		}
 	} else {
 		/* Posting succeeded to at least one newsgroup. */
 		log_article(nntp, artinfo, was_junk ? LOG_JUNK : LOG_ACCEPT, errorbuf);
-		nntp_send(nntp, nntp->mode == NNTP_MODE_READER ? 240 : 235, "Article received OK");
+		nntp_send(nntp, nntp->mode == NNTP_MODE_READER ? NNTP_OK_POST : NNTP_OK_IHAVE, "Article received OK");
 	}
 
 	free_if(newsgroups);
@@ -2014,12 +2037,12 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 	enum list_category listcat = parse_list_category(keyword); /* If a keyword is not specified, then an argument is not present either (per syntax in RFC 3977 7.6.1.1) */
 
 	if (listcat == LIST_INVALID) {
-		nntp_send(nntp, 501, "Unknown LIST keyword");
+		nntp_send(nntp, NNTP_ERR_SYNTAX, "Unknown LIST keyword");
 		return 1;
 	}
 	if (!strlen_zero(argument) && !(listcat & LIST_PER_NEWSGROUP) && !(listcat & LIST_HEADERS)) {
 		/* We have an argument, but we don't consume one */
-		nntp_send(nntp, 501, "This command is not newsgroup-based and does not accept an argument");
+		nntp_send(nntp, NNTP_ERR_SYNTAX, "This command is not newsgroup-based and does not accept an argument");
 		return 1;
 	}
 
@@ -2029,7 +2052,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		res = active_group_list(nntp, listcat, argument);
 		ACL_UNLOCK(nntp);
 		if (res) {
-			nntp_send(nntp, 503, "Data item not available");
+			nntp_send(nntp, NNTP_ERR_UNAVAILABLE, "Data item not available");
 			return 1;
 		}
 		return 0;
@@ -2041,14 +2064,14 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 			 * Here, we only check that any provided argument is valid. */
 			if (!strlen_zero(argument)) {
 				if (strcasecmp(argument, "MSGID") && strcasecmp(argument, "RANGE")) {
-					nntp_send(nntp, 501, "Syntax error in argument");
+					nntp_send(nntp, NNTP_ERR_SYNTAX, "Syntax error in argument");
 					return 0;
 				}
 			}
 		} else {
 			if (!strlen_zero(argument)) {
 				/* This command takes no arguments */
-				nntp_send(nntp, 501, "Unexpected wildmat or argument");
+				nntp_send(nntp, NNTP_ERR_SYNTAX, "Unexpected wildmat or argument");
 				return 0;
 			}
 		}
@@ -2057,7 +2080,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		const char *s;
 		struct stringitem *i = NULL;
 
-		nntp_send(nntp, 215, "%s", "Recommended subscriptions in form \"group\"");
+		nntp_send(nntp, NNTP_OK_LIST, "%s", "Recommended subscriptions in form \"group\"");
 		RWLIST_RDLOCK(&subscriptions);
 		while ((s = stringlist_next(&subscriptions, &i))) {
 			_nntp_send(nntp, "%s\r\n", s);
@@ -2068,7 +2091,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		/* distrib.pats list assists clients to choose a value for the Distribution header of an article being posted.
 		 * <weight> <wildmat> <value for Distribution header content>
 		 * The highest-weighted line with a matching wildmat is the value that gets used. */
-		nntp_send(nntp, 215, "%s", "Default distributions in form \"weight:group-pattern:distribution\"");
+		nntp_send(nntp, NNTP_OK_LIST, "%s", "Default distributions in form \"weight:group-pattern:distribution\"");
 		RWLIST_RDLOCK(&distrib_pats);
 		RWLIST_TRAVERSE(&distrib_pats, p, entry) {
 			_nntp_send(nntp, "%d:%s:%s\r\n", p->weight, p->wildmat, p->value);
@@ -2076,7 +2099,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		RWLIST_UNLOCK(&distrib_pats);
 	} else if (listcat & LIST_DISTRIBUTIONS) {
 		struct distribution *d;
-		nntp_send(nntp, 215, "%s", "Default distributions in form \"distribution description\"");
+		nntp_send(nntp, NNTP_OK_LIST, "%s", "Default distributions in form \"distribution description\"");
 		RWLIST_RDLOCK(&distributions);
 		RWLIST_TRAVERSE(&distributions, d, entry) {
 			_nntp_send(nntp, "%s\t%s\r\n", d->name, d->description);
@@ -2084,7 +2107,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		RWLIST_UNLOCK(&distributions);
 	} else if (listcat & LIST_MODERATORS) {
 		struct moderator *m;
-		nntp_send(nntp, 215, "%s", "Newsgroup moderators in form \"group-pattern:submission-template\"");
+		nntp_send(nntp, NNTP_OK_LIST, "%s", "Newsgroup moderators in form \"group-pattern:submission-template\"");
 		RWLIST_RDLOCK(&moderators);
 		RWLIST_TRAVERSE(&moderators, m, entry) {
 			_nntp_send(nntp, "%s:%s\r\n", m->wildmat, m->template);
@@ -2092,10 +2115,10 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		RWLIST_UNLOCK(&moderators);
 	} else if (listcat & LIST_MOTD) {
 		if (!s_strlen_zero(motd)) {
-			nntp_send(nntp, 215, "%s", "Message of the day text in UTF-8");
+			nntp_send(nntp, NNTP_OK_LIST, "%s", "Message of the day text in UTF-8");
 			_nntp_send(nntp, "%s\r\n", motd);
 		} else {
-			nntp_send(nntp, 503, "No message of the day available");
+			nntp_send(nntp, NNTP_ERR_UNAVAILABLE, "No message of the day available");
 			return 0;
 		}
 	} else {
@@ -2109,13 +2132,13 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 
 #define REQUIRE_READER() \
 	if (nntp->mode != NNTP_MODE_READER) { \
-		nntp_send(nntp, 401, "MODE-READER"); \
+		nntp_send(nntp, NNTP_FAIL_WRONG_MODE, "MODE-READER"); \
 		return 0; \
 	}
 
 #define REQUIRE_GROUP() \
 	if (!nntp->currentgroup) { \
-		nntp_send(nntp, 412, "No newsgroup selected"); \
+		nntp_send(nntp, NNTP_FAIL_NO_GROUP, "No newsgroup selected"); \
 		return 0; \
 	}
 
@@ -2267,17 +2290,17 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 	fp = bbs_mkftemp(template, 0600);
 	if (!fp) {
 		if (nntp->mode == NNTP_MODE_READER) {
-			nntp_send(nntp, 440, "Server error, posting temporarily unavailable");
+			nntp_send(nntp, NNTP_FAIL_POST_AUTH, "Server error, posting temporarily unavailable");
 		} else {
-			nntp_send(nntp, 436, "Temporary server error, try again later");
+			nntp_send(nntp, NNTP_FAIL_IHAVE_DEFER, "Temporary server error, try again later");
 		}
 		return 0;
 	}
 
 	if (nntp->mode == NNTP_MODE_READER) {
-		nntp_send(nntp, 340, "Input article; end with a period on its own line");
+		nntp_send(nntp, NNTP_CONT_POST, "Input article; end with a period on its own line");
 	} else {
-		nntp_send(nntp, 335, "Send it; end with a period on its own line");
+		nntp_send(nntp, NNTP_CONT_IHAVE, "Send it; end with a period on its own line");
 	}
 
 	for (;;) {
@@ -2293,15 +2316,14 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 		if (!strcmp(s, ".")) {
 			fclose(fp);
 			if (postfail) {
-				if (nntp->mode == NNTP_MODE_TRANSIT) {
-					if (inheaders || postlen >= max_post_size) {
-						/* Permanent error */
-						nntp_send(nntp, 437, "Transfer rejected (%s); do not retry", inheaders ? "article mismatch" : "too large");
-					} else {
-						nntp_send(nntp, 436, "Transfer not possible; try again later"); /* Temporary error */
-					}
+				if (inheaders || postlen >= max_post_size) {
+					/* Permanent error */
+					nntp_send(nntp, nntp->mode == NNTP_MODE_TRANSIT ? NNTP_FAIL_IHAVE_REJECT : NNTP_FAIL_POST_REJECT,
+						"Transfer rejected (%s); do not retry", inheaders ? "article mismatch" : "too large");
+				} else if (nntp->mode == NNTP_MODE_TRANSIT) {
+					nntp_send(nntp, NNTP_FAIL_IHAVE_DEFER, "Transfer not possible; try again later"); /* Temporary error */
 				} else {
-					nntp_send(nntp, 441, "Posting failed%s", postlen >= max_post_size ? " (too large)" : "");
+					nntp_send(nntp, NNTP_FAIL_POST_REJECT, "Posting failed%s", postlen >= max_post_size ? " (too large)" : "");
 				}
 				unlink(template);
 				return 0;
@@ -2481,7 +2503,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 
 	if (!strcasecmp(command, "QUIT")) {
 		REQUIRE_NO_ARGS(s);
-		nntp_send(nntp, 205, "Bye!");
+		nntp_send(nntp, NNTP_OK_QUIT, "Bye!");
 		return -1;
 	} else if (!strcasecmp(command, "MODE")) {
 		command = strsep(&s, " ");
@@ -2489,17 +2511,17 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		if (!strcasecmp(command, "READER")) {
 			if (!bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) { /* RFC 8054 2.2.2: MUST NOT advertise MODE-READER after compression activated */
 				nntp->mode = NNTP_MODE_READER;
-				nntp_send(nntp, 200, "Reader mode, posting permitted");
+				nntp_send(nntp, NNTP_OK_BANNER_POST, "Reader mode, posting permitted");
 			} else {
-				nntp_send(nntp, 502, "MODE-READER cannot be activated after compression");
+				nntp_send(nntp, NNTP_ERR_ACCESS, "MODE-READER cannot be activated after compression");
 			}
 		} else {
 			bbs_error("Unknown mode: %s\n", command);
-			nntp_send(nntp, 502, "Unknown mode");
+			nntp_send(nntp, NNTP_ERR_ACCESS, "Unknown mode");
 		}
 	} else if (!strcasecmp(command, "CAPABILITIES")) {
 		/* This is very reminiscent of the POP3 CAPABILITIES command: */
-		nntp_send(nntp, 101, "Capability list:");
+		nntp_send(nntp, NNTP_INFO_CAPABILITIES, "Capability list:");
 		_nntp_send(nntp, "VERSION 2\r\n"); /* Must be first */
 		_nntp_send(nntp, "IMPLEMENTATION %s\r\n", BBS_SHORTNAME);
 		if (!bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
@@ -2531,12 +2553,12 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 	} else if (!strcasecmp(command, "STARTTLS")) {
 		REQUIRE_NO_ARGS(s);
 		if (!ssl_available()) {
-			nntp_send(nntp, 580, "STARTTLS may not be used");
+			nntp_send(nntp, NNTP_ERR_STARTTLS, "STARTTLS may not be used");
 		} else if (bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
 			/* RFC 8054 2.2.2: MUST reply with 502 if STARTTLS received while compression already active */
-			nntp_send(nntp, 502, "STARTTLS may not be activated after COMPRESS");
+			nntp_send(nntp, NNTP_ERR_ACCESS, "STARTTLS may not be activated after COMPRESS");
 		} else if (!nntp->node->secure) {
-			nntp_send(nntp, 382, "Ready to start TLS");
+			nntp_send(nntp, NNTP_CONT_STARTTLS, "Ready to start TLS");
 			/* RFC 4642 */
 			bbs_debug(3, "Starting TLS\n");
 			if (bbs_node_starttls(nntp->node)) {
@@ -2546,36 +2568,36 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			nntp->currentarticle = 0;
 			bbs_readline_flush(rldata); /* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade */
 		} else {
-			nntp_send(nntp, 502, "Already using TLS");
+			nntp_send(nntp, NNTP_ERR_ACCESS, "Already using TLS");
 		}
 	} else if (!strcasecmp(command, "COMPRESS")) {
 		REQUIRE_ARGS(s);
 		if (!strcasecmp(s, "DEFLATE")) {
 			if (!deflate_compression_available()) {
-				nntp_send(nntp, 403, "Compression unavailable");
+				nntp_send(nntp, NNTP_FAIL_ACTION, "Compression unavailable");
 			} else if (bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
-				nntp_send(nntp, 502, "DEFLATE already enabled");
+				nntp_send(nntp, NNTP_ERR_ACCESS, "DEFLATE already enabled");
 			} else if (!bbs_io_transform_possible(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
-				nntp_send(nntp, 403, "Can't enable compression");
+				nntp_send(nntp, NNTP_FAIL_ACTION, "Can't enable compression");
 			} else {
 				/* Go ahead and enable it */
 				int orig_wfd = nntp->node->wfd;
 				int err = bbs_io_transform_setup(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION, TRANSFORM_SERVER, &nntp->node->rfd, &nntp->node->wfd, NULL);
 				if (err) {
-					nntp_send(nntp, 403, "Can't enable compression");
+					nntp_send(nntp, NNTP_FAIL_ACTION, "Can't enable compression");
 				} else {
 					/* We still need to reply with an OK before compression is active.
 					 * Since node->wfd has already been updated, manually write to the original file descriptor (which now sits post-compression).
 					 * Normally, this would be a bad idea, since we'd intersperse uncompressed data with compressed data managed by zlib,
 					 * but this should be before we've sent anything compressed. */
-					_nntp_send_fd(nntp, orig_wfd, "206 Compression active\r\n");
+					_nntp_send_fd(nntp, orig_wfd, "%d Compression active\r\n", NNTP_OK_COMPRESS);
 					/* XXX As with IMAP, the RFC optionally recommends flushing dictionaries at particular points, though we do not at the moment.
 					 * Unlike IMAP, NNTP is less likely to encounter large uncompressible blobs (e.g. attachments).
 					 * An additional suggestion is to flush the dictionary when switching between public (Usenet) and private groups/articles. */
 				}
 			}
 		} else {
-			nntp_send(nntp, 503, "Unknown compression method");
+			nntp_send(nntp, NNTP_ERR_UNAVAILABLE, "Unknown compression method");
 		}
 	} else if (!strcasecmp(command, "DATE")) {
 		char datestr[15];
@@ -2585,10 +2607,10 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		timenow = time(NULL);
 		gmtime_r(&timenow, &nowtime);
 		strftime(datestr, sizeof(datestr), "%Y%m%d%H%M%S", &nowtime); /* yyyymmddhhmmss */
-		nntp_send(nntp, 111, "%s", datestr);
+		nntp_send(nntp, NNTP_INFO_DATE, "%s", datestr);
 	} else if (!strcasecmp(command, "HELP")) {
 		REQUIRE_NO_ARGS(s);
-		nntp_send(nntp, 100, "Legal commands");
+		nntp_send(nntp, NNTP_INFO_HELP, "Legal commands");
 		/* Alphabetically sorted list of commands: */
 		_nntp_send(nntp, " ARTICLE [message-ID|number]\r\n");
 		_nntp_send(nntp, " AUTHINFO USER name|PASS password\r\n");
@@ -2624,10 +2646,10 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		char *user, *pass, *domain;
 
 		if (!nntp->node->secure && require_secure_login) {
-			nntp_send(nntp, 502, "Must STARTTLS first");
+			nntp_send(nntp, NNTP_ERR_ACCESS, "Must STARTTLS first");
 			return 0;
 		} else if (bbs_user_is_registered(nntp->node->user)) {
-			nntp_send(nntp, 502, "Already authenticated");
+			nntp_send(nntp, NNTP_ERR_ACCESS, "Already authenticated");
 			return 0;
 		}
 		user = strsep(&s, " ");
@@ -2641,17 +2663,17 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		if (domain) {
 			*domain++ = '\0';
 			if (improper_auth_hostname(domain)) {
-				nntp_send(nntp, 452, "Authorization rejected");
+				nntp_send(nntp, NNTP_FAIL_AUTHINFO_BAD, "Authorization rejected");
 				return 0;
 			}
 		}
 		res = bbs_authenticate(nntp->node, user, pass);
 		bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
 		if (res) {
-			nntp_send(nntp, 452, "Authorization rejected"); /* XXX As this extension is not documented, I do not know what the intended response code on error was */
+			nntp_send(nntp, NNTP_FAIL_AUTHINFO_BAD, "Authorization rejected"); /* XXX As this extension is not documented, I do not know what the intended response code on error was */
 			return 0;
 		}
-		nntp_send(nntp, 290, "Password for %s accepted", user); /*! \todo Is this really the right response code? */
+		nntp_send(nntp, 290, "Password for %s accepted", user); /* XXX This is the response code in the RFC example */
 		RECHECK_TRANSIT_ACL(nntp);
 	} else if (!strcasecmp(command, "AUTHINFO")) {
 		/* RFC 4643 AUTHINFO */
@@ -2659,13 +2681,13 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		char *pass, *domain;
 
 		if (!nntp->node->secure && require_secure_login) {
-			nntp_send(nntp, 502, "Must STARTTLS first");
+			nntp_send(nntp, NNTP_ERR_ACCESS, "Must STARTTLS first");
 			return 0;
 		} else if (bbs_user_is_registered(nntp->node->user)) {
-			nntp_send(nntp, 502, "Already authenticated");
+			nntp_send(nntp, NNTP_ERR_ACCESS, "Already authenticated");
 			return 0;
 		} else if (bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
-			nntp_send(nntp, 502, "AUTHINFO not allowed after COMPRESS"); /* RFC 8054 2.2.2 */
+			nntp_send(nntp, NNTP_ERR_ACCESS, "AUTHINFO not allowed after COMPRESS"); /* RFC 8054 2.2.2 */
 			return 0;
 		}
 
@@ -2674,11 +2696,11 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			free_if(nntp->user);
 			REQUIRE_ARGS(s);
 			nntp->user = strdup(s);
-			nntp_send(nntp, 381, "Password required");
+			nntp_send(nntp, NNTP_CONT_AUTHINFO, "Password required");
 		} else if (!strcasecmp(command, "PASS")) {
 			pass = s;
 			if (!nntp->user) {
-				nntp_send(nntp, 482, "Authentication commands issued out of sequence");
+				nntp_send(nntp, NNTP_FAIL_AUTHINFO_REJECT, "Authentication commands issued out of sequence");
 				return 0;
 			}
 			REQUIRE_ARGS(pass);
@@ -2688,7 +2710,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			if (domain) {
 				*domain++ = '\0';
 				if (improper_auth_hostname(domain)) {
-					nntp_send(nntp, 481, "Authorization rejected");
+					nntp_send(nntp, NNTP_FAIL_AUTHINFO_BAD, "Authorization rejected");
 					return 0;
 				}
 			}
@@ -2696,10 +2718,10 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			free_if(nntp->user);
 			bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
 			if (res) {
-				nntp_send(nntp, 481, "Authentication failed");
+				nntp_send(nntp, NNTP_FAIL_AUTHINFO_BAD, "Authentication failed");
 				return 0;
 			}
-			nntp_send(nntp, 281, "Authentication accepted");
+			nntp_send(nntp, NNTP_OK_AUTHINFO, "Authentication accepted");
 			RECHECK_TRANSIT_ACL(nntp);
 		} else if (!strcasecmp(command, "SASL")) {
 			/* RFC 4643 SASL */
@@ -2720,17 +2742,17 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 				free(decoded);
 
 				if (res) {
-					nntp_send(nntp, 481, "Authentication failed");
+					nntp_send(nntp, NNTP_FAIL_AUTHINFO_BAD, "Authentication failed");
 					return 0;
 				}
-				nntp_send(nntp, 281, "Authentication accepted");
+				nntp_send(nntp, NNTP_OK_AUTHINFO, "Authentication accepted");
 				RECHECK_TRANSIT_ACL(nntp);
 			} else {
 				/* RFC 4643 says we MUST implement the DIGEST-MD5 mechanism, but, well, we don't. */
-				nntp_send(nntp, 503, "Mechanism not recognized");
+				nntp_send(nntp, NNTP_ERR_UNAVAILABLE, "Mechanism not recognized");
 			}
 		} else {
-			nntp_send(nntp, 501, "Unknown AUTHINFO command");
+			nntp_send(nntp, NNTP_ERR_SYNTAX, "Unknown AUTHINFO command");
 		}
 	} else if (!strcasecmp(command, "LIST")) {
 		const char *keyword = strsep(&s, " ");
@@ -2740,20 +2762,20 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 	} else if (!strcasecmp(command, "GROUP")) { /* Note, this command can be used in either mode */
 		int low, high, count;
 		if (!group_exists(s)) {
-			nntp_send(nntp, 411, "%s is unknown", s);
+			nntp_send(nntp, NNTP_FAIL_BAD_GROUP, "%s is unknown", s);
 			return 0;
 		}
 		/* For future commands which require a group, we don't check read ACL since we check it here, before changing the group */
 		if (!ACL_ALLOWED(nntp, s, NNTP_ACL_READ)) {
-			nntp_send(nntp, 502, "Read access denied");
+			nntp_send(nntp, NNTP_ERR_ACCESS, "Read access denied");
 			return 0;
 		}
 		if (group_get_stats(s, &high, &low, &count)) {
-			nntp_send(nntp, 403, "Error changing group");
+			nntp_send(nntp, NNTP_FAIL_ACTION, "Error changing group");
 			return 0;
 		}
 		REPLACE(nntp->currentgroup, s);
-		nntp_send(nntp, 211, "%d %d %d %s", count, low, high, s);
+		nntp_send(nntp, NNTP_OK_GROUP, "%d %d %d %s", count, low, high, s);
 		nntp->currentarticle = low;
 	} else if (!strcasecmp(command, "LISTGROUP")) {
 		int low, high, count;
@@ -2769,16 +2791,16 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			groupname = nntp->currentgroup;
 		}
 		if (strlen_zero(groupname) || !group_exists(groupname)) {
-			nntp_send(nntp, 411, "%s is unknown", groupname);
+			nntp_send(nntp, NNTP_FAIL_BAD_GROUP, "%s is unknown", groupname);
 			return 0;
 		}
 		/* For future commands which require a group, we don't check read ACL since we check it here, before changing the group */
 		if (!ACL_ALLOWED(nntp, groupname, NNTP_ACL_READ)) {
-			nntp_send(nntp, 502, "Read access denied");
+			nntp_send(nntp, NNTP_ERR_ACCESS, "Read access denied");
 			return 0;
 		}
 		if (group_get_stats(groupname, &high, &low, &count)) {
-			nntp_send(nntp, 403, "Error changing group");
+			nntp_send(nntp, NNTP_FAIL_ACTION, "Error changing group");
 			return 0;
 		}
 		/* If the group didn't change, no need to free/strdup.
@@ -2787,7 +2809,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		if (!nntp->currentgroup || strcmp(nntp->currentgroup, groupname)) {
 			REPLACE(nntp->currentgroup, groupname); /* We still change the group (as with GROUP) */
 		}
-		nntp_send(nntp, 211, "%d %d %d %s list follows", count, low, high, groupname);
+		nntp_send(nntp, NNTP_OK_GROUP, "%d %d %d %s list follows", count, low, high, groupname);
 		if (spool_group_list_articles(nntp, groupname, min, max)) {
 			_nntp_send(nntp, ".\r\n"); /* On success, we send the trailing ., on failure we do not, so we do it here */
 		}
@@ -2803,14 +2825,14 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		REQUIRE_ARGS(time);
 		epoch = parse_datetime(date, time, !strlen_zero(gmt) && !strcmp(gmt, "GMT"));
 		if (epoch <= 0) {
-			nntp_send(nntp, 501, "Invalid time argument");
+			nntp_send(nntp, NNTP_ERR_SYNTAX, "Invalid time argument");
 			return 0;
 		}
 		ACL_RDLOCK(nntp);
 		res = active_group_list_newgroups(nntp, epoch);
 		ACL_UNLOCK(nntp);
 		if (res) {
-			nntp_send(nntp, 503, "Data item not available");
+			nntp_send(nntp, NNTP_ERR_UNAVAILABLE, "Data item not available");
 			return 0;
 		}
 	} else if (!strcasecmp(command, "NEWNEWS")) {
@@ -2825,10 +2847,10 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		REQUIRE_ARGS(time);
 		epoch = parse_datetime(date, time, !strlen_zero(gmt) && !strcmp(gmt, "GMT"));
 		if (epoch <= 0) {
-			nntp_send(nntp, 501, "Invalid time argument");
+			nntp_send(nntp, NNTP_ERR_SYNTAX, "Invalid time argument");
 			return 0;
 		}
-		nntp_send(nntp, 230, "List of new articles by message-ID follows");
+		nntp_send(nntp, NNTP_OK_NEWNEWS, "List of new articles by message-ID follows");
 		ACL_RDLOCK(nntp);
 		spool_newnews(nntp, wildmat, epoch);
 		ACL_UNLOCK(nntp);
@@ -2842,14 +2864,14 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			parse_min_max(s, &min, &max, '-');
 		} else {
 			if (!nntp->currentarticle) {
-				nntp_send(nntp, 420, "No article(s) selected");
+				nntp_send(nntp, NNTP_FAIL_ARTNUM_INVALID, "No article(s) selected");
 				return 0;
 			}
 			min = max = nntp->currentarticle;
 		}
 		/* ACL not needed here, since XOVER can only be used with currently selected group */
 		if (spool_group_overview(nntp, NULL, nntp->currentgroup, min, max)) {
-			nntp_send(nntp, 420, "No article(s) selected");
+			nntp_send(nntp, NNTP_FAIL_ARTNUM_INVALID, "No article(s) selected");
 		}
 	} else if (!strcasecmp(command, "OVER")) {
 /* If we are using a Message-ID instead of an article number, the spool will need to query ACLs for the group containing the article */
@@ -2866,14 +2888,14 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			} else {
 				REQUIRE_GROUP();
 				if (parse_min_max(s, &min, &max, '-')) {
-					nntp_send(nntp, 423, "Invalid range");
+					nntp_send(nntp, NNTP_FAIL_ARTNUM_NOTFOUND, "Invalid range");
 					return 0;
 				}
 			}
 		} else {
 			REQUIRE_GROUP();
 			if (!nntp->currentarticle) {
-				nntp_send(nntp, 420, "Current article number is invalid");
+				nntp_send(nntp, NNTP_FAIL_ARTNUM_INVALID, "Current article number is invalid");
 				return 0;
 			}
 			min = max = nntp->currentarticle;
@@ -2882,7 +2904,8 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		res = spool_group_overview(nntp, msgid, nntp->currentgroup, min, max);
 		CMD_ACL_UNLOCK(nntp);
 		if (res) {
-			nntp_send(nntp, msgid ? 430 : 423, "%s", msgid ? "No article with that Message-ID" : "No articles in that range");
+			nntp_send(nntp, msgid ? NNTP_FAIL_MSGID_NOTFOUND : NNTP_FAIL_ARTNUM_NOTFOUND, "%s",
+				msgid ? "No article with that Message-ID" : "No articles in that range");
 		}
 	} else if (!strcasecmp(command, "HDR") || !strcasecmp(command, "XHDR") || !strcasecmp(command, "XPAT")) {
 		/* Unlike XOVER/OVER, there are very few differences between XHDR/HDR, since XHDR also supports requests using a Message-ID. Differences:
@@ -2907,14 +2930,14 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			} else {
 				REQUIRE_GROUP();
 				if (parse_min_max(arg2, &min, &max, '-')) {
-					nntp_send(nntp, 423, "Invalid range");
+					nntp_send(nntp, NNTP_FAIL_ARTNUM_NOTFOUND, "Invalid range");
 					return 0;
 				}
 			}
 		} else {
 			REQUIRE_GROUP();
 			if (!nntp->currentarticle) {
-				nntp_send(nntp, 420, "Current article number is invalid");
+				nntp_send(nntp, NNTP_FAIL_ARTNUM_INVALID, "Current article number is invalid");
 				return 0;
 			}
 			min = max = nntp->currentarticle;
@@ -2929,9 +2952,10 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		if (res) {
 			if (res == 2) {
 				/* We only use overview to satisfy HDR requests, so if it's not a field available in overview, we reject it */
-				nntp_send(nntp, 503, "HDR not permitted on %s", hdr);
+				nntp_send(nntp, NNTP_ERR_UNAVAILABLE, "HDR not permitted on %s", hdr);
 			} else {
-				nntp_send(nntp, msgid ? 430 : 423, "%s", msgid ? "No article with that Message-ID" : "No articles in that range");
+				nntp_send(nntp, msgid ? NNTP_FAIL_MSGID_NOTFOUND : NNTP_FAIL_ARTNUM_NOTFOUND, "%s",
+					msgid ? "No article with that Message-ID" : "No articles in that range");
 			}
 		}
 	} else if (!strcasecmp(command, "ARTICLE")) {
@@ -2939,7 +2963,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 	artnum = atoi(s); \
 	if (!artnum) { \
 		if (!IS_MESSAGEID_RATHER_THAN_RANGE(s)) { \
-			nntp_send(nntp, 423, "No such article"); \
+			nntp_send(nntp, NNTP_FAIL_ARTNUM_NOTFOUND, "No such article"); \
 			return 0; \
 		} \
 	}
@@ -2975,7 +2999,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		res = spool_article_send(nntp, SEND_HEADERS | SEND_BODY, artnum ? NULL : s, nntp->currentgroup, artnum);
 		ARTICLE_ACL_UNLOCK(nntp);
 		if (res) {
-			nntp_send(nntp, artnum ? 423 : 430, "No such article"); /* Only on failure, do we need to send a response here */
+			nntp_send(nntp, artnum ? NNTP_FAIL_ARTNUM_NOTFOUND : NNTP_FAIL_MSGID_NOTFOUND, "No such article"); /* Only on failure, do we need to send a response here */
 		} else if (artnum) {
 			nntp->currentarticle = artnum; /* If we explicitly specified an article number (not with Message-ID) and it exists, update current article number */
 		}
@@ -2986,7 +3010,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		res = spool_article_send(nntp, SEND_HEADERS, artnum ? NULL : s, nntp->currentgroup, artnum);
 		ARTICLE_ACL_UNLOCK(nntp);
 		if (res) {
-			nntp_send(nntp, artnum ? 423 : 430, "No such article");
+			nntp_send(nntp, artnum ? NNTP_FAIL_ARTNUM_NOTFOUND : NNTP_FAIL_MSGID_NOTFOUND, "No such article");
 		} else if (artnum) {
 			nntp->currentarticle = artnum;
 		}
@@ -2997,7 +3021,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		res = spool_article_send(nntp, SEND_BODY, artnum ? NULL : s, nntp->currentgroup, artnum);
 		ARTICLE_ACL_UNLOCK(nntp);
 		if (res) {
-			nntp_send(nntp, artnum ? 423 : 430, "No such article");
+			nntp_send(nntp, artnum ? NNTP_FAIL_ARTNUM_NOTFOUND : NNTP_FAIL_MSGID_NOTFOUND, "No such article");
 		} else if (artnum) {
 			nntp->currentarticle = artnum;
 		}
@@ -3008,7 +3032,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		res = spool_article_stat(nntp, artnum ? NULL : s, nntp->currentgroup, artnum);
 		ARTICLE_ACL_UNLOCK(nntp);
 		if (res) {
-			nntp_send(nntp, artnum ? 423 : 430, "No such article");
+			nntp_send(nntp, artnum ? NNTP_FAIL_ARTNUM_NOTFOUND : NNTP_FAIL_MSGID_NOTFOUND, "No such article");
 		} else if (artnum) {
 			nntp->currentarticle = artnum;
 		}
@@ -3018,66 +3042,66 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		REQUIRE_READER();
 		REQUIRE_GROUP();
 		if (!nntp->currentarticle) {
-			nntp_send(nntp, 420, "Current article number is invalid");
+			nntp_send(nntp, NNTP_FAIL_ARTNUM_INVALID, "Current article number is invalid");
 			return 0;
 		}
 		spool_group_seek(nntp->currentgroup, nntp->currentarticle, &last, -1, msgid, sizeof(msgid));
 		if (last == nntp->currentarticle) {
-			nntp_send(nntp, 422, "No previous article in group");
+			nntp_send(nntp, NNTP_FAIL_PREV, "No previous article in group");
 			return 0;
 		}
 		nntp->currentarticle = last;
-		nntp_send(nntp, 223, "%d %s", last, msgid);
+		nntp_send(nntp, NNTP_OK_STAT, "%d %s", last, msgid);
 	} else if (!strcasecmp(command, "NEXT")) {
 		int next;
 		char msgid[NNTP_BUFSIZ];
 		REQUIRE_READER();
 		REQUIRE_GROUP();
 		if (!nntp->currentarticle) {
-			nntp_send(nntp, 420, "Current article number is invalid");
+			nntp_send(nntp, NNTP_FAIL_ARTNUM_INVALID, "Current article number is invalid");
 			return 0;
 		}
 		spool_group_seek(nntp->currentgroup, nntp->currentarticle, &next, +1, msgid, sizeof(msgid));
 		if (next == nntp->currentarticle) {
-			nntp_send(nntp, 421, "No next article in group");
+			nntp_send(nntp, NNTP_FAIL_NEXT, "No next article in group");
 			return 0;
 		}
 		nntp->currentarticle = next;
-		nntp_send(nntp, 223, "%d %s", next, msgid);
+		nntp_send(nntp, NNTP_OK_STAT, "%d %s", next, msgid);
 	} else if (!strcasecmp(command, "POST")) {
 		REQUIRE_READER();
 		if (!bbs_user_is_registered(nntp->node->user) && !guests_can_post_at_all()) {
-			nntp_send(nntp, 480, "Must authenticate first");
+			nntp_send(nntp, NNTP_FAIL_AUTH_NEEDED, "Must authenticate first");
 			return 0;
 		}
 		return handle_post_ihave(nntp, rldata, NULL);
 	} else if (!strcasecmp(command, "IHAVE")) {
 		char articleid[NNTP_BUFSIZ];
 		if (nntp->mode != NNTP_MODE_TRANSIT) {
-			nntp_send(nntp, 401, "Readers must use POST, not IHAVE");
+			nntp_send(nntp, NNTP_FAIL_WRONG_MODE, "Readers must use POST, not IHAVE");
 			return 0;
 		}
 		/* Check if client is authorized to relay us articles. */
 		if (requirerelaytls && !nntp->node->secure) {
-			nntp_send(nntp, 483, "Secure connection required");
+			nntp_send(nntp, NNTP_FAIL_PRIVACY_NEEDED, "Secure connection required");
 			return 0;
 		}
 		if (!nntp->inpeer_any) {
 			bbs_notice("Sender %s/%s unauthorized to send us articles\n", bbs_username(nntp->node->user), nntp->node->ip);
-			nntp_send(nntp, 500, "Not authorized to relay articles");
+			nntp_send(nntp, NNTP_ERR_ACCESS, "Not authorized to relay articles");
 			return 0;
 		}
 		/* Group not required, the headers will say group(s) to which message should be posted. */
 		REQUIRE_ARGS(s); /* Do not strip <> around Message-ID, as that is part of the Message-ID */
 		/* Check if any message with this ID exists in any newsgroup. */
 		if (spool_article_exists(s)) {
-			nntp_send(nntp, 435, "Duplicate");
+			nntp_send(nntp, NNTP_FAIL_IHAVE_REFUSE, "Duplicate");
 			return 0;
 		}
 		safe_strncpy(articleid, s, sizeof(articleid)); /* duplicate since handle_post_ihave will call bbs_readline and clobber the buffer this is in */
 		return handle_post_ihave(nntp, rldata, articleid);
 	} else {
-		nntp_send(nntp, 500, "Unknown command");
+		nntp_send(nntp, NNTP_ERR_COMMAND, "Unknown command");
 	}
 	return 0;
 }
@@ -3086,10 +3110,12 @@ static void handle_client(struct nntp_session *nntp)
 {
 	char buf[NNTP_MAX_LINE_LENGTH + 1];
 	struct readline_data rldata;
+	int posting_allowed = can_post_at_all();
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 	/* 200 means client can post, 201 means not, but this is not a perfect distinction (see RFC) */
-	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", newsname);
+	nntp_send(nntp, posting_allowed ? NNTP_OK_BANNER_POST : NNTP_OK_BANNER_NOPOST,
+		"%s Newsgroup Service Ready, %s", newsname, posting_allowed ? "posting allowed" : "posting prohibited");
 
 	SET_BITFIELD(nntp->inpeer_any, authorized_inpeer_for_any_groups(nntp)); /* Cache whether this client has an inpeer ACL */
 

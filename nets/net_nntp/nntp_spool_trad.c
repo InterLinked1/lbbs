@@ -759,10 +759,10 @@ static int tradspool_group_overview_full(struct nntp_session *nntp, enum overvie
 		} else {
 			/* It matches the range filter, dump the line */
 			if (!matches++) {
-				if (field != OVERVIEW_ALL) {
-					nntp_send(nntp, cmd != NNTP_HDR ? 221 : 225, "Header information follows");
+				if (field == OVERVIEW_ALL) {
+					nntp_send(nntp, NNTP_OK_OVER, "Overview information follows");
 				} else {
-					nntp_send(nntp, 224, "Overview information follows");
+					nntp_send(nntp, cmd == NNTP_HDR ? NNTP_OK_HDR : NNTP_OK_HEAD, "Header information follows");
 				}
 			}
 			if (field != OVERVIEW_ALL) {
@@ -863,7 +863,7 @@ int tradspool_overview_header_list(struct nntp_session *nntp, enum list_category
 		 * At the moment, we respond identically for all variants of the command, so we make no distinction. */
 		UNUSED(argument);
 
-		nntp_send(nntp, 215, "Headers and metadata items supported");
+		nntp_send(nntp, NNTP_OK_LIST, "Headers and metadata items supported");
 		/* If we supported any arbitrary header, we would return ':' instead */
 		_nntp_send(nntp, "Subject\r\n");
 		_nntp_send(nntp, "From\r\n");
@@ -874,7 +874,7 @@ int tradspool_overview_header_list(struct nntp_session *nntp, enum list_category
 		_nntp_send(nntp, ":lines\r\n");
 		_nntp_send(nntp, "Xref\r\n");
 	} else { /* LIST_OVERVIEW_FMT */
-		nntp_send(nntp, 215, "Order of fields in overview database");
+		nntp_send(nntp, NNTP_OK_LIST, "Order of fields in overview database");
 		_nntp_send(nntp, "Subject:\r\n");
 		_nntp_send(nntp, "From:\r\n");
 		_nntp_send(nntp, "Date:\r\n");
@@ -1166,7 +1166,7 @@ int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, con
 			if (!ACL_ALLOWED_LOCKED(nntp, eff_group, NNTP_ACL_READ)) {
 				return 1;
 			}
-			nntp_send(nntp, 223, "%d %s", eff_artnum, messageid);
+			nntp_send(nntp, NNTP_OK_STAT, "%d %s", eff_artnum, messageid);
 			return 0;
 		}
 	} else {
@@ -1175,7 +1175,7 @@ int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, con
 		if (!build_group_article_path(groupname, article_num, artpath, sizeof(artpath))) {
 			/* Need to look up Message-ID from overview */
 			if (!overview_find_messageid(groupname, article_num, found_messageid, sizeof(found_messageid))) {
-				nntp_send(nntp, 223, "%d %s", article_num, found_messageid);
+				nntp_send(nntp, NNTP_OK_STAT, "%d %s", article_num, found_messageid);
 				return 0;
 			}
 		}
@@ -1226,7 +1226,7 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 		if (!bbs_file_exists(artpath)) {
 			return 1;
 		}
-		nntp_send(nntp, 220, "%d %s", resp_artnum, S_OR(messageid, found_messageid));
+		nntp_send(nntp, NNTP_OK_ARTICLE, "%d %s", resp_artnum, S_OR(messageid, found_messageid));
 		bbs_send_file(artpath, nntp->node->wfd);
 	} else {
 		FILE *fp = fopen(artpath, "r");
@@ -1244,7 +1244,7 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 
 		if (filter & SEND_HEADERS) {
 			/* HEAD command - send just headers, without empty line at end */
-			nntp_send(nntp, 221, "%d %s", resp_artnum, S_OR(messageid, found_messageid));
+			nntp_send(nntp, NNTP_OK_HEAD, "%d %s", resp_artnum, S_OR(messageid, found_messageid));
 			while ((fgets(buf, sizeof(buf), fp))) {
 				if (!strcmp(buf, "\r\n")) {
 					break;
@@ -1257,7 +1257,7 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 		} else { /* SEND_BODY only */
 			long int start, end;
 			off_t startoffset;
-			nntp_send(nntp, 220, "%d %s", resp_artnum, S_OR(messageid, found_messageid));
+			nntp_send(nntp, NNTP_OK_BODY, "%d %s", resp_artnum, S_OR(messageid, found_messageid));
 			while ((fgets(buf, sizeof(buf), fp))) {
 				if (!strcmp(buf, "\r\n")) {
 					break;

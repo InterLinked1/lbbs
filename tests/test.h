@@ -219,6 +219,9 @@ int test_client_drain(int fd, int ms);
  * particularly on slower machines. */
 #define DEFAULT_WAIT_SEC 7
 
+#define CLIENT_EXPECT_CODE(fd, code) CLIENT_EXPECT(fd, XSTR(code))
+#define CLIENT_EXPECT_CODE_EVENTUALLY(fd, code) CLIENT_EXPECT_EVENTUALLY(fd, XSTR(code))
+
 #define CLIENT_EXPECT(fd, s) if (test_client_expect(fd, SEC_MS(DEFAULT_WAIT_SEC), s, __LINE__)) { goto cleanup; }
 #define CLIENT_EXPECT_BUF(fd, s, buf) if (test_client_expect_buf(fd, SEC_MS(DEFAULT_WAIT_SEC), s, __LINE__, buf, sizeof(buf))) { goto cleanup; }
 #define CLIENT_EXPECT_EVENTUALLY(fd, s) if (test_client_expect_eventually(fd, SEC_MS(DEFAULT_WAIT_SEC), s, __LINE__)) { goto cleanup; }

@@ -440,13 +440,13 @@ static int active_file_group_list_full(struct nntp_session *nntp, enum list_cate
 	switch (listcat) {
 		case LIST_ACTIVE:
 		case LIST_COUNTS:
-			nntp_send(nntp, newgroups ? 231 : 215, "Newsgroup listing follows in form \"group high low status\"");
+			nntp_send(nntp, newgroups ? NNTP_OK_NEWGROUPS : NNTP_OK_LIST, "Newsgroup listing follows in form \"group high low status\"");
 			break;
 		case LIST_ACTIVE_TIMES:
-			nntp_send(nntp, 215, "Newsgroup creation times follow in form \"group time who\"");
+			nntp_send(nntp, NNTP_OK_LIST, "Newsgroup creation times follow in form \"group time who\"");
 			break;
 		case LIST_NEWSGROUPS:
-			nntp_send(nntp, 215, "Newsgroup information follows in form \"group description\"");
+			nntp_send(nntp, NNTP_OK_LIST, "Newsgroup information follows in form \"group description\"");
 			break;
 		default:
 			bbs_assert(0);
