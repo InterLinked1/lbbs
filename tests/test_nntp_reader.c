@@ -121,6 +121,8 @@ static int create_groups(void)
 	NEW_NEWSGROUP(sockfd, "test.nolocal", "A nolocal group", "Sysop", "n");
 	NEW_NEWSGROUP(sockfd, "test.aliased", "An aliased group", "Sysop", "=misc.test");
 
+	NEW_NEWSGROUP(sockfd, "local.restricted", "A local-only group", "Sysop", "y");
+
 	close(sockfd);
 	return 0;
 
@@ -567,7 +569,7 @@ static int run(void)
 	GROUP_EXPECT(client1, "misc.test", 8, 16, 7);
 	SWRITE(client1, "HDR :bytes 16\r\n");
 	CLIENT_EXPECT(client1, "225");
-	CLIENT_EXPECT(client1, "16 287");
+	CLIENT_EXPECT(client1, "16 285");
 
 	SWRITE(client1, "POST\r\n");
 	CLIENT_EXPECT(client1, "340");
@@ -594,7 +596,7 @@ static int run(void)
 	/* Same as previous message but with 6 extra lines that are dot-stuffed. 6 lines, 3 bytes each (. CR LF, but not including leading dot for dot-stuffing).
 	 * So, +18 bytes. */
 	CLIENT_EXPECT(client1, "225");
-	CLIENT_EXPECT(client1, "17 305");
+	CLIENT_EXPECT(client1, "17 303");
 
 	/* When requesting the article back, the lines with a '.' by themselves must be dot-stuffed back again */
 	SWRITE(client1, "BODY 17\r\n");
@@ -628,6 +630,44 @@ static int run(void)
 	/* Test that the client-provided Xref header was properly ignored */
 	SWRITE(client1, "HDR Xref 18\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "18 Xref: news.example.com misc.test:18" ENDL);
+
+	/* See if the correct Distribution header gets added (and we also include our own Message-ID) */
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "340");
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
+		"Newsgroups: misc.crossposts" ENDL \
+		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
+		"Message-ID: <unique.messageid>" ENDL \
+		"Subject: I am just a test article" ENDL \
+		" that has multi-line headers" ENDL \
+		ENDL \
+		"This article tests dot-stuffing." ENDL \
+		"." ENDL; \
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT(client1, "240");
+
+	/* Our Message-ID should have been preserved */
+	SWRITE(client1, "HDR Message-ID <unique.messageid>\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "0 <unique.messageid>" ENDL);
+
+	/* Now, check that the correct Distribution header was added */
+	SWRITE(client1, "HEAD <unique.messageid>\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "Distribution: cp4" ENDL);
+
+	/* Repeat, should be rejected */
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT(client1, "340");
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
+		"Newsgroups: misc.crossposts" ENDL \
+		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
+		"Message-ID: <unique.messageid>" ENDL \
+		"Subject: I am just a test article" ENDL \
+		" that has multi-line headers" ENDL \
+		ENDL \
+		"This article tests dot-stuffing." ENDL \
+		"." ENDL; \
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT(client1, "441"); /* Should be rejected since server should reject message with duplicate Message-ID, even from a reader */
 
 	/* Try some posts that should be rejected */
 	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "misc.restricted", 440); /* Disallowed by post wildmat */

@@ -1,7 +1,7 @@
 /*
  * LBBS -- The Lightweight Bulletin Board System
  *
- * Copyright (C) 2023, Naveen Albert
+ * Copyright (C) 2023, 2026, Naveen Albert
  *
  * Naveen Albert <bbs@phreaknet.org>
  *
@@ -60,6 +60,12 @@
 #define DEFAULT_NNTPS_PORT 563
 /* Transit server */
 #define DEFAULT_NNSP_PORT 433
+
+#ifdef DEBUG_DISTRIBUTION
+#define DIST_DEBUG(level, fmt, ...) bbs_debug(level, fmt, ## __VA_ARGS__)
+#else
+#define DIST_DEBUG(level, fmt, ...)
+#endif
 
 /*
  * If you are new to newsgroups (no pun intended),
@@ -146,7 +152,7 @@ static int add_distrib_pat(const char *key)
 	weightstr = strsep(&value, ":");
 	wildmat = strsep(&value, ":");
 
-	if (strlen_zero(weightstr) || strlen_zero(wildmat) || strlen_zero(value)) {
+	if (strlen_zero(weightstr) || strlen_zero(wildmat)) { /* the value can be empty to signal no Distribution header should be added */
 		bbs_error("Invalid distribution pattern '%s'\n", key);
 		return -1;
 	}
@@ -158,7 +164,7 @@ static int add_distrib_pat(const char *key)
 	}
 
 	wildmatlen = strlen(wildmat);
-	valuelen = strlen(value);
+	valuelen = strlen(S_IF(value));
 
 	p = calloc(1, sizeof(*p) + wildmatlen + valuelen + 2);
 	if (ALLOC_FAILURE(p)) {
@@ -166,7 +172,7 @@ static int add_distrib_pat(const char *key)
 	}
 	strcpy(p->data, wildmat); /* Safe */
 	p->wildmat = p->data;
-	strcpy(p->data + wildmatlen + 1, value); /* Safe */
+	strcpy(p->data + wildmatlen + 1, S_IF(value)); /* Safe */
 	p->value = p->data + wildmatlen + 1;
 	p->weight = weight;
 	RWLIST_INSERT_TAIL(&distrib_pats, p, entry);
@@ -219,8 +225,16 @@ static void check_distributions(void)
 	 * If that is not the case, log a warning.
 	 * (Note the RFC explicitly says the distributions list can describe distributions not present in distrib.pats) */
 	RWLIST_TRAVERSE(&distrib_pats, p, entry) {
-		if (!distribution_exists(p->value)) {
-			bbs_warning("DISTRIB.PATS includes distribution '%s' which is not included in [distributions]\n", p->value);
+		if (strlen_zero(p->value)) {
+			char buf[NNTP_BUFSIZ], *dist, *dists;
+			safe_strncpy(buf, p->value, sizeof(buf));
+			dists = buf;
+			while ((dist = strsep(&dists, ","))) {
+				if (!distribution_exists(p->value)) {
+					/* This won't break anything, but it's good to have all the distributions we use described */
+					bbs_warning("DISTRIB.PATS includes distribution '%s' which is not included in [distributions]\n", p->value);
+				}
+			}
 		}
 	}
 }
@@ -431,9 +445,12 @@ enum inpeer_type {
 	INPEER_USERNAME,
 };
 
+#define MAX_DISTRIBUTIONS 128
+
 struct inpeer {
 	const char *identity; /*!< IPv4 address, hostname, or username */
 	const char *groups; /*!< Wildmat of newsgroups for which this ACL authorizes IHAVE posting */
+	char *distribution[MAX_DISTRIBUTIONS]; /* Distributions to accept/reject */
 	enum inpeer_type type;
 	RWLIST_ENTRY(inpeer) entry;
 	char data[];
@@ -441,30 +458,135 @@ struct inpeer {
 
 static RWLIST_HEAD_STATIC(inpeers, inpeer);
 
-static int add_inpeer(const char *identity, const char *groups)
+/*! \brief Split up a comma-separated list into an array of strings */
+static inline int split_csv_list(char *s, char **dists, int n)
 {
-	struct inpeer *i;
-	char *data;
-	size_t idlen = STRING_ALLOC_SIZE(identity);
-	size_t grplen = STRING_ALLOC_SIZE(groups);
+	int i = 0;
+	for (i = 0; s && i < n - 1; i++) {
+		char *next;
+		next = strsep(&s, ",");
+		if (!next) {
+			break; /* Done */
+		}
+		if (!strlen_zero(next)) {
+			trim(next);
+		}
+		if (strlen_zero(next)) {
+			continue;
+		}
+		dists[i] = next;
+	}
+	if (i == n - 1) { /* Filled up the list */
+		bbs_error("Truncation occured (filled up list of size %d)\n", n);
+		/* We could return -1, but wouldn't have much to gain by doing that... just return what we have for now */
+	}
+	dists[i] = NULL; /* Left enough room for the sentinel NULL */
+	return i;
+}
 
-	i = calloc(1, sizeof(*i) + idlen + grplen);
-	if (ALLOC_FAILURE(i)) {
-		return -1;
+/*!
+ * \brief Whether any of the distributions for a site match a distribution specified in the Distribution header
+ * \param dists Distributions for site
+ * \param d The distribution in the header to check
+ * \retval 1 on positive match, 0 if no match, -1 on negative match
+ */
+static inline int distribution_wanted(char **dists, const char *d)
+{
+	char *dist;
+	int any_negated = 0; /* Behavior changes depending on whether any of the entries are negated or not */
+
+	for (; (dist = *dists); dists++) {
+		if (*dist == '!') {
+			any_negated = 1;
+			dist++;
+			if (!strcasecmp(dist, d)) {
+				DIST_DEBUG(5, "Negative match on %s\n", d);
+				return 0; /* negative match */
+			}
+		} else {
+			if (!strcasecmp(dist, d)) {
+				DIST_DEBUG(5, "Positive match on %s\n", d);
+				return 1; /* positive match */
+			}
+		}
 	}
 
-	data = i->data;
-	SET_FSM_STRING_VAR(i, data, identity, identity, idlen);
-	SET_FSM_STRING_VAR(i, data, groups, groups, grplen);
+	/* If we saw any negative matches, assume they are all negated distributions and return true (case 3/4) */
+	DIST_DEBUG(7, "%s (%s)\n", any_negated ? "Allowing" : "Rejecting", any_negated ? "at least one negated distribution" : "no negated distributions");
+	return any_negated;
+}
 
-	/* Determine which type of peer it is now, so we don't have to determine it later */
-	if (bbs_user_exists(identity)) {
-		i->type = INPEER_USERNAME;
-	} else {
-		i->type = bbs_hostname_is_ipv4(identity) ? INPEER_IPV4 : INPEER_HOSTNAME;
+/*!
+ * \brief Whether any of the distributions in an articles matches against the site
+ * \param site The distributions for the peer
+ * \param article The distributions from the Distribution header
+ \retval 1 on positive match, 0 if no match, -1 on negative match
+ */
+static inline int any_distribution_wanted(char **site, char **article)
+{
+	if (!*site) {
+		DIST_DEBUG(8, "Site has no distribution filter, allowing\n");
+		return 1; /* Case 0: No distributions explicitly specified for site, so everything matches */
+	} else if (!*article) {
+		DIST_DEBUG(7, "Empty Distribution header, allowing\n");
+		return 1; /* Distribution header present but empty? Strange but legal */
 	}
-	RWLIST_INSERT_HEAD(&inpeers, i, entry);
+
+	for (; *article; article++) {
+		if (distribution_wanted(site, *article)) {
+			return 1;
+		}
+	}
 	return 0;
+}
+
+static int test_distributions(void)
+{
+	char buf[NNTP_BUFSIZ], buf2[NNTP_BUFSIZ];
+	char *hdrdists[MAX_DISTRIBUTIONS], *sitedists[MAX_DISTRIBUTIONS];
+	int distcount;
+
+	/* Simulate these distributions being in Distribution header of article */
+	strcpy(buf, "dist1a,dist2a,dist3a,dist4a,dist5b");
+	distcount = split_csv_list(buf, hdrdists, ARRAY_LEN(hdrdists));
+	bbs_test_assert_equals(5, distcount);
+
+	/* Now, check if this would match against a few "sites" */
+	strcpy(buf2, "!dist1a,!dist2a,!dist3a,!dist4a,!dist5b");
+	distcount = split_csv_list(buf2, sitedists, ARRAY_LEN(sitedists));
+	bbs_test_assert_equals(5, distcount);
+	bbs_test_assert_equals(0, any_distribution_wanted(sitedists, hdrdists)); /* Site explicitly blocks all the article's distributions */
+
+	strcpy(buf2, "!dist6a");
+	distcount = split_csv_list(buf2, sitedists, ARRAY_LEN(sitedists));
+	bbs_test_assert_equals(1, distcount);
+	bbs_test_assert_equals(1, any_distribution_wanted(sitedists, hdrdists)); /* Site only blocks distributions, but not any of the article's, so allowed */
+
+	strcpy(buf2, "dist1,dist2");
+	distcount = split_csv_list(buf2, sitedists, ARRAY_LEN(sitedists));
+	bbs_test_assert_equals(2, distcount);
+	bbs_test_assert_equals(0, any_distribution_wanted(sitedists, hdrdists)); /* Site only wants select distributions, but not any of the article's, so rejected */
+
+	strcpy(buf2, "dist1,dist2a");
+	distcount = split_csv_list(buf2, sitedists, ARRAY_LEN(sitedists));
+	bbs_test_assert_equals(2, distcount);
+	bbs_test_assert_equals(1, any_distribution_wanted(sitedists, hdrdists)); /* Site only wants select distributions, including one of the article's, so allowed */
+
+	/* Simulate these distributions being in Distribution header of article */
+	strcpy(buf, "dist1b");
+	distcount = split_csv_list(buf, hdrdists, ARRAY_LEN(hdrdists));
+	bbs_test_assert_equals(1, distcount);
+
+	/* Now, check if this would match against a few "sites" */
+	strcpy(buf2, "!dist1b");
+	distcount = split_csv_list(buf2, sitedists, ARRAY_LEN(sitedists));
+	bbs_test_assert_equals(1, distcount);
+	bbs_test_assert_equals(0, any_distribution_wanted(sitedists, hdrdists)); /* Explicitly denied */
+
+	return 0;
+
+cleanup:
+	return -1;
 }
 
 static inline int inpeer_acl_matches(struct nntp_session *nntp, struct inpeer *i)
@@ -482,6 +604,78 @@ static inline int inpeer_acl_matches(struct nntp_session *nntp, struct inpeer *i
 			}
 			break;
 	}
+	return 0;
+}
+
+/*! \brief Whether we want any of the distributions in this article */
+static int we_want_distribution(struct nntp_session *nntp, const char *distribs)
+{
+	struct inpeer *i;
+	char *hdrdists[MAX_DISTRIBUTIONS];
+	char buf[NNTP_BUFSIZ];
+
+	/* Before we start, split up the list of distributions in the header into a series of strings */
+	safe_strncpy(buf, distribs, sizeof(buf));
+	split_csv_list(buf, hdrdists, ARRAY_LEN(hdrdists));
+
+	/* We follow the same rules for Distributions as INN: https://www.eyrie.org/~eagle/software/inn/docs-2.5/newsfeeds.html
+	 * This verbiage describes outgoing feeds, but this similarly applies to incoming feeds as well.
+	 *
+	 * 0) Default is to send all articles to all sites that subscribe to any of the groups where it has been posted
+	 * If an article has a Distribution header and any distributions are specified:
+	 * 1) If the Distribution: header matches any of the values in the sub-field, the article is sent.
+	 * 2) If a distribution starts with an exclamation point, and it matches the Distribution: header, the article is not sent.
+	 * 3) If the Distribution: header does not match any distribution in the site's entry and no negations were used, the article is not sent.
+	 * 4) If the Distribution: header does not match any distribution in the site's entry and any distribution started with an exclamation point, the article is sent.
+	 *    Accordingly, it is almost definitely a mistake to have a single feed that specifies distributions that start with an exclamation point along with some that don't.
+	 * If an article has more than one distribution specified, then each one is handled according according to the above rules.
+	 * - If any of the specified distributions indicate that the article should be sent, it is; if none do, it is not sent. In other words, the rules are used as a logical or. */
+
+	RWLIST_RDLOCK(&inpeers);
+	RWLIST_TRAVERSE(&inpeers, i, entry) {
+		if (inpeer_acl_matches(nntp, i)) {
+			/* Found a matching inpeer entry (most likely, there is only one, but in theory, there could be multiple) */
+			if (any_distribution_wanted(i->distribution, hdrdists)) {
+				break;
+			}
+		}
+	}
+	RWLIST_UNLOCK(&inpeers);
+	return i ? 1 : 0;
+}
+
+static int add_inpeer(const char *identity, const char *groups)
+{
+	struct inpeer *i;
+	char *data, *tmp;
+	size_t idlen = STRING_ALLOC_SIZE(identity);
+	size_t grplen = STRING_ALLOC_SIZE(groups);
+
+	i = calloc(1, sizeof(*i) + idlen + grplen);
+	if (ALLOC_FAILURE(i)) {
+		return -1;
+	}
+
+	data = i->data;
+	SET_FSM_STRING_VAR(i, data, identity, identity, idlen);
+	tmp = data;
+	SET_FSM_STRING_VAR(i, data, groups, groups, grplen);
+	tmp = strchr(tmp, '/');
+	if (tmp) {
+		*tmp++ = '\0';
+		split_csv_list(tmp, i->distribution, sizeof(i->distribution));
+		if (!*i->distribution) {
+			bbs_warning("Empty distribution list ('/' specified but no distributions following\n");
+		}
+	}
+
+	/* Determine which type of peer it is now, so we don't have to determine it later */
+	if (bbs_user_exists(identity)) {
+		i->type = INPEER_USERNAME;
+	} else {
+		i->type = bbs_hostname_is_ipv4(identity) ? INPEER_IPV4 : INPEER_HOSTNAME;
+	}
+	RWLIST_INSERT_HEAD(&inpeers, i, entry);
 	return 0;
 }
 
@@ -556,6 +750,7 @@ static int authorized_inpeer_for_group(struct nntp_session *nntp, const char *gr
 static void artinfo_reset(struct article_info *artinfo)
 {
 	free_if(artinfo->newsgroups);
+	free_if(artinfo->distribution);
 	free_if(artinfo->approved);
 	free_if(artinfo->control);
 	free_if(artinfo->expires);
@@ -1462,6 +1657,8 @@ static enum nntp_control_msg parse_cmsg(const char *s)
 
 static int check_article(struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen, enum nntp_control_msg *cmsg)
 {
+	int reader = nntp->mode == NNTP_MODE_READER;
+
 #define REQUIRE_ARTINFO_FIELD(field) \
 	if (!artinfo->field) { \
 		nntp_send(nntp, 441, "Missing field %s\n", #field); \
@@ -1478,8 +1675,14 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 	if (nntp->mode == NNTP_MODE_TRANSIT) {
 		if (artinfo->messageid[0] != '<' && !bbs_str_ends_with(artinfo->messageid, ">")) {
 			/* Invalid Message-ID */
-			snprintf(errbuf, errbuflen, "Invalid Message-ID '%s'", artinfo->messageid);
-			return 437;
+			snprintf(errbuf, errbuflen, "Invalid Message-ID %s", artinfo->messageid);
+			return reader ? 441 : 437;
+		}
+
+		/* If we limit what distributions we get from this peer, check if we want this article or not. */
+		if (artinfo->distribution && !we_want_distribution(nntp, artinfo->distribution)) {
+			snprintf(errbuf, errbuflen, "Unwanted distribution \"%s\"", artinfo->distribution);
+			return reader ? 441 : 437;
 		}
 
 		if (artinfo->control) {
@@ -1488,42 +1691,42 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 			*cmsg = parse_cmsg(artinfo->control);
 			if (*cmsg == CMSG_UNKNOWN) {
 				snprintf(errbuf, errbuflen, "Unknown control message: %s", artinfo->control);
-				return 437;
+				return reader ? 441 : 437;
 			} else if (!artinfo->approved && (*cmsg == CMSG_NEWGROUP || *cmsg == CMSG_RMGROUP)) {
 				snprintf(errbuf, errbuflen, "Ignoring unapproved newgroup/rmgroup message");
-				return 437;
+				return reader ? 441 : 437;
 			}
-		}
-
-		/* Could be a race condition, maybe we didn't have the article when the client said IHAVE,
-		 * but now we do (possibly from some other server). Check again. */
-		if (spool_article_exists(artinfo->messageid)) {
-			snprintf(errbuf, errbuflen, "Message \"%s\" is a duplicate", artinfo->messageid);
-			return 435;
 		}
 	} else {
 		/* Check the From header and reject it if it's not compliant with site policy. */
 		if (!identity_allowed_for_posting(nntp, artinfo->from)) {
 			bbs_notice("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, artinfo->from);
 			snprintf(errbuf, errbuflen, "Identity not allowed for posting");
-			return 441;
+			return reader ? 441 : 437;
 		}
 
 		/* Reject articles with unapproved headers users are not allowed to add. */
 		if (artinfo->approved && !ACL_ALLOWED(nntp, NULL, NNTP_ACL_APPROVE)) {
 			snprintf(errbuf, errbuflen, "You are not allowed to approve postings");
-			return 441;
+			return reader ? 441 : 437;
 		}
 		if (artinfo->control) {
 			snprintf(errbuf, errbuflen, "You are not allowed to inject control messages");
-			return 441;
+			return reader ? 441 : 437;
 		}
 		if (STARTS_WITH(artinfo->subject, "cmsg ")) {
 			/* RFC 5537 says that contrary to RFC 1036, messages merely with Subjects beginning with "cmsg" are NOT control articles,
 			 * and we MAY reject such posts from users (RFC 5537 Section 5) */
 			snprintf(errbuf, errbuflen, "Message ambiguous (subject begins with cmsg, missing Control header)");
-			return 441;
+			return reader ? 441 : 437;
 		}
+	}
+
+	/* Could be a race condition, maybe we didn't have the article when the client said IHAVE,
+	 * but now we do (possibly from some other server). Check again. */
+	if (spool_article_exists(artinfo->messageid)) {
+		snprintf(errbuf, errbuflen, "Message %s is a duplicate", artinfo->messageid);
+		return reader ? 441 : 435;
 	}
 
 	/*! \todo Do further validation of fields here as needed.
@@ -1916,7 +2119,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		return 0; \
 	}
 
-static int save_header_value(struct nntp_session *nntp, struct article_info *artinfo, char *s, const char *articleid)
+static int save_header_value(struct article_info *artinfo, char *s)
 {
 	char *hval;
 
@@ -1924,12 +2127,16 @@ static int save_header_value(struct nntp_session *nntp, struct article_info *art
 	if (STARTS_WITH(s, hdrname ":")) { \
 		hval = s + STRLEN(hdrname ":"); \
 		ltrim(hval); \
+		if (unlikely(var != NULL)) { \
+			bbs_client_err("Duplicate header '%s'?\n", var); \
+		} \
 		REPLACE(var, hval); \
 	}
 
 	/* CR LF pairs will not be present even in unfolded multi-line headers, since we appended with a space between lines.
 	 * We do a few other fixups if needed at the bottom of this function. */
 	SAVE_HEADER("Newsgroups", artinfo->newsgroups)
+	else SAVE_HEADER("Distribution", artinfo->distribution)
 	else SAVE_HEADER("Approved", artinfo->approved)
 	else SAVE_HEADER("Control", artinfo->control)
 	else SAVE_HEADER("Expires", artinfo->expires)
@@ -1937,18 +2144,8 @@ static int save_header_value(struct nntp_session *nntp, struct article_info *art
 	else SAVE_HEADER("From", artinfo->from)
 	else SAVE_HEADER("Date", artinfo->date)
 	else SAVE_HEADER("References", artinfo->references)
-	else if (STARTS_WITH(s, "Message-ID:")) {
-		hval = s + STRLEN("Message-ID:");
-		ltrim(hval);
-		if (!strlen_zero(hval)) {
-			if (nntp->mode == NNTP_MODE_TRANSIT && strcmp(articleid, hval)) {
-				/* The article better be the article that the other server said it was in IHAVE */
-				bbs_debug(1, "Article Message-ID mismatch: IHAVE=%s, Message-ID=%s\n", articleid, s);
-				return -1;
-			}
-			REPLACE(artinfo->messageid, hval);
-		}
-	} else {
+	else SAVE_HEADER("Message-ID", artinfo->messageid)
+	else {
 		return 0; /* Not a header of interest */
 	}
 
@@ -1966,32 +2163,84 @@ static int save_header_value(struct nntp_session *nntp, struct article_info *art
 	return 0;
 }
 
+/*! \brief Get the best (highest-weight) Distribution value to use from the distrib.pats list */
+static int get_matching_distribution(const char *groups, char *buf, size_t len)
+{
+	char grpsbuf[4096];
+	char *grp, *grps;
+	int winning_weight = 0;
+	struct distrib_pat *p, *winner = NULL;
+	safe_strncpy(grpsbuf, groups, sizeof(grpsbuf));
+
+	grps = grpsbuf;
+	/* We check each newsgroup for matches, but only take the best match across all newsgroups, not per each newsgroup. */
+	RWLIST_RDLOCK(&distrib_pats);
+	while ((grp = strsep(&grps, ","))) {
+#if 0
+		/* XXX Should we check if a specified group exists before matching?
+		 * It may be that a group matches a pattern in distrib.pats but isn't carried locally.
+		 * Does it make sense to add distributions for such groups? */
+		if (!group_exists(grp)) {
+			continue;
+		}
+#endif
+		RWLIST_TRAVERSE(&distrib_pats, p, entry) {
+			/* Check the weight before the wildmat since that's faster
+			 * INN uses the first match if there is a tie on weight, so likewise, we use > instead of >= */
+			if (p->weight > winning_weight && uwildmat(grp, p->wildmat)) {
+				winner = p;
+				winning_weight = p->weight;
+			}
+		}
+	}
+	if (winner && !strlen_zero(winner->value)) {
+		safe_strncpy(buf, winner->value, len);
+	} else {
+		winner = NULL;
+	}
+	RWLIST_UNLOCK(&distrib_pats);
+	return winner ? 0 : 1;
+}
+
 static int process_last_header(struct nntp_session *nntp, struct article_info *artinfo, char *s, FILE *fp, size_t *restrict postlen, const char *articleid)
 {
-	int res, len;
+	int bytes;
+	char hdrval[NNTP_MAX_LINE_LENGTH];
 
-	if (save_header_value(nntp, artinfo, s, articleid)) {
+	if (save_header_value(artinfo, s)) {
 		return -1;
 	}
 
 	/* Before reading the body (or if there is no body?), add any final headers that we require which aren't present yet: */
+
+#define APPEND_HDR(fp, hdrname, fmt, ...) \
+	bytes = fprintf(fp, hdrname ": " fmt "\r\n", ## __VA_ARGS__); \
+	*postlen += (size_t) bytes;
+
+	/* If article did not supply a Distribution header, then we will add one automatically if appropriate (after all, client could've used DISTRIB.PATS to do it itself) */
+	if (!artinfo->distribution && artinfo->newsgroups) { /* If artinfo->newsgroups isn't set, the article will get rejected anyhow (but it's not guaranteed to exist right now, so we check) */
+		if (!get_matching_distribution(artinfo->newsgroups, hdrval, sizeof(hdrval))) {
+			REPLACE(artinfo->distribution, hdrval);
+			APPEND_HDR(fp, "Distribution", "%s", hdrval);
+		}
+	}
+
+	if (nntp->mode == NNTP_MODE_TRANSIT && artinfo->messageid && strcmp(artinfo->messageid, articleid)) {
+		/* The article better be the article that the other server said it was in IHAVE */
+		bbs_debug(1, "Article Message-ID mismatch: IHAVE=%s, Message-ID=%s\n", articleid, s);
+		return -1;
+	}
+
 	if (nntp->mode == NNTP_MODE_READER && !artinfo->messageid) {
 		/* Didn't get a Message-ID from the reader client, construct one for the article now. */
-		char articleidbuf[259];
 		char *uuid = bbs_uuid(); /* Use same UUID (and by extension, the same Article ID) for all newsgroups */
 		if (!uuid) {
-			return -1;
+			return -1; /* If we can't assign a Message-ID, this is fatal */
 		}
-		/* We need to generate an article ID for this article, since this is its entry point into the news network */
-		len = snprintf(articleidbuf, sizeof(articleidbuf), "Message-ID: <%s@%s>\r\n", uuid, newsname);
+		snprintf(hdrval, sizeof(hdrval), "<%s@%s>", uuid, newsname);
 		free(uuid);
-		res = bbs_append_line_message(fp, articleidbuf, (size_t) len); /* Should return len + 2 */
-		bbs_term_line(articleidbuf);
-		REPLACE(artinfo->messageid, articleidbuf + STRLEN("Message-ID: ")); /* Add to variable without CR LF */
-		if (res < 0) {
-			return -1;
-		}
-		*postlen += (size_t) res;
+		REPLACE(artinfo->messageid, hdrval);
+		APPEND_HDR(fp, "Message-ID", "%s", hdrval);
 	}
 
 	return 0;
@@ -2091,7 +2340,7 @@ static int handle_post_ihave(struct nntp_session *nntp, struct readline_data *rl
 					if (headerpos > headerbuf) {
 						/* If this is a header we care about, save it into the artinfo structure with each header unfolded into a single line; otherwise ignore.
 						 * Of course, all the headers are saved as is in the file, unless we explicitly skip the header. */
-						if (save_header_value(nntp, artinfo, headerbuf, articleid)) {
+						if (save_header_value(artinfo, headerbuf)) {
 							postfail = 1;
 							continue;
 						}
@@ -2901,6 +3150,7 @@ static struct bbs_unit_test tests[] =
 	{ "NNTP Wildmats", test_wildmats },
 	{ "NNTP Date Parsing", test_dateparsing },
 	{ "NNTP Moderator Submission Templates", test_moderator_templates },
+	{ "NNTP Distribution Matching", test_distributions },
 };
 
 static struct bbs_cli_entry cli_commands_nntp[] = {

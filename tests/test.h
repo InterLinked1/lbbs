@@ -138,9 +138,10 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 	CLI_SWRITE(sockfd, creator CLI_EOL); \
 	CLI_SWRITE(sockfd, posting CLI_EOL);
 
-#define IHAVE_NEWS_ARTICLE(s, fd, messageid, from, newsgroup) \
+#define IHAVE_NEWS_ARTICLE(s, fd, messageid, from, newsgroup, addl) \
 	s = "From: \"Demo User\" <" from ">" ENDL \
 		"Newsgroups: " newsgroup ENDL \
+		addl \
 		"Message-ID: " messageid ENDL \
 		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
 		"Subject: I am just a test article" ENDL \

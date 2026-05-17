@@ -61,6 +61,7 @@ BBS_LIST_HEAD_NOLOCK(article_groups, article_group);
 /*! \brief Article overview metadata */
 struct article_info {
 	char *newsgroups;
+	char *distribution;
 	char *approved;
 	char *control;
 	char *expires;

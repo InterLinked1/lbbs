@@ -25,17 +25,22 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define SEND_ARTICLE_RESPONSE(fd, messageid, email, group, respcode) \
+#define SEND_ARTICLE_ADDITIONAL_RESPONSE(fd, messageid, email, group, addl, respcode) \
 	SWRITE(clientfd, "IHAVE " messageid "\r\n"); \
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "335"); \
-	IHAVE_NEWS_ARTICLE(s, fd, messageid, email, group); \
+	IHAVE_NEWS_ARTICLE(s, fd, messageid, email, group, addl); \
 	CLIENT_EXPECT_EVENTUALLY(fd, #respcode);
+
+#define SEND_ARTICLE_RESPONSE(fd, messageid, email, group, respcode) \
+	SEND_ARTICLE_ADDITIONAL_RESPONSE(fd, messageid, email, group, "", respcode)
 
 #define SEND_ARTICLE_REFUSED(fd, messageid, email, group) \
 	SWRITE(clientfd, "IHAVE " messageid "\r\n"); \
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "435"); \
 
 #define SEND_ARTICLE(fd, messageid, email, group) SEND_ARTICLE_RESPONSE(fd, messageid, email, group, 235)
+
+#define SEND_ARTICLE_ADDITIONAL(fd, messageid, email, group, addl) SEND_ARTICLE_ADDITIONAL_RESPONSE(fd, messageid, email, group, addl, 235)
 
 static int pre(void)
 {
@@ -110,11 +115,19 @@ static int run(void)
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_NEWS_DIR "/misc/test", 3);
 
 	SEND_ARTICLE_RESPONSE(clientfd, "<testmessage.105@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.moderated", 437); /* Messages to moderated group should be rejected without Approved header */
-	SEND_ARTICLE(clientfd, "<testmessage.106@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.moderated\r\nApproved: moderator@bbs.example.com"); /* Add Approved header, and now it should work */
+	SEND_ARTICLE_ADDITIONAL(clientfd, "<testmessage.106@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.moderated", "Approved: moderator@bbs.example.com\r\n"); /* Add Approved header, and now it should work */
 
 	/* Attempt to create a new group, the message should get filed into control.newgroup. Not a properly formed newgroup cmsg, but it suffices for now. */
-	SEND_ARTICLE(clientfd, "<testmessage.ctl1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.newgroup\r\nControl: newgroup test.newgroup\r\nApproved: newsmaster@bbs.example.com");
+	SEND_ARTICLE_ADDITIONAL(clientfd, "<testmessage.ctl1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.newgroup", "Control: newgroup test.newgroup\r\nApproved: newsmaster@bbs.example.com\r\n");
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_NEWS_DIR "/control/newgroup", 2); /* Control message + overview file */
+
+	/* Send an article with distributions. First, we include one that is accepted, but the second one time, we include only an unwanted distribution. */
+
+	/* Because dist1a is wanted, even though dist2a is not, article is accepted */
+	SEND_ARTICLE_ADDITIONAL(clientfd, "<testmessage.dist1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test", "Distribution: dist1a,dist1b\r\n");
+
+	/* Because dist2a is not wanted by any of the matching inpeer entries, article is rejected */
+	SEND_ARTICLE_ADDITIONAL_RESPONSE(clientfd, "<testmessage.dist2@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test", "Distribution: dist1b\r\n", 437);
 
 	res = 0;
 
