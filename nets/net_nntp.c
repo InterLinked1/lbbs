@@ -91,16 +91,15 @@ static FILE *newslog;
 /* General settings */
 char newsname[256] = ""; /* Non-static so other files can access it extern */
 char newsdir[256] = ""; /* Non-static so other files can access it extern */
+
+/* Global incoming settings */
 static unsigned int max_post_size = 100000; /* 100 KB should be plenty */
 static unsigned int max_groups = 100;
+static char poisongroups[NNTP_BUFSIZ];
 
-/* Relay in */
+/* Global infeed settings */
 static int requirerelaytls = 1;
 static int keepjunk = 0;
-
-/* Relay out */
-static unsigned int relayfrequency = 3600;
-static unsigned int relaymaxage = 86400;
 
 /* Reader settings */
 static int require_secure_login = 0;
@@ -277,6 +276,11 @@ static int add_moderator(const char *wildmat, const char *template)
 	m->template = m->data + patlen + 1;
 	RWLIST_INSERT_TAIL(&moderators, m, entry); /* Tail insert is especially critical here as the order of the moderators list is significant */
 	return 0;
+}
+
+static int group_is_poison(const char *grp)
+{
+	return uwildmat(grp, poisongroups);
 }
 
 /* =============== Begin ACL Code =============== */
@@ -1685,7 +1689,7 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 {
 #define REQUIRE_ARTINFO_FIELD(field) \
 	if (!artinfo->field) { \
-		snprintf(errbuf, errbuflen, "Missing field %s\n", #field); \
+		snprintf(errbuf, errbuflen, "Missing field %s", #field); \
 		return -1; \
 	}
 
@@ -1821,6 +1825,16 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 	newsgroups = artinfo->newsgroups; /* Duplicate pointer since we'll mutate it */
 	while ((newsgroup = strsep(&newsgroups, ","))) {
 		char status[NNTP_BUFSIZ] = "y"; /* Default to 'y' in case it's a control message */
+
+		/* Check if this group is poison. We need to do this first, because most likely the group isn't carried locally. */
+		if (group_is_poison(newsgroup)) {
+			/* If poison, this is fatal to the entire article, not just the poisoning group. Drop everything and clean up. */
+			SET_POST_ERROR("Group '%s' is poison", newsgroup);
+			total_errors = 1; /* This will be the error that matters, so ensure it gets used in the log message */
+			ACL_UNLOCK(nntp);
+			goto cleanup;
+		}
+
 		/* We don't ltrim here, as newsgroups should be comma-separated, without any spaces between them */
 		if (group_get_status(newsgroup, status, sizeof(status))) {
 			/* If it's a newgroup/rmgroup message, group may not exist; that's fine, continue processing since we'll change the filing group shortly */
@@ -3401,11 +3415,8 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "nnsp", "enabled", &nnsp_enabled);
 	bbs_config_val_set_port(cfg, "nnsp", "port", &nnsp_port);
 
-	bbs_config_val_set_true(cfg, "relayin", "requiretls", &requirerelaytls);
-	bbs_config_val_set_true(cfg, "relayin", "keepjunk", &keepjunk);
-
-	bbs_config_val_set_uint(cfg, "relayout", "frequency", &relayfrequency);
-	bbs_config_val_set_uint(cfg, "relayout", "maxage", &relaymaxage);
+	bbs_config_val_set_true(cfg, "infeeds_global", "requiretls", &requirerelaytls);
+	bbs_config_val_set_true(cfg, "infeeds_global", "keepjunk", &keepjunk);
 
 #define SKIP_SECTION(sectname) if (!strcasecmp(bbs_config_section_name(section), sectname)) { continue; }
 
@@ -3425,9 +3436,13 @@ static int load_config(void)
 		SKIP_SECTION("nntp");
 		SKIP_SECTION("nntps");
 		SKIP_SECTION("nnsp");
-		SKIP_SECTION("relayin");
-		SKIP_SECTION("relayout");
-		if (!strcasecmp(bbs_config_section_name(section), "infeeds")) {
+		if (!strcasecmp(bbs_config_section_name(section), "incoming")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				if (!strcasecmp(bbs_keyval_key(keyval), "poisongroups")) {
+					safe_strncpy(poisongroups, bbs_keyval_val(keyval), sizeof(poisongroups));
+				}
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "infeeds")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				add_inpeer(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}

@@ -164,6 +164,14 @@ int uwildmat(const char *text, const char *patterns)
 	 * RFC 3977 4.2 states that each constituent wildcard pattern is matched, and the rightmost pattern that matches is identified.
 	 * If not preceded with "!", the whole wildmatch matches. Otherwise, the whole wildmat does not match.
 	 *
+	 * "Poison patterns" are a later enhancement whereby patterns beginning with @ instead of ! will "poison" a pattern,
+	 * i.e. a poison match will cause the whole pattern to not match. Normally, if at least one group in a list of newsgroups
+	 * matches, an article is processed, but a poison match would cause the whole article to not be processed (accepted/sent), i.e.
+	 * crossposting to a group that would trigger a poison match "poisons" the whole article.
+	 * The poison entry still has to be the last one to match for poison logic to apply.
+	 *
+	 * At the moment, we do not natively support poison patterns (or UTF-8) in the wildmat code.
+	 *
 	 * In other words, we do not match if ANY pattern matches, but only if the rightmost match is non-negated (and there is such a match). */
 	while ((p = strsep(&s, ","))) {
 		int match = *p == '!' ? wildmat_pattern_match(text, p + 1) : wildmat_pattern_match(text, p); /* If it's a negated pattern, we check for matching without the negation */

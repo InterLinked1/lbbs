@@ -167,6 +167,11 @@ static int run(void)
 	SWRITE(peer2, "Newsgroups: misc.test\r\n.\r\n");
 	CLIENT_EXPECT(peer2, XSTR(NNTP_FAIL_TAKETHIS_REJECT) " <malformed.message>");
 
+	/* Send article for a group we don't want */
+	SWRITE(peer2, "TAKETHIS <unwanted.article>" ENDL);
+	SEND_NEWS_ARTICLE(s, peer2, "<unwanted.article>", TEST_EMAIL_EXTERNAL, "misc.test,local.poison", "");
+	CLIENT_EXPECT(peer2, XSTR(NNTP_FAIL_TAKETHIS_REJECT) " <unwanted.article>");
+
 	res = 0;
 
 cleanup:
