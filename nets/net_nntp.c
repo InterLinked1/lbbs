@@ -104,6 +104,7 @@ static int keepjunk = 0;
 /* Reader settings */
 static int require_secure_login = 0;
 static int check_identity = 1;
+static int allow_invalid = 0;
 static unsigned int max_post_groups = 25;
 
 static struct stringlist outpeers;
@@ -1389,19 +1390,26 @@ static int identity_allowed_for_posting(struct nntp_session *nntp, const char *f
 		return 1;
 	}
 
+	safe_strncpy(dup_addr, fromaddr, sizeof(dup_addr));
+	if (bbs_parse_email_address(dup_addr, &name, &user, &domain)) {
+		return 0;
+	}
+
+	/* Newsgroups need a full email address */
+	if (!user || !domain) {
+		return 0;
+	}
+
+	/* If it ends in ".invalid", then this is the anonymous poster exception in RFC 5537 3.4 */
+	if (allow_invalid && bbs_str_ends_with(domain, ".invalid")) {
+		return 1;
+	}
+
 	/* We can't check identity if user isn't logged in */
 	if (!bbs_user_is_registered(nntp->node->user)) {
 		return 0;
 	}
 
-	safe_strncpy(dup_addr, fromaddr, sizeof(dup_addr));
-	if (bbs_parse_email_address(dup_addr, &name, &user, &domain)) {
-		return 0;
-	}
-	/* Newsgroups need a full email address */
-	if (!user || !domain) {
-		return 0;
-	}
 	/* If the user is allowed to send email from this address,
 	 * then we allow this identity to be used for posting to newsgroups. */
 	userid = mailbox_get_userid(user, domain);
@@ -3401,6 +3409,7 @@ static int load_config(void)
 	/* Reader settings */
 	bbs_config_val_set_true(cfg, "readers", "requiresecurelogin", &require_secure_login);
 	bbs_config_val_set_true(cfg, "readers", "checkidentity", &check_identity);
+	bbs_config_val_set_true(cfg, "readers", "allowinvalid", &allow_invalid);
 	bbs_config_val_set_uint(cfg, "readers", "maxpostgroups", &max_post_groups);
 
 	/* NNTP */
