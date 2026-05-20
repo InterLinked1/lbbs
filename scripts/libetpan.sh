@@ -1,7 +1,6 @@
 #!/bin/sh
 
-# This script is used to compile libetpan from source,
-# with modifications that are required for LBBS and other software.
+# This script is used to compile libetpan from source
 
 set -e
 
@@ -17,10 +16,6 @@ else
 	# but the Makefile hasn't yet been generated
 	make clean || git reset --hard origin/master
 fi
-
-# Slipstream patches needed for LBBS net_imap functionality
-wget "https://github.com/dinhvh/libetpan/commit/4226610e3dc19f58345ae7c5146fa8cf249ca97b.patch"
-git apply "4226610e3dc19f58345ae7c5146fa8cf249ca97b.patch" # SMTP AUTH
 
 ./autogen.sh --with-poll > /dev/null || ./autogen.sh --with-poll
 
