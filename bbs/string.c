@@ -499,6 +499,18 @@ void bbs_str_toupper(char *restrict s)
 	}
 }
 
+/* like skipn but take a const char * and return a const char * */
+const char *bbs_skipn_val(const char *s, char c, int n)
+{
+	int count = 0;
+	for (; *s; s++) {
+		if (*s == c && ++count == n) {
+			return s + 1;
+		}
+	}
+	return NULL;
+}
+
 int skipn(char **str, char c, int n)
 {
 	int count = 0;

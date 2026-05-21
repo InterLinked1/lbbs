@@ -361,6 +361,15 @@ int bbs_time_friendly_now(char *buf, size_t len);
 int bbs_time_friendly(time_t epoch, char *buf, size_t len);
 
 /*!
+ * \brief Print an RFC822 timestamp, e.g. Sat, 31 Dec 2000 09:45:00 -0000
+ * \param epoch Epoch time
+ * \param buf
+ * \param len Length of buf. Should be at least 32 (no larger is necessary)
+ * \retval same as strftime (number of bytes written, -1 on failure)
+ */
+int bbs_time_rfc822(time_t epoch, char *buf, size_t len);
+
+/*!
  * \brief Print time elapsed e.g. 0:33:21
  * \param start
  * \param end End time. 0 to automatically call time(NULL) for current time.
@@ -389,3 +398,23 @@ void print_days_elapsed(time_t start, time_t end, char *buf, size_t len);
  * \retval 0 on success, -1 on failure
  */
 int bbs_parse_rfc822_date(const char *s, struct tm *tm);
+
+/*!
+ * \brief Whether an RFC822/RFC2822 date (i.e. date from an email header) is older than a certain UNIX time
+ * \param s Date header value
+ * \param epoch UNIX timestamp
+ * \retval 1 older than
+ * \retval 0 not older than
+ * \retval -1 parsing error
+ */
+int bbs_date_is_older_than(const char *s, time_t epoch);
+
+/*!
+ * \brief Whether an RFC822/RFC2822 date (i.e. date from an email header) is newer than a certain UNIX time
+ * \param s Date header value
+ * \param epoch UNIX timestamp
+ * \retval 1 newer than
+ * \retval 0 not newer than
+ * \retval -1 parsing error
+ */
+int bbs_date_is_newer_than(const char *s, time_t epoch);

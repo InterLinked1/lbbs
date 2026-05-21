@@ -25,67 +25,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-/* Use the same definitions (or lack thereof) of MAXIMIZE_LOW_WATERMARK and EMPTY_LOW_WATERMARK_IS_ZERO from nntp.h
- * There's nothing else we need from this header file (besides NNTP_MAX_ARTICLE_NUMBER); this just avoids having to duplicate the macro definitions here.
- * tests/Makefile ensures we get recompiled if nntp.h changes, since it's included here. */
-#include "../nets/net_nntp/nntp.h"
-
-/* These macros are a bit tricky. The C preprocessor wasn't really designed to evaluate expression,
- * but we need to do that here BEFORE stringifying for the EXPECT macros.
- * This is a kludge to do that by having a "lookup table" of macros to do literal replacements.
- * Note that compilation will not fail if the required SUB1_X defines are not available;
- * however, the tests will as SUB1_X will appear in the expect search string literally, rather than the intended "evaluated" argument.
- * Ugly, but that way the "test logic" doesn't need to do any math at runtime. */
-#ifndef MAXIMIZE_LOW_WATERMARK
-#define SUB1(x) SUB1_##x
-#define SUB1_1 0
-#define SUB1_2 1
-#define SUB1_3 2
-#define SUB1_4 3
-#define SUB1_5 4
-#define SUB1_2147483645 2147483644
-#define SUB1_2147483646 2147483645
-#define SUB1_2147483647 2147483646
-#endif
-
-/* We start high and subtract, rather than start low and add, so we don't have to worry about exceeding the max article number */
-#ifdef MAXIMIZE_LOW_WATERMARK
-#define EMPTY_LOW_WATERMARK(nominal) nominal
-#define EMPTY_HIGH_WATERMARK(nominal) nominal
-#else
-/* Subtract 1 from whatever would have been the expected value if MAXIMIZE_LOW_WATERMARK were defined */
-#define EMPTY_LOW_WATERMARK(nominal) SUB1(nominal)
-#define EMPTY_HIGH_WATERMARK(nominal) SUB1(nominal)
-#endif
-
-#ifdef EMPTY_LOW_WATERMARK_IS_ZERO
-#define ALWAYS_EMPTY_LOW_WATERMARK 0
-#else
-#define ALWAYS_EMPTY_LOW_WATERMARK 1
-#endif
-
-#define DELETE_ARTICLE(group, article) TEST_CLI_COMMAND("news delarticle " group " " #article)
-
-/* We have to use XSTR instead of just #var since two levels of macros are required to eval the macro before converting to string */
-#define LIST_ACTIVE_EXPECT(fd, group, low, high) \
-	SWRITE(fd, "LIST ACTIVE " group ENDL); \
-	CLIENT_EXPECT_EVENTUALLY(fd, group " " XSTR(high) " " XSTR(low));
-
-#define GROUP_EXPECT(fd, group, low, high, count) \
-	SWRITE(fd, "GROUP " group ENDL); \
-	CLIENT_EXPECT(fd, XSTR(NNTP_OK_GROUP) " " #count " " XSTR(low) " " XSTR(high) " " group)
-
-#define GROUP_AND_LIST_ACTIVE_EXPECT(fd, group, low, high, count) \
-	GROUP_EXPECT(fd, group, low, high, count); \
-	LIST_ACTIVE_EXPECT(fd, group, low, high);
-
-#define POST_ARTICLE_TO_GROUP_RESPONSE(fd, email, group, respcode) \
-	SWRITE(client1, "POST\r\n"); \
-	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST); \
-	POST_NEWS_ARTICLE(s, client1, email, group); \
-	CLIENT_EXPECT_CODE(client1, respcode);
-
-#define POST_ARTICLE_TO_GROUP(fd, email, group) POST_ARTICLE_TO_GROUP_RESPONSE(fd, email, group, NNTP_OK_POST)
+#include "netnews.h"
 
 static int pre(void)
 {
@@ -135,6 +75,8 @@ static int run(void)
 	const char *s;
 	char *xfield, *xfields, *xmsgid;
 	char xoverresp[512];
+	char sizebuf[512];
+	int expectedsize;
 	int client1 = -1, client3 = -1;
 	int res = -1;
 
@@ -555,40 +497,28 @@ static int run(void)
 	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_ARTNUM_NOTFOUND);
 
 	/* Test dot-stuffing */
-	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
-	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
-		"Newsgroups: misc.test" ENDL \
-		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
-		"Subject: I am just a test article" ENDL \
-		ENDL \
-		"This article tests dot-stuffing." ENDL \
-		"." ENDL; \
-	write(client1, s, strlen(s));
-	CLIENT_EXPECT_CODE(client1, NNTP_OK_POST);
+	POST_ARTICLE_TO_GROUP(client1, TEST_EMAIL, "misc.test");
 	GROUP_EXPECT(client1, "misc.test", 8, 16, 7);
 	SWRITE(client1, "HDR :bytes 16\r\n");
 	CLIENT_EXPECT_CODE(client1, NNTP_OK_HDR);
-	CLIENT_EXPECT(client1, "16 285");
+	/* We don't know exactly how many bytes are going to be in the message, but extract it */
+	if (test_client_expect_buf(client1, SEC_MS(2), "16 ", __LINE__, sizebuf, sizeof(sizebuf))) {
+		goto cleanup;
+	}
 
 	SWRITE(client1, "POST\r\n");
 	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
-	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
-		"Newsgroups: misc.test" ENDL \
-		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
-		"Subject: I am just a test article" ENDL \
-		ENDL \
-		"This article tests dot-stuffing." ENDL \
-
+	s = "Newsgroups: misc.test" ENDL
+		"From: \"Demo User\" <" TEST_EMAIL ">" ENDL
+		NNTP_DEFAULT_ARTICLE_BASE
 		/* These lines are new (and all dot-stuffed): */
-		".." ENDL \
-		".." ENDL \
-		".." ENDL \
-		".." ENDL \
-		".." ENDL \
-		".." ENDL \
-
-		"." ENDL; \
+		".." ENDL
+		".." ENDL
+		".." ENDL
+		".." ENDL
+		".." ENDL
+		".." ENDL
+		"." ENDL; /* EOM */
 	write(client1, s, strlen(s));
 	CLIENT_EXPECT_CODE(client1, NNTP_OK_POST);
 	GROUP_EXPECT(client1, "misc.test", 8, 17, 8);
@@ -596,78 +526,159 @@ static int run(void)
 	/* Same as previous message but with 6 extra lines that are dot-stuffed. 6 lines, 3 bytes each (. CR LF, but not including leading dot for dot-stuffing).
 	 * So, +18 bytes. */
 	CLIENT_EXPECT_CODE(client1, NNTP_OK_HDR);
-	CLIENT_EXPECT(client1, "17 303");
+	expectedsize = atoi(sizebuf + STRLEN("16 ")) + 18;
+	if (test_client_expect_buf(client1, SEC_MS(2), "17 ", __LINE__, sizebuf, sizeof(sizebuf))) {
+		goto cleanup;
+	}
+	if (atoi(sizebuf + STRLEN("17 ")) != expectedsize) {
+		bbs_error("Expected %d bytes but got %s\n", expectedsize, sizebuf + STRLEN("17 "));
+		goto cleanup;
+	}
 
 	/* When requesting the article back, the lines with a '.' by themselves must be dot-stuffed back again */
 	SWRITE(client1, "BODY 17\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, ".." ENDL);
 
 	/* Test messages with multi-line headers */
-	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
-	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
-		"Newsgroups: misc.test" ENDL \
-		"References: <ancestor1.foo>" ENDL \
-		"\t<ancestor2.foo> <ancestor3.foo>" ENDL \
-		" <ancestor4.foo>" ENDL \
-		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
-		"Xref: news.example.net misc.test:12" ENDL \
-		"Subject: I am just a test article" ENDL \
-		" that has multi-line headers" ENDL \
-		ENDL \
-		"This article tests dot-stuffing." ENDL \
-		"." ENDL; \
-	write(client1, s, strlen(s));
-	CLIENT_EXPECT_CODE(client1, NNTP_OK_POST);
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_OK_POST,
+		"References: <ancestor1.foo>" ENDL
+		"\t<ancestor2.foo> <ancestor3.foo>" ENDL
+		" <ancestor4.foo>" ENDL
+	);
 
 	/* Ensure that we unfolded the multi-line References header and saved it properly: */
 	SWRITE(client1, "HDR References 18\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "18 <ancestor1.foo> <ancestor2.foo> <ancestor3.foo> <ancestor4.foo>" ENDL);
 
-	SWRITE(client1, "HDR Subject 18\r\n");
-	CLIENT_EXPECT_EVENTUALLY(client1, "18 I am just a test article that has multi-line headers" ENDL);
-
-	/* Test that the client-provided Xref header was properly ignored */
-	SWRITE(client1, "HDR Xref 18\r\n");
-	CLIENT_EXPECT_EVENTUALLY(client1, "18 Xref: news.example.com misc.test:18" ENDL);
+	/* Test that the client-provided Xref header is rejected */
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_FAIL_POST_REJECT,
+		"Xref: misc.example.org misc.test:321" ENDL
+	);
 
 	/* See if the correct Distribution header gets added (and we also include our own Message-ID) */
-	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
-	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
-		"Newsgroups: misc.crossposts" ENDL \
-		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
-		"Message-ID: <unique.messageid>" ENDL \
-		"Subject: I am just a test article" ENDL \
-		" that has multi-line headers" ENDL \
-		ENDL \
-		"This article tests dot-stuffing." ENDL \
-		"." ENDL; \
-	write(client1, s, strlen(s));
-	CLIENT_EXPECT_CODE(client1, NNTP_OK_POST);
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.crossposts", NNTP_OK_POST,
+		"Message-ID: <unique.messageid>" ENDL
+		"References: <ancestor1.foo>" ENDL
+		"\t<ancestor2.foo> <ancestor3.foo>" ENDL
+		" <ancestor4.foo>" ENDL
+	);
 
 	/* Our Message-ID should have been preserved */
 	SWRITE(client1, "HDR Message-ID <unique.messageid>\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "0 <unique.messageid>" ENDL);
 
-	/* Now, check that the correct Distribution header was added */
+	/* Check that the correct Distribution header was added */
 	SWRITE(client1, "HEAD <unique.messageid>\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "Distribution: cp4" ENDL);
 
-	/* Repeat, should be rejected */
+	/* Check that the Organization header was added */
+	SWRITE(client1, "HEAD <unique.messageid>\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "Organization: Society of BBS Sysops" ENDL);
+
+	/* Repeat, should be rejected since server should reject message with duplicate Message-ID, even from a reader */
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.crossposts", NNTP_FAIL_POST_REJECT,
+		"Message-ID: <unique.messageid>" ENDL
+		"References: <ancestor1.foo>" ENDL
+		"\t<ancestor2.foo> <ancestor3.foo>" ENDL
+		" <ancestor4.foo>" ENDL
+		"Xref: news.example.net misc.test:12" ENDL
+	);
+
+	/* Inject message without Date header, it should get added for us.
+	 * We provide our own Organization, which should be preserved.
+	 * Additionally, Injection-Date header should get added if not already present and if either Date or Message-ID is missing */
 	SWRITE(client1, "POST\r\n");
 	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
-	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
-		"Newsgroups: misc.crossposts" ENDL \
-		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
-		"Message-ID: <unique.messageid>" ENDL \
-		"Subject: I am just a test article" ENDL \
-		" that has multi-line headers" ENDL \
-		ENDL \
-		"This article tests dot-stuffing." ENDL \
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL
+		"Organization: My Organization" ENDL
+		"Newsgroups: misc.test" ENDL
+		"Subject: I am just a test article" ENDL
+		ENDL
+		"This article did not originally have a Date header." ENDL
 		"." ENDL; \
 	write(client1, s, strlen(s));
-	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_POST_REJECT); /* Should be rejected since server should reject message with duplicate Message-ID, even from a reader */
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_POST);
+
+	GROUP_EXPECT(client1, "misc.test", 8, 19, 10);
+	SWRITE(client1, "HEAD 19\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, ENDL "Date: ");
+	SWRITE(client1, "HEAD 19\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, ENDL "Injection-Date: ");
+	SWRITE(client1, "HEAD 19\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, ENDL "Organization: My Organization");
+
+	/* But if we have a Date header and it's invalid, should get rejected */
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL
+		"Newsgroups: misc.test" ENDL
+		"Date: foobar" ENDL
+		"Subject: I am just a test article" ENDL
+		ENDL
+		"This article did not originally have a Date header." ENDL
+		"." ENDL; \
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_POST_REJECT);
+
+	/* Articles dated too far in the future should get rejected */
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL
+		"Newsgroups: misc.test" ENDL
+		"Date: Thu, 31 Dec 2099 05:33:29 -0700" ENDL \
+		"Subject: I am just a test article" ENDL
+		ENDL
+		"This article is too far in the future." ENDL
+		"." ENDL; \
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_POST_REJECT);
+
+	/* Same with articles too far in the past, they should get rejected
+	 * (normally, this would be a small value, but to allow the tests to age well
+	 *  without maintenance, maxacceptage has been set to a very large value,
+	 *  so we need to use an old enough date.) */
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
+	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL
+		"Newsgroups: misc.test" ENDL
+		"Date: Sat, 28 Feb 1970 05:33:29 -0700" ENDL \
+		"Subject: I am just a test article" ENDL
+		ENDL
+		"This article is too far in the past." ENDL
+		"." ENDL; \
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_POST_REJECT);
+
+	/* Path is allowed as long as not yet posted */
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_OK_POST,
+		"Path: foo!client!not-for-mail" ENDL
+	);
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_OK_POST,
+		"Path: POSTED!not-for-mail" ENDL
+	);
+	GROUP_EXPECT(client1, "misc.test", 8, 21, 12);
+	SWRITE(client1, "HEAD 21\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "!.POSTED!"); /* .POSTED should've been added */
+
+	/* If article already has .POSTED in its path, should get rejected */
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_FAIL_POST_REJECT,
+		"Path: foo\r\n\t!.POSTED" ENDL
+	);
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_FAIL_POST_REJECT,
+		"Path: .POSTED!not-for-mail" ENDL
+	);
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_FAIL_POST_REJECT,
+		"Path: foo!.POSTED" ENDL
+	);
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_FAIL_POST_REJECT,
+		"Path: foo!.POSTED!not-for-mail" ENDL
+	);
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_FAIL_POST_REJECT,
+		"Path: foo!.POSTED.client.local!not-for-mail" ENDL
+	);
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_FAIL_POST_REJECT,
+		"Path: foo!something.POSTED!not-for-mail" ENDL
+	);
 
 	/* Try some posts that should be rejected */
 	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "misc.restricted", NNTP_FAIL_POST_AUTH); /* Disallowed by post wildmat */
@@ -682,32 +693,14 @@ static int run(void)
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1);
 
 	/* Can't add "Approved" headers to messages */
-	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
-	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
-		"Newsgroups: misc.test" ENDL \
-		"Approved: moderator@news.example.com" ENDL \
-		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
-		"Subject: I am just a test article" ENDL \
-		ENDL \
-		"This article tests dot-stuffing." ENDL \
-		"." ENDL; \
-	write(client1, s, strlen(s));
-	CLIENT_EXPECT(client1, XSTR(NNTP_FAIL_POST_REJECT) " You are not allowed to approve");
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_FAIL_POST_REJECT,
+		"Approved: moderator@news.example.com" ENDL
+	);
 
 	/* Can't add "Control" headers to messages */
-	SWRITE(client1, "POST\r\n");
-	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
-	s = "From: \"Demo User\" <" TEST_EMAIL ">" ENDL \
-		"Newsgroups: misc.test" ENDL \
-		"Control: cmsg newgroup foo.baz" ENDL \
-		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
-		"Subject: I am just a test article" ENDL \
-		ENDL \
-		"This article tests dot-stuffing." ENDL \
-		"." ENDL; \
-	write(client1, s, strlen(s));
-	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_POST_REJECT);
+	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_FAIL_POST_REJECT,
+		"Control: cmsg newgroup foo.baz" ENDL
+	);
 
 	/* User 3 isn't allowed to do anything, since he has no matching ACL */
 	client3 = test_make_socket(119);

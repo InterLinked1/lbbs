@@ -128,41 +128,6 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 
 #define ENDL "\r\n"
 
-/* NNTP test specific: */
-#define TEST_NEWS_HOSTNAME "news.example.com"
-
-#define NEW_NEWSGROUP(sockfd, name, desc, creator, posting) \
-	usleep(10000); \
-	CLI_SWRITE(sockfd, "/news newgroup" CLI_EOL); \
-	CLI_SWRITE(sockfd, name CLI_EOL); \
-	CLI_SWRITE(sockfd, desc CLI_EOL); \
-	CLI_SWRITE(sockfd, creator CLI_EOL); \
-	CLI_SWRITE(sockfd, posting CLI_EOL);
-
-#define SEND_NEWS_ARTICLE(s, fd, messageid, from, newsgroup, addl) \
-	s = "From: \"Demo User\" <" from ">" ENDL \
-		"Newsgroups: " newsgroup ENDL \
-		addl \
-		"Message-ID: " messageid ENDL \
-		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
-		"Subject: I am just a test article" ENDL \
-		"Xref: peer.example.org " newsgroup ":1" ENDL \
-		ENDL \
-		"This is just a test article." ENDL \
-		"." ENDL; \
-	write(fd, s, strlen(s));
-
-/* This message is from RFC 3977 6.3.1.3 */
-#define POST_NEWS_ARTICLE(s, fd, from, newsgroup) \
-	s = "From: \"Demo User\" <" from ">" ENDL \
-		"Newsgroups: " newsgroup ENDL \
-		"Date: Thu, 21 May 1998 05:33:29 -0700" ENDL \
-		"Subject: I am just a test article" ENDL \
-		ENDL \
-		"This is just a test article." ENDL \
-		"." ENDL; \
-	write(fd, s, strlen(s));
-
 #define TEST_EXPECT_STRING(s, val) \
 	if (strlen_zero(s) || !strstr(s, val)) { \
 		bbs_error("Expected '%s' but found '%s'\n", val, S_IF(s)); \

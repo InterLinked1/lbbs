@@ -25,6 +25,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "netnews.h"
+
 static int pre(void)
 {
 	test_preload_module("mod_mail.so");

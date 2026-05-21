@@ -369,7 +369,6 @@ int bbs_append_line_message(FILE *fp, const char *line, size_t len)
 
 int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len)
 {
-	/* Compiler could maybe optimize fprintf to fwrite, but just use it directly */
 	if (*line == '.') { /* RFC 5321 4.5.2: If line starts with a ., it's dot-stuffed, and really starts at the character after. */
 		line++;
 		len--;
@@ -1134,28 +1133,36 @@ int bbs_time_friendly_short_now(char *buf, size_t len)
 
 	lognow = time(NULL);
 	localtime_r(&lognow, &logdate);
-	/* 01/01 01:01pm = 13 chars */
+	/* 01/01 01:01pm = 14 bytes */
 	return (int) strftime(buf, len, "%m/%d %I:%M%P", &logdate);
 }
 
 int bbs_time_friendly_now(char *buf, size_t len)
 {
 	time_t lognow;
-	struct tm logdate;
+	struct tm tm;
 
 	lognow = time(NULL);
-	localtime_r(&lognow, &logdate);
-	/* Sat Dec 31 2000 09:45 am EST =  29 chars */
-	return (int) strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &logdate);
+	localtime_r(&lognow, &tm);
+	/* Sat Dec 31 2000 09:45 am EST =  29 bytes */
+	return (int) strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &tm);
 }
 
 int bbs_time_friendly(time_t epoch, char *buf, size_t len)
 {
-	struct tm logdate;
+	struct tm tm;
 
-	localtime_r(&epoch, &logdate);
-	/* Sat Dec 31 2000 09:45 am EST =  29 chars */
-	return (int) strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &logdate);
+	localtime_r(&epoch, &tm);
+	/* Sat Dec 31 2000 09:45 am EST =  29 bytes */
+	return (int) strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &tm);
+}
+
+int bbs_time_rfc822(time_t epoch, char *buf, size_t len)
+{
+	struct tm tm;
+	localtime_r(&epoch, &tm);
+	/* Sat, 31 Dec 2000 09:45:00 -0000 =  32 bytes */
+	return (int) strftime(buf, len, "%a, %d %b %Y %H:%M:%S %z", &tm);
 }
 
 void print_time_elapsed(time_t start, time_t end, char *buf, size_t len)
@@ -1219,4 +1226,32 @@ int bbs_parse_rfc822_date(const char *s, struct tm *tm)
 
 	bbs_warning("Failed to parse as date: %s\n", s);
 	return -1;
+}
+
+int bbs_date_is_older_than(const char *s, time_t epoch)
+{
+	struct tm tm;
+	time_t date;
+	if (bbs_parse_rfc822_date(s, &tm)) {
+		return -1; /* Invalid date, reject */
+	}
+	date = timegm(&tm);
+	if (date < epoch) {
+		return 1;
+	}
+	return 0;
+}
+
+int bbs_date_is_newer_than(const char *s, time_t epoch)
+{
+	struct tm tm;
+	time_t date;
+	if (bbs_parse_rfc822_date(s, &tm)) {
+		return -1; /* Invalid date, reject */
+	}
+	date = timegm(&tm);
+	if (date > epoch) {
+		return 1;
+	}
+	return 0;
 }

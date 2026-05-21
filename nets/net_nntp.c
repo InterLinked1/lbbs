@@ -35,6 +35,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <limits.h>
+#include <time.h> /* use struct tm */
 #include <sys/time.h> /* struct timeval for musl */
 
 #include "include/stringlist.h"
@@ -47,6 +48,8 @@
 #include "include/cli.h"
 #include "include/term.h"
 #include "include/mail.h"
+#include "include/hash.h"
+#include "include/base64.h"
 #include "include/test.h"
 
 #include "include/mod_mail.h"
@@ -87,25 +90,39 @@ static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
 
 static bbs_rwlock_t nntp_lock;
 static FILE *newslog;
+static FILE *postlog;
 
 /* General settings */
-char newsname[256] = ""; /* Non-static so other files can access it extern */
+char newsname[256] = ""; /* Our site name and path identity. Non-static so other files can access it extern */
+static char newsorg[256] = ""; /* Organization */
 char newsdir[256] = ""; /* Non-static so other files can access it extern */
 
 /* Global incoming settings */
-static unsigned int max_post_size = 100000; /* 100 KB should be plenty */
+static unsigned int max_article_size = 100000; /* ~100 KB should be plenty */
 static unsigned int max_groups = 100;
-static char poisongroups[NNTP_BUFSIZ];
+static unsigned int max_accept_age = 10;
+static char poisongroups[NNTP_MAX_LINE_LENGTH];
+static char poisonsites[NNTP_MAX_LINE_LENGTH];
 
 /* Global infeed settings */
 static int requirerelaytls = 1;
 static int keepjunk = 0;
 
 /* Reader settings */
+enum injection_posting_account {
+	INJECTION_POSTING_ACCOUNT_OBFUSCATED,
+	INJECTION_POSTING_ACCOUNT_USERNAME,
+	INJECTION_POSTING_ACCOUNT_HIDDEN,
+};
+
 static int require_secure_login = 0;
 static int check_identity = 1;
 static int allow_invalid = 0;
+static unsigned int max_post_size = 10000; /* ~10 KB by default for reader posts */
 static unsigned int max_post_groups = 25;
+static enum injection_posting_account injection_add_posting_account = INJECTION_POSTING_ACCOUNT_OBFUSCATED;
+static int injection_add_posting_host = 0;
+static char complaints_addr[256] = "";
 
 static struct stringlist outpeers;
 static struct stringlist subscriptions; /* LIST SUBSCRIPTIONS */
@@ -776,6 +793,10 @@ static void artinfo_reset(struct article_info *artinfo)
 {
 	free_if(artinfo->newsgroups);
 	free_if(artinfo->distribution);
+	free_if(artinfo->path);
+	free_if(artinfo->injectioninfo);
+	free_if(artinfo->injectiondate);
+	free_if(artinfo->xref); /* Normally only freed if received from reader and injected, the spool Xref is stack allocated and thus NULL here */
 	free_if(artinfo->approved);
 	free_if(artinfo->control);
 	free_if(artinfo->expires);
@@ -787,6 +808,14 @@ static void artinfo_reset(struct article_info *artinfo)
 	free_if(artinfo->references);
 	artinfo->bytes = 0;
 	artinfo->lines = 0;
+
+	artinfo->prepend = NULL;
+	artinfo->append = NULL;
+	artinfo->prependlen = 0;
+	artinfo->appendlen = 0;
+	artinfo->nntp_posting_host_set = 0;
+	artinfo->organization_set = 0;
+	artinfo->needinjectiondate = 0;
 }
 
 static void nntp_reset_data(struct nntp_session *nntp)
@@ -1438,7 +1467,7 @@ static int article_groups_contains(struct article_groups *groups, const char *na
 	return 0;
 }
 
-static int article_groups_add(struct article_groups *groups, const char *name, int moderated)
+static int article_groups_add(struct article_groups *groups, const char *name)
 {
 	struct article_group *g = calloc(1, sizeof(*g) + strlen(name) + 1);
 	if (ALLOC_FAILURE(g)) {
@@ -1446,7 +1475,6 @@ static int article_groups_add(struct article_groups *groups, const char *name, i
 	}
 	strcpy(g->data, name); /* Safe */
 	g->name = g->data;
-	SET_BITFIELD(g->moderated, moderated);
 	BBS_LIST_INSERT_TAIL(groups, g, entry);
 	return 0;
 }
@@ -1515,7 +1543,7 @@ static int build_moderator_address(const char *group, char *buf, size_t len)
 	return res;
 }
 
-static int process_moderated_group(struct article_group *g, int fd)
+static int process_moderated_group(const char *name, const char *filename)
 {
 	char modaddr[256];
 	char template[64];
@@ -1525,14 +1553,16 @@ static int process_moderated_group(struct article_group *g, int fd)
 	int res = -1;
 
 	/* First, determine the moderator address */
-	if (build_moderator_address(g->name, modaddr, sizeof(modaddr))) {
+	if (build_moderator_address(name, modaddr, sizeof(modaddr))) {
 		return -1;
 	}
 
-	/* Prepend To to the received article, and send it to the moderator, simple as that! */
+	/* Prepend To to the received article, and send it to the moderator, simple as that!
+	 * (This is method #2 in RFC 5537 3.5.1) */
 	strcpy(template, "/tmp/nntpmodXXXXXX"); /* Safe */
-	artfp = bbs_fdopen_duped(fd, "r");
+	artfp = fopen(filename, "r");
 	if (!artfp) {
+		bbs_error("Failed to open %s: %s\n", filename, strerror(errno));
 		return -1;
 	}
 	newfp = bbs_mkftemp(template, 0600);
@@ -1559,30 +1589,7 @@ static int process_moderated_group(struct article_group *g, int fd)
 
 	fclose(artfp);
 	unlink(template);
-	if (lseek(fd, SEEK_SET, 0)) { /* Be kind, rewind */
-		bbs_error("lseek(%d) failed: %s\n", fd, strerror(errno));
-	}
 	return res;
-}
-
-static int process_moderated_groups(struct article_groups *groups, int fd, int *errors, char *errorbuf, size_t errbuflen)
-{
-	int diverted = 0;
-	struct article_group *g;
-	BBS_LIST_TRAVERSE_SAFE_BEGIN(groups, g, entry) {
-		if (g->moderated) {
-			if (!process_moderated_group(g, fd)) {
-				diverted++;
-			} else {
-				snprintf(errorbuf, errbuflen, "No mailing address for \"%s\" - ask your newsmaster to fix this", g->name);
-				*errors += 1;
-			}
-			RWLIST_REMOVE_CURRENT(entry);
-			free(g);
-		}
-	}
-	BBS_LIST_TRAVERSE_SAFE_END;
-	return diverted;
 }
 
 static void log_article(struct nntp_session *nntp, int streaming, size_t rxbytes, const char *messageid, char code, const char *text)
@@ -1608,8 +1615,23 @@ static void log_article(struct nntp_session *nntp, int streaming, size_t rxbytes
 	now = time(NULL);
 	ctime_r(&now, buf);
 	/* No locking needed, fprintf will properly interleave writes */
-	fprintf(newslog, "%.15s.%03d %c %c %s %lu %s%s%s\n", buf + 4, (int) (tvnow.tv_usec / 1000),
-		code, nntp->mode == NNTP_MODE_READER ? 'R' : streaming ? 'S' : 'T', nntp->node->ip, rxbytes, messageid, text ? " " : "", S_IF(text));
+	if (nntp->mode == NNTP_MODE_READER) {
+		/* We log posts separately so that articles from peers and readers can be logged/rotated separately.
+		 * Normally, we would expect to get a lot of articles from peers but not as many from readers,
+		 * so this allows retention of reader logs longer in case we need them to figure out
+		 * who posted something after an article expired.
+		 *
+		 * Accordingly, include authenticated user so we have a record of who posted what if needed (even after articles expire).
+		 * We also include the thread ID since that is what gets logged in the logging-data parameter in Injection-Info. */
+		fprintf(postlog, "%.15s.%03d %c %c %s %d %s %lu %s%s%s\n", buf + 4, (int) (tvnow.tv_usec / 1000),
+			code, 'R', nntp->node->ip, bbs_gettid(),
+			nntp->mode == NNTP_MODE_READER ? bbs_username(nntp->node->user) : "-",
+			rxbytes, messageid, text ? " " : "", S_IF(text));
+	} else {
+		fprintf(newslog, "%.15s.%03d %c %c %s %d %lu %s%s%s\n", buf + 4, (int) (tvnow.tv_usec / 1000),
+			code, streaming ? 'S' : 'T', nntp->node->ip, bbs_gettid(),
+			rxbytes, messageid, text ? " " : "", S_IF(text));
+	}
 }
 
 /*! \brief Whether a client (reader or peer) can post to a group based on its status */
@@ -1692,21 +1714,190 @@ static enum nntp_control_msg parse_cmsg(const char *s)
 	}
 }
 
+static int article_too_new(struct article_info *artinfo)
+{
+	/* Reject any proto-articles dated too far in the future.
+	 * We use Injection-Date if it is present and Date otherwise (RFC 5537 3.6)
+	 * We MUST reject articles dated further than 24 hours in the future and MAY use a smaller margin than that (RFC 5537 3.5) */
+	time_t cutoff = time(NULL) + 86400;
+	if (artinfo->injectiondate) {
+		return bbs_date_is_newer_than(artinfo->injectiondate, cutoff);
+	}
+	return bbs_date_is_newer_than(artinfo->date, cutoff);
+}
+
+static int article_too_old(struct article_info *artinfo)
+{
+	/* Reject any proto-articles dated too far in the past.
+	 * We use Injection-Date if it is present and Date otherwise (RFC 5537 3.3) */
+	time_t cutoff = time(NULL) - (86400 * max_accept_age);
+	if (artinfo->injectiondate) {
+		return bbs_date_is_older_than(artinfo->injectiondate, cutoff);
+	}
+	return bbs_date_is_older_than(artinfo->date, cutoff);
+}
+
+static int path_contains_poison_site(const char *path)
+{
+	const char *nextbang;
+	if (s_strlen_zero(poisonsites)) {
+		return 0; /* No poison sites configured */
+	}
+	for (;;) {
+		size_t thissitelen;
+		char sitebuf[NNTP_BUFSIZ];
+		nextbang = strchr(path, '!');
+		if (!nextbang) {
+			/* This is the last site */
+			return uwildmat(path, poisonsites);
+		}
+
+		while (*path == ' ') {
+			path++; /* For multi-line Path headers, we may need to eat spaces first wherever the header wrapped */
+		}
+
+		/* Drop if poison */
+		thissitelen = (size_t) (nextbang - path);
+		if (thissitelen > sizeof(sitebuf) - 1) {
+			return 1; /* Well, not really, but if the site name is so long it exceeds our buffer, reject it */
+		}
+		safe_strncpy(sitebuf, path, (size_t) (nextbang - path + 1));
+		bbs_str_tolower(sitebuf);
+		if (uwildmat(sitebuf, poisonsites)) {
+			return 1;
+		}
+
+		/* Update for the next site */
+		path = nextbang + 1;
+		if (strlen_zero(path)) {
+			return 0; /* End of string */
+		}
+	}
+}
+
+#if 0
+static int _path_contains_site(const char *path, const char *site, size_t sitelen, int posted_only)
+{
+	/* Parse the string in place so we don't need to make a copy, e.g. strsep(&s, "!") */
+	const char *nextbang;
+	for (;;) {
+		size_t thissitelen;
+		nextbang = strchr(path, '!');
+		if (!nextbang) {
+			/* This is the last site */
+			return !strcasecmp(path, site);
+		}
+
+		while (*path == ' ') {
+			path++; /* For multi-line Path headers, we may need to eat spaces first wherever the header wrapped */
+		}
+
+		/* Check if this is the site of interest */
+		thissitelen = (size_t) (nextbang - path);
+		/* If the lengths aren't equal, don't even bother comparing, can't match. */
+		if (thissitelen >= sitelen && thissitelen == sitelen) {
+			if (!strncasecmp(path, site, sitelen)) {
+				return 1;
+			}
+		}
+		/* If we are checking if a site has received an article, we may want to ignore everything
+		 * after .POSTED as malicious clients could falsely insert sites into the path before injection (RFC 5537 6.2) */
+		if (posted_only && !strncmp(path, ".POSTED", STRLEN(".POSTED"))) { /* .POSTED could be followed by . and an FQDN/IP */
+			return 0;
+		}
+
+		/* Update for the next site */
+		path = nextbang + 1;
+		if (strlen_zero(path)) {
+			return 0; /* End of string */
+		}
+	}
+}
+#define path_contains_site(path, site, sitelen, posted_only) _path_contains_site(path, site, strlen(site), posted_only)
+#endif
+
+static int path_contains_posted(const char *path)
+{
+	const char *p;
+	/* .POSTED may not be the whole site name, it may just be the beginning. Therefore, look for it, more or less, anywhere in the string. */
+	for (p = path; *p; p++) {
+		if (*p == '.' && !strncasecmp(p, ".POSTED", STRLEN(".POSTED"))) {
+			/* Match so far. Now it needs to be end of string or followed by a character we expect */
+			if (!p[7] || p[7] == '.' || p[7] == '!' || p[7] == ' ') {
+				/* And finally, since p should be the beginning of the site, should've started at beginning or following ! */
+				if (p == path || p[-1] == '!') {
+					return 1;
+				}
+			}
+			/* According to RFC 5537, .POSTED should only appear as the beginning of a site; nonetheless, I have seen stuff like "mysite.POSTED",
+			 * so it's possible we may encounter ill-formed path elements. Treat those as posted so we reject those
+			 * to avoid propagating ill-formed Path headers.
+			 * We do a case-sensitive check here to avoid false positives (e.g. site ending in .posted) */
+			if (!strncmp(p, ".POSTED", STRLEN(".POSTED")) && p[7] == '!') { /* we don't also require (p > path && p[-1] != '!') because we already prepended our site, so beginning of string is fine */
+				bbs_client_err("Path header '%s' is non-compliant with RFC 5537\n", path);
+				return -1; /* Return -1 (still nonzero) to signal a match, albeit ill-formed */
+			}
+		}
+	}
+	return 0;
+}
+
+static int already_posted(const char *path)
+{
+	const char *p = bbs_skipn_val(path, '!', 2);
+	/* If Path header was already present, artinfo->path will actually have .POSTED in it as its second entry, since we added <site name>!.POSTED
+	 * when we received the header, so we need to skip the first two entries. */
+	if (!p) {
+		return 0;
+	}
+	return path_contains_posted(p);
+}
+
+/* RFC 5536 3.1.4 (reserved invalid groups and implementation-specific groups that MAY be used for their specific purpose or by local agreement) */
+#define contains_invalid_newsgroups(s) (uwildmat(s, "example,example.*,poster,to,to.*,control,control.*,all,all.*,ctl,ctl.*,junk"))
+
 /*! \retval 0 on success, or 1 on duplicate or -1 for the default error code depending on mode */
 static int check_article(struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen, enum nntp_control_msg *cmsg)
 {
 #define REQUIRE_ARTINFO_FIELD(field) \
 	if (!artinfo->field) { \
-		snprintf(errbuf, errbuflen, "Missing field %s", #field); \
+		snprintf(errbuf, errbuflen, "Missing or invalid %s", #field); \
 		return -1; \
 	}
 
-	REQUIRE_ARTINFO_FIELD(newsgroups);
-	REQUIRE_ARTINFO_FIELD(subject);
-	REQUIRE_ARTINFO_FIELD(from);
+	/* These are the six mandatory headers according to RFC 5536 */
 	REQUIRE_ARTINFO_FIELD(date);
-	REQUIRE_ARTINFO_FIELD(messageid); /* Even if reader didn't provide one, we would already have added it by now */
-	/* References header is optional, may not be present */
+	REQUIRE_ARTINFO_FIELD(from);
+	REQUIRE_ARTINFO_FIELD(messageid);
+	REQUIRE_ARTINFO_FIELD(newsgroups);
+	if (nntp->mode == NNTP_MODE_TRANSIT) {
+		REQUIRE_ARTINFO_FIELD(path); /* For proto-articles, we have yet to prepend this header and will do it later */
+	}
+	REQUIRE_ARTINFO_FIELD(subject);
+
+	/* Check for malformed headers */
+	if (strstr(artinfo->newsgroups, ",,")) {
+		snprintf(errbuf, errbuflen, "Newsgroups header is malformed");
+		return -1;
+	} else if (artinfo->distribution && strstr(artinfo->distribution, ",,")) {
+		snprintf(errbuf, errbuflen, "Distribution header is malformed");
+		return -1;
+	}
+
+	/* We reject invalid Path headers here, rather than in process_last_header,
+	 * because if we had set it to NULL there, then at this point we would no longer
+	 * know if the proto-article had an invalid Path header which should be rejected,
+	 * or if the header was missing originally, in which case we will add it later. */
+	if (artinfo->path) {
+		if (path_contains_poison_site(artinfo->path)) {
+			/* We log the path so that when this gets logged by log_article,
+			 * the newsmaster can later determine what site caused rejection if needed.
+			 * Unfortunately, uwildmat only returns whether it matched, not what caused the match,
+			 * so we have to log the full header value here. */
+			snprintf(errbuf, errbuflen, "Rejected; unacceptable site in Path '%s'", artinfo->path);
+			return -1;
+		}
+	}
 
 	if (nntp->mode == NNTP_MODE_TRANSIT) {
 		if (artinfo->messageid[0] != '<' && !bbs_str_ends_with(artinfo->messageid, ">")) {
@@ -1734,6 +1925,39 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 			}
 		}
 	} else {
+		/* Path is optional for proto-articles, but if present, it SHOULD NOT contain a "POSTED" diag-keyword (RFC 5537 3.4.1) */
+		if (artinfo->path && already_posted(artinfo->path)) {
+			snprintf(errbuf, errbuflen, "Article has already been posted");
+			return -1;
+		}
+
+		/* Injection-Info and Xref MUST NOT be present in proto-articles (RFC 5537 3.4.1) */
+		if (artinfo->injectioninfo) {
+			snprintf(errbuf, errbuflen, "Injection-Info header not allowed");
+			return -1;
+		}
+
+		/* We MAY reject proto-articles that contain trace header fields, e.g. NNTP-Posting-Host,
+		 * indicating injection by an agent that did not add Injection-Info/Injection-Date (RFC 5537 3.5)
+		 * Currently, we only check this header but could expand this check. */
+		if (artinfo->nntp_posting_host_set) {
+			snprintf(errbuf, errbuflen, "Article has already been posted");
+			return -1;
+		}
+
+		if (artinfo->xref) {
+			snprintf(errbuf, errbuflen, "Xref header not allowed");
+			return -1;
+		}
+
+		if (article_too_new(artinfo)) {
+			snprintf(errbuf, errbuflen, "Article date too far in future");
+			return -1;
+		} else if (article_too_old(artinfo)) {
+			snprintf(errbuf, errbuflen, "Article too old for injection");
+			return -1;
+		}
+
 		/* Check the From header and reject it if it's not compliant with site policy. */
 		if (!identity_allowed_for_posting(nntp, artinfo->from)) {
 			bbs_notice("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, artinfo->from);
@@ -1758,15 +1982,20 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 		}
 	}
 
+	/* Ensure there are no invalid newsgroups (we already know the header is non-empty at this point)
+	 * We SHOULD reject proto-articles without at least valid group or with any reserved group names (RFC 5537 3.5) */
+	if (contains_invalid_newsgroups(artinfo->newsgroups)) {
+		snprintf(errbuf, errbuflen, "Invalid newsgroups specified");
+		return -1;
+	}
+
 	/* Could be a race condition, maybe we didn't have the article when the client said CHECK/IHAVE,
-	 * but now we do (possibly from some other server). Check again before we attempt to store it in the spool. */
+	 * but now we do (possibly from some other server). Check one last time before we attempt to store it in the spool. */
 	if (spool_article_exists(artinfo->messageid)) {
 		snprintf(errbuf, errbuflen, "Message %s is a duplicate", artinfo->messageid);
 		return 1; /* Use specific response to refuse articles with IHAVE, otherwise use default */
 	}
 
-	/*! \todo Do further validation of fields here as needed.
-	 * Validate header validity itself in receive_article as we parse the header so we don't have to scan over all headers again */
 	return 0;
 }
 
@@ -1805,6 +2034,8 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 	char errorbuf[NNTP_MAX_LINE_LENGTH + 24] = "";
 	int total_errors = 0, permission_errors = 0;
 	struct article_info *artinfo = &nntp->artinfo;
+	char prepend[NNTP_BUFSIZ];
+	char append[NNTP_MAX_LINE_LENGTH];
 	int res, srcfd;
 	int temp_fail = 0; /* Have peer retry later? */
 	unsigned int groupcount = 0;
@@ -1826,6 +2057,17 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 			nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_DUPLICATE, res, errorbuf);
 		}
 		return 0;
+	}
+
+#define PATH_TAIL ".POSTED!not-for-mail"
+
+	/* If we don't already have a Path header, generate one. This is only the case for proto-articles from readers.
+	 * It's done here because we need to prepend this header to ensure that Path is the first header. */
+	if (!artinfo->path) {
+		artinfo->prependlen = (size_t) snprintf(prepend, sizeof(prepend), "Path: %s!%s\r\n", newsname, PATH_TAIL);
+		artinfo->prepend = prepend;
+		artinfo->bytes += artinfo->prependlen; /* postlen stays unchanged because this isn't in the temp file */
+		/* We could do artinfo->path = strdup(prepend); here, but we never use artinfo->path after this so it would not serve much purpose */
 	}
 
 	/* Determine the newsgroups to which we'll add this article. */
@@ -1876,12 +2118,25 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 			/* If from a reader, need to send to moderator.
 			 * If from peer, should already have been approved. */
 			if (nntp->mode == NNTP_MODE_TRANSIT) {
+				/* We MUST reject articles without an Approved header field posted to known-moderated newsgroups (RFC 5537 3.7 #5) */
 				if (!artinfo->approved) {
 					SET_POST_ERROR("Unapproved for \"%s\"", newsgroup);
 					permission_errors++;
 					continue;
 				}
-			} /* else, reader submissions are diverted to the moderator */
+			} else {
+				/* We forward to the moderator of the leftmost moderated group (which is the first one encountered in the loop).
+				 * Even if there are other moderated (or unmoderated) groups, we stop here (RFC 5537 3.5.1).
+				 * The article we send lacks the prepend/append headers (Path, Injection-Info, etc.) as these MUST NOT be sent to the moderator. */
+				if (process_moderated_group(newsgroup, srcfilename)) {
+					SET_POST_ERROR("Could not find moderator for group '%s'", newsgroup);
+					total_errors = 1; /* This will be the error that matters, so ensure it gets used in the log message */
+				} else {
+					delivered = 1; /* Send success message */
+				}
+				ACL_UNLOCK(nntp);
+				goto cleanup;
+			}
 		}
 		if (article_groups_contains(&groups, newsgroup)) {
 			bbs_debug(3, "Group '%s' is duplicated in Newsgroups list\n", newsgroup); /* Not fatal so we don't set error */
@@ -1889,7 +2144,7 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 			continue;
 		}
 		if (groupcount++ < max_post_groups || (nntp->mode == NNTP_MODE_TRANSIT && groupcount < max_groups)) {
-			article_groups_add(&groups, newsgroup, status[0] == 'm');
+			article_groups_add(&groups, newsgroup);
 		}
 	}
 	ACL_UNLOCK(nntp);
@@ -1899,7 +2154,7 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 	 * - we are configured to file all received articles w/o any nonexistent groups to junk (implicit 'j' status for articles from peers, otherwise allowed by permissions)
 	 * then we go ahead and file into junk. */
 	if (!groupcount && (junk_if_unfiled || (nntp->mode == NNTP_MODE_TRANSIT && keepjunk && permission_errors < total_errors))) {
-		article_groups_add(&groups, "junk", 0);
+		article_groups_add(&groups, "junk");
 		groupcount++;
 		was_junk = 1; /* We'll know later we only accepted this because it went to junk */
 	}
@@ -1916,9 +2171,70 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 		goto cleanup; /* No point in proceeding if there are no groups */
 	}
 
+	if (nntp->mode == NNTP_MODE_READER) {
+		char hostname[256];
+		char *appendpos = append;
+		size_t appendleft = sizeof(append);
+
+		/* If Injection-Date header or both Message-ID and Date already present, MUST NOT add Injection-Date; otherwise, MUST add it (RFC 5537 3.5 #11)
+		 * By the time we get to process_articles, the headers have alreay been added if they were not present, but we kept track of this in artinfo->needinjectiondate.
+		 * This replaces the deprecated NNTP-Posting-Date header.
+		 *
+		 * It appears that INN likes to add CFWS after the date itself, e.g. (UTC) as a comment. We do NOT do this. */
+		if (artinfo->needinjectiondate) {
+			int datelen;
+			SAFE_FAST_APPEND(append, sizeof(append), appendpos, appendleft, "Injection-Date: ");
+			datelen = bbs_time_rfc822(time(NULL), append + STRLEN("Injection-Date: "), appendleft); /* Just write directly into the buffer rather than using a separate one and having to copy it */
+			appendpos += (size_t) datelen;
+			appendleft -= (size_t) datelen;
+			SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "\r\n");
+		}
+
+		/* We MAY (and SHOULD) add an Injection-Info header identifying the source of the article and possibly other trace info (RFC 5537 3.5)
+		 * We do this here instead of in process_last_header because if forwarding to moderator, we need to send off the article without
+		 * added Injection-Info/Injection-Date headers (RFC 5537 3.5 #7). At this point, moderated articles have already been processed.
+		 *
+		 * This header replaces the deprecated NNTP-Posting-Host, X-Trace, X-Complaints-To, etc. headers */
+		SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "Injection-Info: %s", newsname);
+		if (injection_add_posting_account != INJECTION_POSTING_ACCOUNT_HIDDEN) {
+			/* Add the authenticated user's username. RFC 5536 3.2.8 says this SHOULD be obfuscated though we allow it either way (INN does not).
+			 * If obfuscation is enabled, we simply hash the username so that correlation can be maintained since we SHOULD have the same value if the same account is used. */
+			if (injection_add_posting_account == INJECTION_POSTING_ACCOUNT_OBFUSCATED) {
+				/* Yes, SHA1 is not as good as SHA256, but SHA256 is a bit long for this value and we are just intending to obfuscate, not provide cryptographic guarantees */
+				char hash[SHA1_BUFSIZE];
+				hash_sha1(bbs_username(nntp->node->user), hash);
+				SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "; posting-account=\"%s\"", hash);
+			} else {
+				SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "; posting-account=\"%s\"", bbs_username(nntp->node->user));
+			}
+		}
+		if (injection_add_posting_host && !bbs_get_hostname(nntp->node->ip, hostname, sizeof(hostname))) {
+			SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "; posting-host=\"%s\"", hostname);
+		}
+		if (appendpos - append > 80) {
+			/* If we added both the above parameters, wrap to the next line so the header displays more nicely.
+			 * The separating ; between parameters is on the first line though. */
+			SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, ";\r\n\t");
+		} else {
+			SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "; ");
+		}
+		/* This is the only parameter that we always append, since it requires no configuration and shouldn't be a privacy risk.
+		 * The idea is to log something obfuscated that can later be used to reassociate to the original poster if needed.
+		 * INN uses the PID, which works just as well for us as long as we use the TID since each user session gets its own thread. */
+		SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "logging-data=\"%d\"", bbs_gettid());
+		if (!s_strlen_zero(complaints_addr)) {
+			SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "; mail-complaints-to=\"%s\"", complaints_addr);
+		}
+		SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "\r\n"); /* End the Injection-Info header */
+
+		artinfo->appendlen = (size_t) (appendpos - append);
+		artinfo->append = append;
+		artinfo->bytes += artinfo->appendlen;
+	}
+
 	if (artinfo->control) {
 		const char *ctlgrp;
-		/* If it's a control message that's in scope, it gets filed into a special control group.
+		/* If it's a control message that's in scope, it gets filed into a special control group (RFC 5537 3.7)
 		 * We processed the groups above so that we could filter out anything we don't want. */
 		free_article_groups(&groups);
 		groupcount = 0;
@@ -1949,8 +2265,9 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 			}
 		}
 		groupcount++;
-		article_groups_add(&groups, ctlgrp, 0);
+		article_groups_add(&groups, ctlgrp);
 		/*! \todo No further processing of control messages is currently done yet after filing into the appropriate control group */
+		/*! \todo Supersedes header likewise requires similar kind of processing (RFC 5537 3.6 #5 / 3.7 #4) */
 	}
 
 	/* Actually add message to groups */
@@ -1960,27 +2277,12 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 		goto cleanup;
 	}
 
-	/* Process any moderated posts from readers and remove them from the list */
-	if (nntp->mode == NNTP_MODE_READER) {
-		int mod_errors = 0;
-		int mod_delivered = process_moderated_groups(&groups, srcfd, &mod_errors, errorbuf, sizeof(errorbuf));
-		/* If still have other unmoderated groups, continue, otherwise, we're done */
-		groupcount -= (unsigned int) (mod_delivered + mod_errors);
-		delivered += mod_delivered;
-		if (!groupcount) {
-			goto cleanup2; /* All groups were moderated, and may have failed or succeeded; on failure, errorbuf was set */
-		}
-		/* Some moderated deliveries may have failed, but we still have other groups, so continue nonetheless */
-	}
-
 	bbs_rwlock_wrlock(&nntp_lock);
 	delivered = spool_article_create(&groups, artinfo, srcfd, postlen); /* Assign article numbers, add Xref header, and deliver to spool */
 	bbs_rwlock_unlock(&nntp_lock);
 	if (delivered <= 0) {
 		temp_fail = 1; /* If we got this far and failed, for peers, this is a temporary failure, we want them to retry deliver later */
 	}
-
-cleanup2:
 	close(srcfd);
 
 cleanup:
@@ -2219,10 +2521,18 @@ static int save_header_value(struct article_info *artinfo, char *s)
 	if (STARTS_WITH(s, hdrname ":")) { \
 		hval = s + STRLEN(hdrname ":"); \
 		ltrim(hval); \
+		if (unlikely(strlen_zero(hval))) { \
+			bbs_client_err("Empty header '%s'?\n", var); \
+			return -1; /* We MAY reject articles with header fields without valid contents (RFC 5537 3.6) */ \
+		} \
 		if (unlikely(var != NULL)) { \
 			bbs_client_err("Duplicate header '%s'?\n", var); \
+			return -1; /* RFC 5536 Section 3 says these headers MUST NOT occur more than once */ \
 		} \
 		REPLACE(var, hval); \
+		if (ALLOC_FAILURE(var)) { \
+			return -1; \
+		} \
 	}
 
 	/* CR LF pairs will not be present even in unfolded multi-line headers, since we appended with a space between lines.
@@ -2237,7 +2547,17 @@ static int save_header_value(struct article_info *artinfo, char *s)
 	else SAVE_HEADER("Date", artinfo->date)
 	else SAVE_HEADER("References", artinfo->references)
 	else SAVE_HEADER("Message-ID", artinfo->messageid)
+	else SAVE_HEADER("Path", artinfo->path) /* Path is already modified in receive_article */
+	else SAVE_HEADER("Injection-Info", artinfo->injectioninfo)
+	else SAVE_HEADER("Injection-Date", artinfo->injectiondate)
+	else SAVE_HEADER("Xref", artinfo->xref) /* Generally ignored unless slaving Xref; if from a reader, we store so we can reject the article */
 	else {
+		/* Don't care about value, but for certain headers, keep track that header has been set */
+		if (STARTS_WITH(s, "NNTP-Posting-Host")) {
+			artinfo->nntp_posting_host_set = 1;
+		} else if (STARTS_WITH(s, "Organization")) {
+			artinfo->organization_set = 1;
+		}
 		return 0; /* Not a header of interest */
 	}
 
@@ -2294,6 +2614,31 @@ static int get_matching_distribution(const char *groups, char *buf, size_t len)
 	return winner ? 0 : 1;
 }
 
+static int is_valid_date_hdr(const char *s)
+{
+	struct tm tm;
+	if (bbs_parse_rfc822_date(s, &tm)) {
+		return 0;
+	}
+	return 1;
+}
+
+static int is_valid_messageid(const char *s)
+{
+	const char *tmp;
+	if (*s != '<') {
+		return 0;
+	}
+	tmp = strchr(s, '>');
+	if (!tmp++) {
+		return 0;
+	}
+	if (*tmp) {
+		return 0;
+	}
+	return 1;
+}
+
 static int process_last_header(struct nntp_session *nntp, struct article_info *artinfo, char *s, FILE *fp, size_t *restrict postlen, const char *articleid)
 {
 	int bytes;
@@ -2309,33 +2654,94 @@ static int process_last_header(struct nntp_session *nntp, struct article_info *a
 	bytes = fprintf(fp, hdrname ": " fmt "\r\n", ## __VA_ARGS__); \
 	*postlen += (size_t) bytes;
 
+#define ADD_HDR(fp, field, hdrname, fmt, ...) \
+	REPLACE(field, __VA_ARGS__); \
+	if (ALLOC_FAILURE(field)) { \
+		return -1; \
+	} \
+	APPEND_HDR(fp, hdrname, fmt, __VA_ARGS__); \
+
 	/* If article did not supply a Distribution header, then we will add one automatically if appropriate (after all, client could've used DISTRIB.PATS to do it itself) */
 	if (!artinfo->distribution && artinfo->newsgroups) { /* If artinfo->newsgroups isn't set, the article will get rejected anyhow (but it's not guaranteed to exist right now, so we check) */
 		if (!get_matching_distribution(artinfo->newsgroups, hdrval, sizeof(hdrval))) {
-			REPLACE(artinfo->distribution, hdrval);
-			APPEND_HDR(fp, "Distribution", "%s", hdrval);
+			ADD_HDR(fp, artinfo->distribution, "Distribution", "%s", hdrval);
 		}
 	}
 
-	if (nntp->mode == NNTP_MODE_TRANSIT && artinfo->messageid && strcmp(artinfo->messageid, articleid)) {
-		/* The article better be the article that the other server said it was in IHAVE */
-		bbs_debug(1, "Article Message-ID mismatch: IHAVE=%s, Message-ID=%s\n", articleid, s);
-		return 1; /* Permanently reject message */
+	if (nntp->mode == NNTP_MODE_TRANSIT) {
+		if (artinfo->messageid && strcmp(artinfo->messageid, articleid)) {
+			/* The article better be the article that the other server said it was in IHAVE */
+			bbs_debug(1, "Article Message-ID mismatch: IHAVE=%s, Message-ID=%s\n", articleid, s);
+			return 1; /* Permanently reject message */
+		}
+		/* Check that header fields are valid. If not, remove the header to trigger rejection.
+		 * If they're mandatory and missing, it will be rejected by check_article */
+		if (artinfo->date && !is_valid_date_hdr(artinfo->date)) {
+			FREE(artinfo->date);
+		}
+		if (artinfo->messageid && !is_valid_messageid(artinfo->messageid)) {
+			FREE(artinfo->messageid);
+		}
 	}
 
-	if (nntp->mode == NNTP_MODE_READER && !artinfo->messageid) {
-		/* Didn't get a Message-ID from the reader client, construct one for the article now. */
-		char *uuid = bbs_uuid(); /* Use same UUID (and by extension, the same Article ID) for all newsgroups */
-		if (!uuid) {
-			return -1; /* If we can't assign a Message-ID, this is fatal */
+	if (nntp->mode == NNTP_MODE_READER) {
+		/* Certain mandatory fields are optional in proto-articles, i.e. we need to add them if they are missing (Date, Message-ID, Path).
+		 * If they are present, they MUST be valid (RFC 5537 3.4.1). If we find them invalid, we REMOVE them, which will
+		 * cause the proto-article to be rejected since a mandatory header will be missing. */
+		if (!artinfo->injectiondate && !(artinfo->date && artinfo->messageid)) {
+			/* All three of these headers are valid in proto-articles.
+			 * If Injection-Date is already present, we MUST NOT add one, and if both Message-ID and Date are present,
+			 * we MUST NOT add Injection-Date (RFC 5537 3.5 #11).
+			 * If we decide to add one, we don't do it just yet as for some processing (e.g. moderated articles) we don't want these headers,
+			 * and also we want this header to appear after some of the mandatory headers. */
+			artinfo->needinjectiondate = 1;
 		}
-		snprintf(hdrval, sizeof(hdrval), "<%s@%s>", uuid, newsname);
-		free(uuid);
-		REPLACE(artinfo->messageid, hdrval);
-		APPEND_HDR(fp, "Message-ID", "%s", hdrval);
+		if (artinfo->date) {
+			if (!is_valid_date_hdr(artinfo->date)) {
+				FREE(artinfo->date);
+			}
+		} else {
+			bbs_time_rfc822(time(NULL), hdrval, sizeof(hdrval));
+			ADD_HDR(fp, artinfo->date, "Date", "%s", hdrval);
+		}
+		if (artinfo->messageid) {
+			if (!is_valid_messageid(artinfo->messageid)) {
+				FREE(artinfo->messageid);
+			}
+		} else {
+			/* Didn't get a Message-ID from the reader client, construct one for the article now. */
+			char *uuid = bbs_uuid(); /* Use same UUID (and by extension, the same Article ID) for all newsgroups */
+			if (!uuid) {
+				return -1; /* If we can't assign a Message-ID, this is fatal */
+			}
+			snprintf(hdrval, sizeof(hdrval), "<%s@%s>", uuid, newsname);
+			free(uuid);
+			ADD_HDR(fp, artinfo->messageid, "Message-ID", "%s", hdrval);
+		}
+
+		/* Either the client or the server can add the Organization header.
+		 * If the client has already set it, we don't touch it. */
+		if (!artinfo->organization_set && !s_strlen_zero(newsorg)) {
+			APPEND_HDR(fp, "Organization", "%s", newsorg); /* Append only, we don't need to store the organization (again!) */
+		}
+
+		/* The Path header is a special exception here.
+		 * By convention, the Path header always appears at the top, and though it is typically first, we can't rely on that.
+		 * Thus, as we only make a single pass over the headers when receiving an article, we won't know if the Path header
+		 * is present or needs to be added until we have read all the headers (which is true at this point in the code).
+		 * However, we can't directly insert a new Path header into the header here, since we are at EOH.
+		 * In this case, we will insert a default Path header later when creating the article.
+		 *
+		 * Note however that we are just doing this for the sake of convention. There is no requirement that Path be the first header
+		 * (though RFC 5537 3.5 does allow the Path header, and only the Path header, to be reordered). */
 	}
 
 	return 0;
+}
+
+static inline int article_too_large(struct nntp_session *nntp, size_t bytes)
+{
+	return bytes >= max_article_size || (nntp->mode == NNTP_MODE_READER && bytes >= max_post_size);
 }
 
 /* articleid is only set for MODE_TRANSIT */
@@ -2362,9 +2768,9 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 			nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_TERMINATING, "Service temporarily unavailable"); /* RFC 4644 2.5.2 says to defer with TAKETHIS, we MUST send a 400 response and disconnect */
 			return -1;
 		} else if (nntp->mode == NNTP_MODE_READER) {
-			nntp_rx_reply(nntp, 0, articleid,LOG_DEFER, NNTP_FAIL_POST_AUTH, "Server error, posting temporarily unavailable");
+			nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_POST_AUTH, "Server error, posting temporarily unavailable");
 		} else {
-			nntp_rx_reply(nntp, 0, articleid,LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Temporary server error, try again later");
+			nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Temporary server error, try again later");
 		}
 		return 0;
 	}
@@ -2391,11 +2797,11 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 			fclose(fp);
 			if (postfail) {
 				unlink(template);
-				if (inheaders || permerror || postlen >= max_post_size) {
+				if (inheaders || permerror || article_too_large(nntp, postlen)) {
 					/* Permanent error */
 					if (inheaders) {
 						nntp_rx_reply(nntp, postlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected (ill-formed article); do not retry");
-					} else if (postlen >= max_post_size) {
+					} else if (article_too_large(nntp, postlen)) {
 						nntp_rx_reply(nntp, postlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected (too large); do not retry");
 					} else {
 						nntp_rx_reply(nntp, postlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected; do not retry"); /* Catch-all, but I don't think this case is possible */
@@ -2430,10 +2836,11 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 		} else if (inheaders) {
 			if (!len) {
 				int hres;
-				artinfo->headerslen = postlen;
 				inheaders = 0; /* Got CR LF, end of headers */
 				hres = process_last_header(nntp, artinfo, headerbuf, fp, &postlen, articleid);
+				artinfo->headerslen = postlen; /* We are now done processing/adding headers */
 				if (hres) {
+					bbs_client_err("Failed to finalize headers\n");
 					postfail = 1;
 					permerror = hres == 1;
 					continue;
@@ -2452,6 +2859,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 						/* If this is a header we care about, save it into the artinfo structure with each header unfolded into a single line; otherwise ignore.
 						 * Of course, all the headers are saved as is in the file, unless we explicitly skip the header. */
 						if (save_header_value(artinfo, headerbuf)) {
+							bbs_client_err("Failed to finalize header\n");
 							postfail = 1;
 							continue;
 						}
@@ -2461,8 +2869,65 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 					headerpos = headerbuf; /* Reset */
 					headerleft = sizeof(headerbuf); /* Reset */
 					if (STARTS_WITH(s, "Xref:")) {
-						/* Ignore any incoming Xref article, since we create our own rather than reuse.
-						 * The only exception to this would be when using a suck feed where we want to slave our article numbers off the feeder's. */
+						/* If from a peer, ignore any incoming Xref article, since we create our own rather than reuse.
+						 * The only exception to this would be when using a suck feed where we want to slave our article numbers off the feeder's.
+						 *
+						 * Readers MUST NOT send an Xref header. Therefore, we DO also process it here for readers so later we can reject proto-articles with Xref headers. */
+						if (nntp->mode == NNTP_MODE_TRANSIT) {
+							continue;
+						}
+					} else if (STARTS_WITH(s, "Path:")) {
+						/* Hardly elegant, but it's easier to just prepend to this header right here and now */
+						size_t pbytes;
+						int wrapped = 0;
+						char *restpos;
+						size_t restleft;
+						char *remainingpath = s + STRLEN("Path:");
+						len -= (ssize_t) STRLEN("Path:");
+						while (*remainingpath == ' ' || *remainingpath == '\t') {
+							remainingpath++;
+							len--;
+						}
+						/* Write the "Path" header name and our site name to the tempfile and header buffer,
+						 * then the rest of what was originally in the header, making sure we keep the length up to date.
+						 * If we are receiving an article from a reader, we also add .POSTED (but not not-for-mail as tail is already present).
+						 *
+						 * RFC 5537 allows us to append the FQDN/IP of the source to !.POSTED; we do not, to protect poster privacy. */
+						SAFE_FAST_APPEND(headerbuf, sizeof(headerbuf), headerpos, headerleft, "Path: %s%s",
+							newsname, nntp->mode == NNTP_MODE_READER ? "!.POSTED" : "");
+						pbytes = sizeof(headerbuf) - headerleft;
+						res = (int) fwrite(headerbuf, 1, pbytes, fp); /* Use headerbuf directly; since this is the first line, we know we appended to the beginning */
+						if (res != (int) pbytes) {
+							bbs_error("Failed to write Path prefix (%d != %lu)\n", res, pbytes);
+							postfail = 1;
+							continue;
+						}
+						postlen += (size_t) res;
+						if (len > NNTP_MAX_LINE_LENGTH - 256) {
+							/* Very crude, but if the path is pretty long, then also wrap what's to come onto another line.
+							 * Examples in RFC 5537 3.2.2 show that the ! then begins on the next line.
+							 *
+							 * Note this only goes into the article file, not into the buffers since we don't include line endings in the variables.
+							 * So that artinfo->path still includes a space when the header wraps, we will include the tab below, as save_header will convert it into a space later. */
+							res = (int) fwrite("\r\n", 1, STRLEN("\r\n"), fp);
+							if (res != (int) STRLEN("\r\n")) {
+								bbs_error("Failed to write Path prefix (%d != %lu)\n", res, pbytes);
+								postfail = 1;
+								continue;
+							}
+							postlen += (size_t) res;
+							wrapped = 1;
+						}
+						restpos = headerpos; /* Save beginning of where we'll write this next line: */
+						restleft = headerleft;
+						SAFE_FAST_APPEND_NOSPACE(headerbuf, sizeof(headerbuf), headerpos, headerleft, "%s!%s", wrapped ? "\t" : "", remainingpath);
+						res = bbs_append_line_message(fp, restpos, restleft - headerleft);
+						if (res < 0) {
+							bbs_error("Failed to write Path suffix\n");
+							postfail = 1;
+							continue;
+						}
+						postlen += (size_t) res;
 						continue;
 					}
 					SAFE_FAST_APPEND(headerbuf, sizeof(headerbuf), headerpos, headerleft, "%s", s);
@@ -2475,7 +2940,8 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 			}
 		}
 
-		if ((unsigned int) (postlen + (long unsigned int) len + 2) >= max_post_size) {
+		if (article_too_large(nntp, (unsigned int) (postlen + (long unsigned int) len + 2))) {
+			bbs_client_err("Article size has exceeded site size limit\n");
 			postfail = 1;
 			postlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
 			continue;
@@ -2502,6 +2968,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 		 * so that we can calculate this correctly in tradspool_article_create(), but that's all. */
 		res = bbs_append_line_message(fp, s, (size_t) len); /* Should return len + 2 */
 		if (res < 0) {
+			bbs_error("Failed to append line\n");
 			postfail = 1;
 		}
 		postlen += (size_t) res;
@@ -3384,6 +3851,16 @@ static int load_config(void)
 		return -1;
 	}
 
+	if (bbs_config_val_set_path(cfg, "general", "newsdir", newsdir, sizeof(newsdir))) {
+		bbs_config_unlock(cfg);
+		return -1;
+	}
+	if (active_init() || spool_init()) {
+		bbs_config_unlock(cfg);
+		return -1;
+	}
+
+	/* Remaining general settings */
 	if (bbs_config_val_set_str(cfg, "general", "newsname", newsname, sizeof(newsname))) {
 		if (strlen_zero(bbs_hostname())) {
 			bbs_config_unlock(cfg);
@@ -3392,25 +3869,27 @@ static int load_config(void)
 		}
 		safe_strncpy(newsname, bbs_hostname(), sizeof(newsname));
 	}
-	if (bbs_config_val_set_path(cfg, "general", "newsdir", newsdir, sizeof(newsdir))) {
-		bbs_config_unlock(cfg);
-		return -1;
-	}
+	bbs_config_val_set_str(cfg, "general", "newsorg", newsorg, sizeof(newsorg));
 
-	if (active_init() || spool_init()) {
-		bbs_config_unlock(cfg);
-		return -1;
+	/* Incoming settings */
+	bbs_config_val_set_uint(cfg, "incoming", "maxsize", &max_article_size);
+	bbs_config_val_set_uint(cfg, "incoming", "maxgroups", &max_groups);
+	if (!bbs_config_val_set_uint(cfg, "incoming", "maxacceptage", &max_accept_age)) {
+		if (max_accept_age < 3) {
+			/* Rejection interval SHOULD NOT be any shorter than 72 hours (RFC 5537 3.5) */
+			bbs_warning("maxacceptage '%u' invalid, floored at 3\n", max_accept_age);
+			max_accept_age = 3;
+		}
 	}
-
-	/* Remaining general settings */
-	bbs_config_val_set_uint(cfg, "readers", "maxpostsize", &max_post_size);
-	bbs_config_val_set_uint(cfg, "readers", "maxgroups", &max_groups);
 
 	/* Reader settings */
 	bbs_config_val_set_true(cfg, "readers", "requiresecurelogin", &require_secure_login);
 	bbs_config_val_set_true(cfg, "readers", "checkidentity", &check_identity);
 	bbs_config_val_set_true(cfg, "readers", "allowinvalid", &allow_invalid);
+	bbs_config_val_set_uint(cfg, "incoming", "maxpostsize", &max_post_size);
 	bbs_config_val_set_uint(cfg, "readers", "maxpostgroups", &max_post_groups);
+	bbs_config_val_set_true(cfg, "readers", "postinghost", &injection_add_posting_host);
+	bbs_config_val_set_str(cfg, "readers", "complaints", complaints_addr, sizeof(complaints_addr));
 
 	/* NNTP */
 	bbs_config_val_set_true(cfg, "nntp", "enabled", &nntp_enabled);
@@ -3441,14 +3920,29 @@ static int load_config(void)
 	while ((section = bbs_config_walk(cfg, section))) {
 		/* Skip sections already processed above */
 		SKIP_SECTION("general");
-		SKIP_SECTION("readers");
 		SKIP_SECTION("nntp");
 		SKIP_SECTION("nntps");
 		SKIP_SECTION("nnsp");
-		if (!strcasecmp(bbs_config_section_name(section), "incoming")) {
+		if (!strcasecmp(bbs_config_section_name(section), "readers")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
-				if (!strcasecmp(bbs_keyval_key(keyval), "poisongroups")) {
-					safe_strncpy(poisongroups, bbs_keyval_val(keyval), sizeof(poisongroups));
+				const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);
+				if (!strcasecmp(key, "postingaccount")) {
+					if (!strcasecmp(val, "obfuscate")) {
+						injection_add_posting_account = INJECTION_POSTING_ACCOUNT_OBFUSCATED;
+					} else if (S_TRUE(val)) {
+						injection_add_posting_account = INJECTION_POSTING_ACCOUNT_USERNAME;
+					} else {
+						injection_add_posting_account = INJECTION_POSTING_ACCOUNT_HIDDEN;
+					}
+				}
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "incoming")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);
+				if (!strcasecmp(key, "poisongroups")) {
+					safe_strncpy(poisongroups, val, sizeof(poisongroups));
+				} else if (!strcasecmp(key, "poisonsites")) {
+					safe_strncpy(poisonsites, val, sizeof(poisonsites));
 				}
 			}
 		} else if (!strcasecmp(bbs_config_section_name(section), "infeeds")) {
@@ -3571,6 +4065,7 @@ static void cleanup_lists(void)
 static int load_module(void)
 {
 	char newslogpath[512];
+	char postlogpath[512];
 
 	RWLIST_HEAD_INIT(&acls);
 	RWLIST_HEAD_INIT(&inpeers);
@@ -3603,17 +4098,33 @@ static int load_module(void)
 		goto cleanup;
 	}
 
-	snprintf(newslogpath, sizeof(newslogpath), "%s/nntp.log", bbs_log_dir());
+	/* Use separately log files for reader and transit posts so the logs can be rotated/retained independently if desired
+	 * (typically with higher retention for reader logs) */
+	snprintf(newslogpath, sizeof(newslogpath), "%s/nntp_transit.log", bbs_log_dir());
 	newslog = fopen(newslogpath, "a");
 	if (!newslog) {
 		bbs_error("Failed to open %s: %s\n", newslogpath, strerror(errno));
 		bbs_rwlock_destroy(&nntp_lock);
 		goto cleanup;
 	}
+	snprintf(postlogpath, sizeof(postlogpath), "%s/nntp_reader.log", bbs_log_dir());
+	postlog = fopen(postlogpath, "a");
+	if (!postlog) {
+		bbs_error("Failed to open %s: %s\n", newslogpath, strerror(errno));
+		bbs_rwlock_destroy(&nntp_lock);
+		fclose(newslog);
+		goto cleanup;
+	}
 
+	if (bbs_start_tcp_listener3(nntp_enabled ? nntp_port : 0, nntps_enabled ? nntps_port : 0, nnsp_enabled ? nnsp_port : 0, "NNTP", "NNTPS", "NNSP", __nntp_handler)) {
+		bbs_rwlock_destroy(&nntp_lock);
+		fclose(newslog);
+		fclose(postlog);
+		goto cleanup;
+	}
 	bbs_register_tests(tests);
 	bbs_cli_register_multiple(cli_commands_nntp);
-	return bbs_start_tcp_listener3(nntp_enabled ? nntp_port : 0, nntps_enabled ? nntps_port : 0, nnsp_enabled ? nnsp_port : 0, "NNTP", "NNTPS", "NNSP", __nntp_handler);
+	return 0;
 
 cleanup:
 	cleanup_lists();
@@ -3640,6 +4151,7 @@ static int unload_module(void)
 	active_cleanup();
 	spool_cleanup();
 	fclose(newslog);
+	fclose(postlog);
 	return 0;
 }
 

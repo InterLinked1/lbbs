@@ -222,6 +222,16 @@ void bbs_str_tolower(char *restrict s);
 void bbs_str_toupper(char *restrict s);
 
 /*!
+ * \brief Similar to skipn, but directly return a const char* instead of the number of skips
+ * \param s Input string
+ * \param c Character to skip
+ * \param n Number of times to skip c
+ * \returns First character after n skipped instances of c
+ * \returns NULL if n instances of c not found
+ */
+const char *bbs_skipn_val(const char *s, char c, int n);
+
+/*!
  * \brief Skip a number of occurences of a character in a string
  * \param str
  * \param c Character of interest

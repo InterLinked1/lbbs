@@ -1008,8 +1008,14 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 			/* Copy the entire article to the file.
 			 * Would be nice to use iovec to reduce number of system calls,
 			 * but we are combining write() with copy_file_range or sendfile, so not sure if that is possible. */
+			if (artinfo->prepend) {
+				bbs_write(destfd, artinfo->prepend, artinfo->prependlen);
+			}
 			bbs_copy_file(srcfd, destfd, 0, (int) artinfo->headerslen); /* Copy original headers, not including empty line */
-			bbs_write(destfd, xref, xrefbytes); /* Add the Xref header */
+			if (artinfo->append) {
+				bbs_write(destfd, artinfo->append, artinfo->appendlen);
+			}
+			bbs_write(destfd, xref, xrefbytes); /* Add the Xref header now so it's the very last header */
 			bbs_copy_file(srcfd, destfd, (int) artinfo->headerslen, (int) (len - artinfo->headerslen)); /* Copy blank line and the body */
 
 			close(destfd);
@@ -1021,6 +1027,7 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 		xref_reformat(xref + STRLEN("Xref: ")); /* xref has been written to the file so we can now mutate it; replace CR LF with spaces and rtrim */
 		artinfo->xref = xref; /* We include the header name itself (Xref:), this is why LIST OVERVIEW.FMT returns Xref:full (includes header name itself) */
 		overview_add(artinfo, g->name, g->article_num);
+		artinfo->xref = NULL; /* Since this wasn't allocated, set to NULL so we don't free it later */
 		delivered++;
 		bbs_debug(6, "Successfully delivered article to %s (article %d)\n", g->name, g->article_num);
 	}

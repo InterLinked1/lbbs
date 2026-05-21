@@ -121,7 +121,6 @@ struct article_group {
 	const char *name; /*!< The newsgroup name */
 	int article_num; /*!< To be assigned when assigning the article number */
 	BBS_LIST_ENTRY(article_group) entry;
-	unsigned int moderated:1;
 	char data[];
 };
 
@@ -129,11 +128,6 @@ BBS_LIST_HEAD_NOLOCK(article_groups, article_group);
 
 /*! \brief Article overview metadata */
 struct article_info {
-	char *newsgroups;
-	char *distribution;
-	char *approved;
-	char *control;
-	char *expires;
 	/* As ordered for overview (fields 2-8) */
 	char *subject;
 	char *from;
@@ -144,8 +138,23 @@ struct article_info {
 	int lines;
 	/* Optional fields */
 	char *xref;
-	/* Other */
+	/* Other (generally only used for processing incoming articles) */
+	char *path;
+	char *newsgroups;
+	char *distribution;
+	char *injectioninfo;
+	char *injectiondate;
+	char *approved;
+	char *control;
+	char *expires;
 	size_t headerslen; /* Length of headers, not including empty line separating headers/body */
+	size_t prependlen;
+	const char *prepend; /* Headers to prepend before all other headers, i.e. Path */
+	size_t appendlen;
+	const char *append; /* Headers to append after all other headers, except Xref */
+	unsigned int nntp_posting_host_set:1;
+	unsigned int organization_set:1;
+	unsigned int needinjectiondate:1;
 };
 
 struct bbs_node;
