@@ -97,14 +97,14 @@ char newsname[256] = ""; /* Our site name and path identity. Non-static so other
 static char newsorg[256] = ""; /* Organization */
 char newsdir[256] = ""; /* Non-static so other files can access it extern */
 
-/* Global incoming settings */
+/* Global settings for incoming articles */
 static unsigned int max_article_size = 100000; /* ~100 KB should be plenty */
 static unsigned int max_groups = 100;
 static unsigned int max_accept_age = 10;
 static char poisongroups[NNTP_MAX_LINE_LENGTH];
 static char poisonsites[NNTP_MAX_LINE_LENGTH];
 
-/* Global infeed settings */
+/* Global settings for incoming articles from peers */
 static int requirerelaytls = 1;
 static int keepjunk = 0;
 
@@ -124,7 +124,6 @@ static enum injection_posting_account injection_add_posting_account = INJECTION_
 static int injection_add_posting_host = 0;
 static char complaints_addr[256] = "";
 
-static struct stringlist outpeers;
 static struct stringlist subscriptions; /* LIST SUBSCRIPTIONS */
 
 static char motd[NNTP_MAX_LINE_LENGTH + 1]; /* Note: This can be a multi-line message, so the protocol does not limit this to a certain size */
@@ -3871,26 +3870,6 @@ static int load_config(void)
 	}
 	bbs_config_val_set_str(cfg, "general", "newsorg", newsorg, sizeof(newsorg));
 
-	/* Incoming settings */
-	bbs_config_val_set_uint(cfg, "incoming", "maxsize", &max_article_size);
-	bbs_config_val_set_uint(cfg, "incoming", "maxgroups", &max_groups);
-	if (!bbs_config_val_set_uint(cfg, "incoming", "maxacceptage", &max_accept_age)) {
-		if (max_accept_age < 3) {
-			/* Rejection interval SHOULD NOT be any shorter than 72 hours (RFC 5537 3.5) */
-			bbs_warning("maxacceptage '%u' invalid, floored at 3\n", max_accept_age);
-			max_accept_age = 3;
-		}
-	}
-
-	/* Reader settings */
-	bbs_config_val_set_true(cfg, "readers", "requiresecurelogin", &require_secure_login);
-	bbs_config_val_set_true(cfg, "readers", "checkidentity", &check_identity);
-	bbs_config_val_set_true(cfg, "readers", "allowinvalid", &allow_invalid);
-	bbs_config_val_set_uint(cfg, "incoming", "maxpostsize", &max_post_size);
-	bbs_config_val_set_uint(cfg, "readers", "maxpostgroups", &max_post_groups);
-	bbs_config_val_set_true(cfg, "readers", "postinghost", &injection_add_posting_host);
-	bbs_config_val_set_str(cfg, "readers", "complaints", complaints_addr, sizeof(complaints_addr));
-
 	/* NNTP */
 	bbs_config_val_set_true(cfg, "nntp", "enabled", &nntp_enabled);
 	bbs_config_val_set_port(cfg, "nntp", "port", &nntp_port);
@@ -3903,8 +3882,28 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "nnsp", "enabled", &nnsp_enabled);
 	bbs_config_val_set_port(cfg, "nnsp", "port", &nnsp_port);
 
-	bbs_config_val_set_true(cfg, "infeeds_global", "requiretls", &requirerelaytls);
-	bbs_config_val_set_true(cfg, "infeeds_global", "keepjunk", &keepjunk);
+	/* Article settings */
+	bbs_config_val_set_uint(cfg, "articles", "maxsize", &max_article_size);
+	bbs_config_val_set_uint(cfg, "articles", "maxgroups", &max_groups);
+	if (!bbs_config_val_set_uint(cfg, "articles", "maxacceptage", &max_accept_age)) {
+		if (max_accept_age < 3) {
+			/* Rejection interval SHOULD NOT be any shorter than 72 hours (RFC 5537 3.5) */
+			bbs_warning("maxacceptage '%u' invalid, floored at 3\n", max_accept_age);
+			max_accept_age = 3;
+		}
+	}
+
+	/* Reader settings */
+	bbs_config_val_set_true(cfg, "readers", "requiresecurelogin", &require_secure_login);
+	bbs_config_val_set_true(cfg, "readers", "checkidentity", &check_identity);
+	bbs_config_val_set_true(cfg, "readers", "allowinvalid", &allow_invalid);
+	bbs_config_val_set_uint(cfg, "readers", "maxpostsize", &max_post_size);
+	bbs_config_val_set_uint(cfg, "readers", "maxpostgroups", &max_post_groups);
+	bbs_config_val_set_true(cfg, "readers", "postinghost", &injection_add_posting_host);
+	bbs_config_val_set_str(cfg, "readers", "complaints", complaints_addr, sizeof(complaints_addr));
+
+	bbs_config_val_set_true(cfg, "peers", "requiretls", &requirerelaytls);
+	bbs_config_val_set_true(cfg, "peers", "keepjunk", &keepjunk);
 
 #define SKIP_SECTION(sectname) if (!strcasecmp(bbs_config_section_name(section), sectname)) { continue; }
 
@@ -3913,8 +3912,6 @@ static int load_config(void)
 	RWLIST_WRLOCK(&distributions);
 	RWLIST_WRLOCK(&distrib_pats);
 	RWLIST_WRLOCK(&moderators);
-
-	RWLIST_WRLOCK(&outpeers);
 	RWLIST_WRLOCK(&subscriptions);
 
 	while ((section = bbs_config_walk(cfg, section))) {
@@ -3923,7 +3920,17 @@ static int load_config(void)
 		SKIP_SECTION("nntp");
 		SKIP_SECTION("nntps");
 		SKIP_SECTION("nnsp");
-		if (!strcasecmp(bbs_config_section_name(section), "readers")) {
+		SKIP_SECTION("peers");
+		if (!strcasecmp(bbs_config_section_name(section), "articles")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);
+				if (!strcasecmp(key, "poisongroups")) {
+					safe_strncpy(poisongroups, val, sizeof(poisongroups));
+				} else if (!strcasecmp(key, "poisonsites")) {
+					safe_strncpy(poisonsites, val, sizeof(poisonsites));
+				}
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "readers")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);
 				if (!strcasecmp(key, "postingaccount")) {
@@ -3935,23 +3942,6 @@ static int load_config(void)
 						injection_add_posting_account = INJECTION_POSTING_ACCOUNT_HIDDEN;
 					}
 				}
-			}
-		} else if (!strcasecmp(bbs_config_section_name(section), "incoming")) {
-			while ((keyval = bbs_config_section_walk(section, keyval))) {
-				const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);
-				if (!strcasecmp(key, "poisongroups")) {
-					safe_strncpy(poisongroups, val, sizeof(poisongroups));
-				} else if (!strcasecmp(key, "poisonsites")) {
-					safe_strncpy(poisonsites, val, sizeof(poisonsites));
-				}
-			}
-		} else if (!strcasecmp(bbs_config_section_name(section), "infeeds")) {
-			while ((keyval = bbs_config_section_walk(section, keyval))) {
-				add_inpeer(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
-			}
-		} else if (!strcasecmp(bbs_config_section_name(section), "relayto")) {
-			while ((keyval = bbs_config_section_walk(section, keyval))) {
-				stringlist_push(&outpeers, bbs_keyval_val(keyval));
 			}
 		} else if (!strcasecmp(bbs_config_section_name(section), "motd")) {
 			char *motdpos = motd;
@@ -3979,6 +3969,10 @@ static int load_config(void)
 		} else if (!strcasecmp(bbs_config_section_name(section), "moderators")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				add_moderator(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "incoming")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_inpeer(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}
 		} else {
 			/* The only config section type that isn't defined by the section name is user ACLs */
@@ -4042,8 +4036,6 @@ static int load_config(void)
 	RWLIST_UNLOCK(&distributions);
 	RWLIST_UNLOCK(&distrib_pats);
 	RWLIST_UNLOCK(&moderators);
-
-	RWLIST_UNLOCK(&outpeers);
 	RWLIST_UNLOCK(&subscriptions);
 
 	bbs_config_unlock(cfg);
@@ -4057,8 +4049,6 @@ static void cleanup_lists(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&distributions, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&distrib_pats, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&moderators, entry, free);
-
-	stringlist_empty_destroy(&outpeers);
 	stringlist_empty_destroy(&subscriptions);
 }
 
@@ -4072,8 +4062,6 @@ static int load_module(void)
 	RWLIST_HEAD_INIT(&distributions);
 	RWLIST_HEAD_INIT(&distrib_pats);
 	RWLIST_HEAD_INIT(&moderators);
-
-	stringlist_init(&outpeers);
 	stringlist_init(&subscriptions);
 
 	if (load_config()) {
