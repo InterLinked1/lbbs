@@ -60,6 +60,11 @@ static const char *testfilter = NULL;
 
 int startup_run_unit_tests;
 
+int running_under_valgrind(void)
+{
+	return option_errorcheck;
+}
+
 /* Log file for BBS STDOUT output (empty after execution???)
  * Note: Normal BBS file logging is still done to the normal BBS log files. */
 #define TEST_LOGFILE "/tmp/test_lbbs.log"

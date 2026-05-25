@@ -27,6 +27,8 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #error "Externally compiled modules must declare TEST_MODULE_SELF_SYM."
 #endif
 
+int running_under_valgrind(void);
+
 /* Don't be fooled.
  * This program is not linked to the main BBS binary,
  * so arbitrarily including headers for the BBS

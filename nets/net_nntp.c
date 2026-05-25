@@ -57,6 +57,7 @@
 
 #define MAIN_NNTP_FILE
 #include "net_nntp/nntp.h"
+#include "net_nntp/nntp_feed.h"
 
 /* NNTP ports */
 /* Reading server */
@@ -87,6 +88,7 @@ static int nntps_port = DEFAULT_NNTPS_PORT;
 static int nnsp_port = DEFAULT_NNSP_PORT;
 
 static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
+int nntp_unloading = 0; /* Used extern by nntp_feed_nntp.c */
 
 static bbs_rwlock_t nntp_lock;
 static FILE *newslog;
@@ -486,12 +488,10 @@ enum inpeer_type {
 	INPEER_USERNAME,
 };
 
-#define MAX_DISTRIBUTIONS 128
-
 struct inpeer {
 	const char *identity; /*!< IPv4 address, hostname, or username */
 	const char *groups; /*!< Wildmat of newsgroups for which this ACL authorizes IHAVE posting */
-	char *distribution[MAX_DISTRIBUTIONS]; /* Distributions to accept/reject */
+	char *distribution[MAX_ARTICLE_DISTRIBUTIONS]; /* Distributions to accept/reject */
 	enum inpeer_type type;
 	RWLIST_ENTRY(inpeer) entry;
 	char data[];
@@ -503,23 +503,25 @@ static RWLIST_HEAD_STATIC(inpeers, inpeer);
 static inline int split_csv_list(char *s, char **dists, int n)
 {
 	int i = 0;
-	for (i = 0; s && i < n - 1; i++) {
-		char *next;
-		next = strsep(&s, ",");
-		if (!next) {
-			break; /* Done */
+	if (!strlen_zero(s)) {
+		for (i = 0; s && i < n - 1; i++) {
+			char *next;
+			next = strsep(&s, ",");
+			if (!next) {
+				break; /* Done */
+			}
+			if (!strlen_zero(next)) {
+				trim(next);
+			}
+			if (strlen_zero(next)) {
+				continue;
+			}
+			dists[i] = next;
 		}
-		if (!strlen_zero(next)) {
-			trim(next);
+		if (i == n - 1) { /* Filled up the list */
+			bbs_error("Truncation occured (filled up list of size %d)\n", n);
+			/* We could return -1, but wouldn't have much to gain by doing that... just return what we have for now */
 		}
-		if (strlen_zero(next)) {
-			continue;
-		}
-		dists[i] = next;
-	}
-	if (i == n - 1) { /* Filled up the list */
-		bbs_error("Truncation occured (filled up list of size %d)\n", n);
-		/* We could return -1, but wouldn't have much to gain by doing that... just return what we have for now */
 	}
 	dists[i] = NULL; /* Left enough room for the sentinel NULL */
 	return i;
@@ -557,11 +559,22 @@ static inline int distribution_wanted(char **dists, const char *d)
 	return any_negated;
 }
 
+static inline int any_distribution_negated(char **dists)
+{
+	char *dist;
+	for (; (dist = *dists); dists++) {
+		if (*dist == '!') {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 /*!
- * \brief Whether any of the distributions in an articles matches against the site
+ * \brief Whether any of the distributions in an article matches against the site
  * \param site The distributions for the peer
  * \param article The distributions from the Distribution header
- \retval 1 on positive match, 0 if no match, -1 on negative match
+ * \retval 1 on positive match, 0 if no match, -1 on negative match
  */
 static inline int any_distribution_wanted(char **site, char **article)
 {
@@ -569,8 +582,8 @@ static inline int any_distribution_wanted(char **site, char **article)
 		DIST_DEBUG(8, "Site has no distribution filter, allowing\n");
 		return 1; /* Case 0: No distributions explicitly specified for site, so everything matches */
 	} else if (!*article) {
-		DIST_DEBUG(7, "Empty Distribution header, allowing\n");
-		return 1; /* Distribution header present but empty? Strange but legal */
+		/* If no Distribution header, acceptance depends on whether the site has any negated distributions or not */
+		return any_distribution_negated(site);
 	}
 
 	for (; *article; article++) {
@@ -584,7 +597,7 @@ static inline int any_distribution_wanted(char **site, char **article)
 static int test_distributions(void)
 {
 	char buf[NNTP_BUFSIZ], buf2[NNTP_BUFSIZ];
-	char *hdrdists[MAX_DISTRIBUTIONS], *sitedists[MAX_DISTRIBUTIONS];
+	char *hdrdists[MAX_ARTICLE_DISTRIBUTIONS], *sitedists[MAX_ARTICLE_DISTRIBUTIONS];
 	int distcount;
 
 	/* Simulate these distributions being in Distribution header of article */
@@ -624,6 +637,26 @@ static int test_distributions(void)
 	bbs_test_assert_equals(1, distcount);
 	bbs_test_assert_equals(0, any_distribution_wanted(sitedists, hdrdists)); /* Explicitly denied */
 
+	/* Site that only wants select distributions */
+	strcpy(buf2, "dist1");
+	distcount = split_csv_list(buf2, sitedists, ARRAY_LEN(sitedists));
+	bbs_test_assert_equals(1, distcount);
+
+	strcpy(buf, "");
+	distcount = split_csv_list(buf, hdrdists, ARRAY_LEN(hdrdists));
+	bbs_test_assert_equals(0, distcount);
+	bbs_test_assert_equals(0, any_distribution_wanted(sitedists, hdrdists)); /* Not wanted, because missing Distribution header */
+
+	/* Test site that rejects certain distributions */
+	strcpy(buf2, "!dist1,!dist2");
+	distcount = split_csv_list(buf2, sitedists, ARRAY_LEN(sitedists));
+	bbs_test_assert_equals(2, distcount);
+
+	strcpy(buf, "dist2");
+	distcount = split_csv_list(buf, hdrdists, ARRAY_LEN(hdrdists));
+	bbs_test_assert_equals(1, distcount);
+	bbs_test_assert_equals(0, any_distribution_wanted(sitedists, hdrdists)); /* Distribution explicitly not wanted */
+
 	return 0;
 
 cleanup:
@@ -652,12 +685,16 @@ static inline int inpeer_acl_matches(struct nntp_session *nntp, struct inpeer *i
 static int we_want_distribution(struct nntp_session *nntp, const char *distribs)
 {
 	struct inpeer *i;
-	char *hdrdists[MAX_DISTRIBUTIONS];
+	char *hdrdists[MAX_ARTICLE_DISTRIBUTIONS];
 	char buf[NNTP_BUFSIZ];
 
 	/* Before we start, split up the list of distributions in the header into a series of strings */
-	safe_strncpy(buf, distribs, sizeof(buf));
-	split_csv_list(buf, hdrdists, ARRAY_LEN(hdrdists));
+	if (!strlen_zero(distribs)) {
+		safe_strncpy(buf, distribs, sizeof(buf));
+		split_csv_list(buf, hdrdists, ARRAY_LEN(hdrdists));
+	} else {
+		hdrdists[0] = NULL;
+	}
 
 	/* We follow the same rules for Distributions as INN: https://www.eyrie.org/~eagle/software/inn/docs-2.5/newsfeeds.html
 	 * This verbiage describes outgoing feeds, but this similarly applies to incoming feeds as well.
@@ -787,15 +824,643 @@ static int authorized_inpeer_for_group(struct nntp_session *nntp, const char *gr
 	}
 
 /* =============== End ACL Code =============== */
+/* =============== Begin Site Configs =============== */
+
+static RWLIST_HEAD_STATIC(sites, site);
+
+static void free_site(struct site *site)
+{
+	stringlist_empty(&site->exclusions);
+	switch (site->type) {
+		case FEED_NNTP:
+			feed_nntp_cleanup_feed(site);
+			break;
+		default:
+			__builtin_unreachable();
+	}
+	free(site);
+}
+
+static int parse_site_flags(struct site *site, char *flags)
+{
+	char *flag;
+	while ((flag = strsep(&flags, ","))) {
+		long sizeval;
+		if (strlen_zero(flag)) {
+			continue;
+		}
+		/*! \todo Expand this to include other options that INN offers: https://github.com/InterNetNews/inn/blob/main/doc/pod/newsfeeds.pod */
+		switch (*flag) {
+			case '<':
+				flag++;
+				sizeval = atol(flag);
+				if (sizeval < 0) {
+					bbs_error("Invalid max size %ld\n", sizeval);
+					return -1;
+				}
+				site->maxsize = (size_t) sizeval;
+				break;
+			case '>':
+				flag++;
+				sizeval = atol(flag);
+				if (sizeval < 0) {
+					bbs_error("Invalid min size %ld\n", sizeval);
+					return -1;
+				}
+				site->minsize = (size_t) sizeval;
+				break;
+			case 'A':
+				/* Checks */
+				flag++;
+				switch (*flag) {
+					case 'p':
+						site->exclusionsonly = 1;
+						break;
+					default:
+						bbs_error("Unknown site check (A) '%c'\n", *flag);
+						return -1;
+				}
+				break;
+			case 'T':
+				/* Type */
+				flag++;
+				switch (*flag) {
+					/*! \todo Add support for at least channel feeds and program feeds as well */
+					case 'n':
+						site->type = FEED_NNTP;
+						site->feed.nntp.port = DEFAULT_NNTP_PORT;
+						break;
+					default:
+						bbs_error("Unknown site type (T) '%c'\n", *flag);
+						return -1;
+				}
+				break;
+			case 'W':
+				/* What to send */
+				flag++;
+				switch (*flag) {
+					case 'P':
+						/*! \todo Not yet implemented (would apply to channel/program feed types) */
+						site->sendpath = 1;
+						break;
+					default:
+						bbs_error("Unknown W flag '%c'\n", *flag);
+						return -1;
+				}
+				break;
+			default:
+				bbs_error("Unknown site flag '%c'\n", *flag);
+				return -1;
+		}
+	}
+	return 0;
+}
+
+static int parse_feed_nntp_args(struct site *site, char *args)
+{
+	char *flags = strsep(&args, ":");
+	if (!strlen_zero(flags)) {
+		char *flag;
+		int tmpint;
+		while ((flag = strsep(&flags, ","))) {
+			if (strlen_zero(flag)) {
+				continue;
+			}
+#define WARN_EXTRANEOUS() \
+	if (flag[1]) { \
+		bbs_warning("Site %s: Stray arguments after NNTP feed flag %c: %s\n", site->name, *flag, flag + 1); \
+	}
+			switch (*flag) {
+				case 'B':
+					tmpint = atoi(flag + 1);
+					if (tmpint < 1) {
+						bbs_error("Site %s: invalid option for NNTP feed flag B: %s\n", site->name, flag + 1);
+					} else {
+						site->feed.nntp.batchsize = tmpint;
+					}
+					break;
+				case 'C':
+					site->feed.nntp.checkfirst = 1;
+					WARN_EXTRANEOUS();
+					break;
+				case 'D':
+					site->feed.nntp.compress = 1;
+					WARN_EXTRANEOUS();
+					break;
+				case 'M':
+					site->feed.nntp.modereader = 1;
+					WARN_EXTRANEOUS();
+					break;
+				case 'P':
+					site->feed.nntp.post = 1;
+					WARN_EXTRANEOUS();
+					break;
+				case 'Q':
+					site->feed.nntp.queue = 1;
+					WARN_EXTRANEOUS();
+					break;
+				case 'S':
+					site->feed.nntp.starttls = 1;
+					WARN_EXTRANEOUS();
+					break;
+				default:
+					bbs_warning("Site %s: invalid NNTP feed flag '%c'\n", site->name, *flag);
+			}
+		}
+	}
+	if (!strlen_zero(args)) {
+		struct bbs_url url;
+		memset(&url, 0, sizeof(url));
+		if (bbs_parse_url(&url, args)) {
+			bbs_error("Failed to parse feed arguments '%s'\n", args);
+			return -1;
+		}
+		if (!strcmp(url.prot, "nntp")) {
+			site->feed.nntp.secure = 0;
+		} else if (!strcmp(url. prot, "nntps")) {
+			site->feed.nntp.secure = 1;
+		} else {
+			bbs_error("Invalid protocol '%s' for NNTP\n", url.prot);
+			return -1;
+		}
+
+		if (url.host) {
+			REPLACE(site->feed.nntp.hostname, url.host);
+		}
+		if (url.user) {
+			REPLACE(site->feed.nntp.username, url.user);
+		}
+		if (url.pass) {
+			REPLACE(site->feed.nntp.password, url.pass);
+		}
+		if ((site->feed.nntp.username && !site->feed.nntp.password) || (!site->feed.nntp.username && site->feed.nntp.password)) {
+			/* We need both a username and password for AUTHINFO so just one of them is no good */
+			bbs_error("Either both username/password or neither must be specified\n");
+			return -1;
+		}
+		if (url.port) {
+			site->feed.nntp.port = url.port;
+		}
+	}
+	bbs_mutex_init(&site->feed.nntp.lock, NULL);
+	return 0;
+}
+
+static int add_site(const char *key, const char *value)
+{
+	struct site *site;
+	char keybuf[NNTP_MAX_LINE_LENGTH];
+	char valbuf[NNTP_MAX_LINE_LENGTH];
+	char *k, *v, *data;
+	char *name, *exclusions;
+	char *groups, *flags, *args;
+	size_t namelen, grouplen;
+	char *tmp;
+
+	safe_strncpy(keybuf, key, sizeof(keybuf));
+	safe_strncpy(valbuf, value, sizeof(valbuf));
+	k = keybuf;
+	v = valbuf;
+
+	name = strsep(&k, "/");
+	exclusions = k;
+
+	groups = strsep(&v, ":"); /* groups/dists */
+	flags = strsep(&v, ":");
+	args = v;
+
+	if (strlen_zero(name)) {
+		bbs_error("Missing site name\n");
+		return -1;
+	} else if (strlen_zero(groups)) {
+		bbs_error("Missing site's group patterns\n");
+		return -1;
+	} else if (strlen_zero(flags)) {
+		bbs_error("Missing site flags\n");
+		return -1;
+	}
+
+	namelen = STRING_ALLOC_SIZE(name);
+	grouplen = STRING_ALLOC_SIZE(groups);
+
+	RWLIST_TRAVERSE(&sites, site, entry) {
+		if (!strcmp(site->name, name)) {
+			/* The same site COULD be added multiple times, but it must be named differently */
+			bbs_error("Site '%s' duplicated in config, not adding\n", name);
+			return -1;
+		}
+	}
+
+	site = calloc(1, sizeof(*site) + namelen + grouplen);
+	if (ALLOC_FAILURE(site)) {
+		return -1;
+	}
+
+	if (!strlen_zero(exclusions)) {
+		stringlist_push_list(&site->exclusions, exclusions);
+	}
+
+	/* Load strings */
+	data = site->data;
+	SET_FSM_STRING_VAR(site, data, name, name, namelen);
+	tmp = data;
+	SET_FSM_STRING_VAR(site, data, groups, groups, grouplen);
+	tmp = strchr(tmp, '/');
+	if (tmp) {
+		*tmp++ = '\0';
+		split_csv_list(tmp, site->dists, sizeof(site->dists));
+		if (!*site->dists) {
+			bbs_error("Empty distribution list ('/' specified but no distributions following\n");
+			goto abort;
+		}
+	}
+
+	/* Parse flags */
+	if (parse_site_flags(site, flags)) {
+		goto abort;
+	} else if (site->type == FEED_UNKNOWN) {
+		bbs_error("Feed type not configured for site '%s'\n", name);
+		goto abort;
+	}
+
+	/* Parse any args, depending on feed type */
+	if (!strlen_zero(args)) {
+		switch (site->type) {
+			case FEED_NNTP:
+				if (parse_feed_nntp_args(site, args)) {
+					goto abort2;
+				}
+				break;
+			case FEED_UNKNOWN:
+				__builtin_unreachable(); /* We aborted above already */
+		}
+	}
+
+	RWLIST_INSERT_TAIL(&sites, site, entry);
+	return 0;
+
+abort:
+	free(site);
+	return -1;
+
+abort2:
+	free_site(site);
+	return -1;
+}
+
+/*! \brief Send an article to a site (or at least, initiate sending) */
+static int site_send(struct article_info *artinfo, struct site *site)
+{
+	switch (site->type) {
+		case FEED_NNTP:
+			return feed_nntp_send(artinfo, site);
+		case FEED_UNKNOWN:
+			__builtin_unreachable();
+	}
+	__builtin_unreachable();
+}
+
+static int site_flush(struct site *site)
+{
+	switch (site->type) {
+		case FEED_NNTP:
+			return feed_nntp_flush(site);
+		case FEED_UNKNOWN:
+			__builtin_unreachable();
+	}
+	__builtin_unreachable();
+}
+
+static int cli_feedflush(struct bbs_cli_args *a)
+{
+	struct site *site;
+	int c = 0;
+	const char *name = a->argc >= 3 ? a->argv[2] : NULL;
+
+	RWLIST_RDLOCK(&sites);
+	RWLIST_TRAVERSE(&sites, site, entry) {
+		if (name && strcmp(name, site->name)) {
+			continue;
+		}
+		if (!site_flush(site)) {
+			bbs_dprintf(a->fdout, "Flushing articles for site %s\n", site->name);
+			c++;
+		}
+	}
+	RWLIST_UNLOCK(&sites);
+	if (!c) {
+		bbs_dprintf(a->fdout, "Could not flush articles for any sites\n"); /* Normal, if no articles are in queue */
+	}
+	return 0;
+}
+
+static int sites_init_feed_types(void)
+{
+	/* FEED_NNTP */
+	if (feed_nntp_init()) {
+		return -1;
+	}
+	return 0;
+}
+
+static void sites_cleanup_feed_types(void)
+{
+	feed_nntp_shutdown();
+}
+
+static int sites_init_feeds(void)
+{
+	struct site *site;
+
+	RWLIST_RDLOCK(&sites);
+	RWLIST_TRAVERSE(&sites, site, entry) {
+		switch (site->type) {
+			case FEED_NNTP:
+				feed_nntp_init_feed(site);
+				break;
+			case FEED_UNKNOWN:
+				__builtin_unreachable();
+		}
+	}
+	RWLIST_UNLOCK(&sites);
+	return 0;
+}
+
+/* Feed stats */
+static bbs_rwlock_t statlock = BBS_RWLOCK_INITIALIZER;
+struct site_feed_stats overallstats; /* For all sites combined */
+
+void nntp_feed_add_stats(struct site *site, struct site_feed_stats *s)
+{
+	bbs_rwlock_wrlock(&statlock);
+
+	/* This function is called by nntp_feed_nntp.c, so the site won't go away while we're using it, even though sites isn't locked here */
+	if (site->type == FEED_NNTP) {
+		site->feed.nntp.stats.offered += s->offered;
+		site->feed.nntp.stats.accepted += s->accepted;
+		site->feed.nntp.stats.refused += s->refused;
+		site->feed.nntp.stats.rejected += s->rejected;
+		site->feed.nntp.stats.accsize += s->accsize;
+	} else {
+		bbs_assert(0);
+	}
+
+	overallstats.offered += s->offered;
+	overallstats.accepted += s->accepted;
+	overallstats.refused += s->refused;
+	overallstats.rejected += s->rejected;
+	overallstats.accsize += s->accsize;
+
+	bbs_rwlock_unlock(&statlock);
+}
+
+static inline void print_feedstats(struct bbs_cli_args *a, const char *name, int backlog, struct site_feed_stats *s)
+{
+	bbs_dprintf(a->fdout, "%-25s %8d %8d %8d %8d %8d %15lu\n", name, backlog, s->offered, s->accepted, s->refused, s->rejected, s->accsize);
+}
+
+static int cli_feedstats(struct bbs_cli_args *a)
+{
+	struct site *site;
+	int c = 0, total_backlog = 0;
+	const char *name = a->argc >= 3 ? a->argv[2] : NULL;
+
+	bbs_rwlock_rdlock(&statlock);
+	RWLIST_RDLOCK(&sites);
+	RWLIST_TRAVERSE(&sites, site, entry) {
+		if (name && strcmp(name, site->name)) {
+			continue;
+		}
+		if (site->type != FEED_NNTP) { /* At the moment, the only feeds with stats */
+			continue;
+		}
+		if (!c++) {
+			/* Print the header */
+			bbs_dprintf(a->fdout, "%-25s %8s %8s %8s %8s %8s %15s\n", "Site", "Backlog", "Offered", "Accepted", "Refused", "Rejected", "AcceptedSize");
+		}
+		print_feedstats(a, site->name, site->feed.nntp.backlogcount, &site->feed.nntp.stats);
+		total_backlog += site->feed.nntp.backlogcount;
+	}
+	RWLIST_UNLOCK(&sites);
+	if (c) {
+		/* End with the global stats */
+		print_feedstats(a, "(Overall)", total_backlog, &overallstats);
+	}
+	bbs_rwlock_unlock(&statlock);
+	if (name && !c) {
+		/* We wanted a specific site, but didn't find it */
+		bbs_dprintf(a->fdout, "No such feed site '%s'\n", name);
+		return -1;
+	}
+	return 0;
+}
+
+/* =============== End Site Configs =============== */
+/* =============== Begin Article Propagation =============== */
+
+static int _path_contains_site(const char *path, const char *site, size_t sitelen, int posted_only)
+{
+	/* Parse the string in place so we don't need to make a copy, e.g. strsep(&s, "!") */
+	const char *nextbang;
+	for (;;) {
+		size_t thissitelen;
+		nextbang = strchr(path, '!');
+		if (!nextbang) {
+			/* This is the last site */
+			return !strcasecmp(path, site);
+		}
+
+		while (*path == ' ') {
+			path++; /* For multi-line Path headers, we may need to eat spaces first wherever the header wrapped */
+		}
+
+		/* Check if this is the site of interest */
+		thissitelen = (size_t) (nextbang - path);
+		/* If the lengths aren't equal, don't even bother comparing, can't match. */
+		if (thissitelen >= sitelen && thissitelen == sitelen) {
+			if (!strncasecmp(path, site, sitelen)) {
+				return 1;
+			}
+		}
+		/* If we are checking if a site has received an article, we may want to ignore everything
+		 * after .POSTED as malicious clients could falsely insert sites into the path before injection (RFC 5537 6.2) */
+		if (posted_only && !strncmp(path, ".POSTED", STRLEN(".POSTED"))) { /* .POSTED could be followed by . and an FQDN/IP */
+			return 0;
+		}
+
+		/* Update for the next site */
+		path = nextbang + 1;
+		if (strlen_zero(path)) {
+			return 0; /* End of string */
+		}
+	}
+}
+#define path_contains_site(path, site) _path_contains_site(path, site, strlen(site), 1)
+
+/*! \retval -1 for poison match, 0 if no match, 1 for positive match */
+static int list_match(const char *wildmat, char **items)
+{
+	char *item;
+	int want = 0;
+	for (item = *items; (item = *items); items++) {
+		int res = uwildmat_poison(item, wildmat);
+		if (res == -1) {
+			return -1; /* If any item is poison, then the article is poisoned for this site, even if other items would match */
+		}
+		if (res == 1) {
+			/* Assuming there are no poison matches, this will match */
+			want = 1;
+		}
+	}
+	return want;
+}
+
+static int test_poison(void)
+{
+	char buf[NNTP_BUFSIZ];
+	char *items[MAX_ARTICLE_GROUPS];
+
+	strcpy(buf, "comp.test");
+	split_csv_list(buf, items, ARRAY_LEN(items));
+	bbs_test_assert_equals(1, list_match("*,!foo.*,@*.poison,misc.poison", items));
+
+	strcpy(buf, "foo.bar");
+	split_csv_list(buf, items, ARRAY_LEN(items));
+	bbs_test_assert_equals(0, list_match("*,!foo.*,@*.poison,misc.poison", items));
+
+	strcpy(buf, "foo.poison");
+	split_csv_list(buf, items, ARRAY_LEN(items));
+	bbs_test_assert_equals(-1, list_match("*,!foo.*,@*.poison,misc.poison", items));
+
+	strcpy(buf, "baz.poison");
+	split_csv_list(buf, items, ARRAY_LEN(items));
+	bbs_test_assert_equals(-1, list_match("*,!foo.*,@*.poison,misc.poison", items));
+
+	strcpy(buf, "misc.poison");
+	split_csv_list(buf, items, ARRAY_LEN(items));
+	bbs_test_assert_equals(1, list_match("*,!foo.*,@*.poison,misc.poison", items));
+
+	strcpy(buf, "test.foo,test.foo2");
+	split_csv_list(buf, items, ARRAY_LEN(items));
+	bbs_test_assert_equals(1, list_match("*,@*.bina*,@*.bain*,@*.dateien*,@*.pictures*,!local*,!junk/!local", items));
+
+	strcpy(buf, "test.foo,alt.binaries.foo,test.foo2"); /* Add a poison group, and the whole article should get poisoned for this site */
+	split_csv_list(buf, items, ARRAY_LEN(items));
+	bbs_test_assert_equals(-1, list_match("*,@*.bina*,@*.bain*,@*.dateien*,@*.pictures*,!local*,!junk/!local", items));
+
+	strcpy(buf, "test.foo,local.foo"); /* 1 group that would match on its own, 1 group that would not match on its own = should match */
+	split_csv_list(buf, items, ARRAY_LEN(items));
+	bbs_test_assert_equals(1, list_match("*,@*.bina*,@*.bain*,@*.dateien*,@*.pictures*,!local*,!junk/!local", items));
+
+	strcpy(buf, "local.foo"); /* 1 group that would match on its own, 1 group that would not match on its own = should match */
+	split_csv_list(buf, items, ARRAY_LEN(items));
+	bbs_test_assert_equals(0, list_match("*,@*.bina*,@*.bain*,@*.dateien*,@*.pictures*,!local*,!junk/!local", items));
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
+static int site_wants_article(struct article_info *artinfo, char **artgrps, char **artdists, struct site *site)
+{
+	int res;
+
+	/* Not wanted, if site already saw this article:
+	 * We SHOULD NOT relay articles if path identity of receiving agent (or a known alias thereof)
+	 * appears as a path identity, excluding within tail entry or following .POSTED (RFC 5537 3.6). */
+	if (!site->exclusionsonly && path_contains_site(artinfo->path, site->name)) {
+		return 0; /* Path contains site name */
+	} else {
+		/* Check exclusions/aliases for matches also/instead */
+		struct stringitem *i = NULL;
+		const char *exclusion;
+		while ((exclusion = stringlist_next(&site->exclusions, &i))) {
+			if (path_contains_site(artinfo->path, exclusion)) {
+				return 0;
+			}
+		}
+	}
+
+	/* Check newsgroups */
+	res = list_match(site->groups, artgrps);
+	if (res != 1) {
+		return 0;
+	}
+
+	/* Check distributions */
+	res = any_distribution_wanted(site->dists, artdists);
+	if (res != 1) {
+		return 0;
+	}
+
+	/* If good so far, check for any other filters that preclude this site */
+	if (site->maxsize && artinfo->bytes >= site->maxsize) {
+		return 0; /* Too big for site */
+	} else if (site->minsize && artinfo->bytes <= site->minsize) {
+		return 0; /* Too small for site */
+	}
+
+	return 1; /* Looks like the site wants it! */
+}
+
+static int propagate_article(struct article_info *artinfo)
+{
+	/* Because this is all running in a single-process environment,
+	 * we can't simply use the site structures like INN does.
+	 * Instead, we need to keep a copy of all the sites. */
+	struct site *site;
+	int total = 0, sent = 0;
+	char grpbuf[4 * NNTP_MAX_LINE_LENGTH], distbuf[4 * NNTP_MAX_LINE_LENGTH];
+	char *artgrps[MAX_ARTICLE_GROUPS];
+	char *artdists[MAX_ARTICLE_DISTRIBUTIONS];
+
+	if (ALLOC_FAILURE(artinfo->xref)) {
+		/* nntp_spool_trad duplicates the Xref value here, but no check for failure is done until now.
+		 * If missing, abort in case we wanted to send Xref to a site and consequently can't. */
+		return -1;
+	}
+
+	/* Parse the Newsgroups and Distribution header into a list of strings */
+	safe_strncpy(grpbuf, artinfo->newsgroups, sizeof(grpbuf));
+	split_csv_list(grpbuf, artgrps, ARRAY_LEN(artgrps));
+	if (artinfo->distribution) {
+		safe_strncpy(distbuf, artinfo->distribution, sizeof(distbuf));
+		split_csv_list(distbuf, artdists, ARRAY_LEN(artdists));
+	} else {
+		artdists[0] = NULL;
+	}
+
+	/* First, check what sites want this article */
+	RWLIST_RDLOCK(&sites);
+	RWLIST_TRAVERSE(&sites, site, entry) {
+		total++;
+		if (site_wants_article(artinfo, artgrps, artdists, site)) {
+			/* If it matches, trigger delivery of the article to this site */
+			site_send(artinfo, site);
+			sent++;
+		}
+	}
+	RWLIST_UNLOCK(&sites);
+
+	if (sent) {
+		bbs_debug(3, "Propagated article %s to %d/%d site%s\n", artinfo->messageid, sent, total, ESS(total));
+	}
+	return 0;
+}
+
+/* =============== End Article Propagation =============== */
 
 static void artinfo_reset(struct article_info *artinfo)
 {
+	free_if(artinfo->filepath);
+
 	free_if(artinfo->newsgroups);
 	free_if(artinfo->distribution);
 	free_if(artinfo->path);
 	free_if(artinfo->injectioninfo);
 	free_if(artinfo->injectiondate);
-	free_if(artinfo->xref); /* Normally only freed if received from reader and injected, the spool Xref is stack allocated and thus NULL here */
+	free_if(artinfo->xref);
 	free_if(artinfo->approved);
 	free_if(artinfo->control);
 	free_if(artinfo->expires);
@@ -827,7 +1492,6 @@ static void nntp_destroy(struct nntp_session *nntp)
 	nntp_reset_data(nntp);
 	free_if(nntp->user);
 	free_if(nntp->currentgroup);
-	UNUSED(nntp);
 }
 
 #define REQUIRE_ARGS(s) \
@@ -1774,47 +2438,6 @@ static int path_contains_poison_site(const char *path)
 	}
 }
 
-#if 0
-static int _path_contains_site(const char *path, const char *site, size_t sitelen, int posted_only)
-{
-	/* Parse the string in place so we don't need to make a copy, e.g. strsep(&s, "!") */
-	const char *nextbang;
-	for (;;) {
-		size_t thissitelen;
-		nextbang = strchr(path, '!');
-		if (!nextbang) {
-			/* This is the last site */
-			return !strcasecmp(path, site);
-		}
-
-		while (*path == ' ') {
-			path++; /* For multi-line Path headers, we may need to eat spaces first wherever the header wrapped */
-		}
-
-		/* Check if this is the site of interest */
-		thissitelen = (size_t) (nextbang - path);
-		/* If the lengths aren't equal, don't even bother comparing, can't match. */
-		if (thissitelen >= sitelen && thissitelen == sitelen) {
-			if (!strncasecmp(path, site, sitelen)) {
-				return 1;
-			}
-		}
-		/* If we are checking if a site has received an article, we may want to ignore everything
-		 * after .POSTED as malicious clients could falsely insert sites into the path before injection (RFC 5537 6.2) */
-		if (posted_only && !strncmp(path, ".POSTED", STRLEN(".POSTED"))) { /* .POSTED could be followed by . and an FQDN/IP */
-			return 0;
-		}
-
-		/* Update for the next site */
-		path = nextbang + 1;
-		if (strlen_zero(path)) {
-			return 0; /* End of string */
-		}
-	}
-}
-#define path_contains_site(path, site, sitelen, posted_only) _path_contains_site(path, site, strlen(site), posted_only)
-#endif
-
 static int path_contains_posted(const char *path)
 {
 	const char *p;
@@ -1906,8 +2529,14 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 		}
 
 		/* If we limit what distributions we get from this peer, check if we want this article or not. */
-		if (artinfo->distribution && !we_want_distribution(nntp, artinfo->distribution)) {
-			snprintf(errbuf, errbuflen, "Unwanted distribution \"%s\"", artinfo->distribution);
+		if (!we_want_distribution(nntp, artinfo->distribution)) {
+			if (artinfo->distribution) {
+				snprintf(errbuf, errbuflen, "Unwanted distribution \"%s\"", artinfo->distribution);
+			} else {
+				/* If Distribution header was not present and article was rejected for distribution,
+				 * that means this site only accepts certain distributions. */
+				snprintf(errbuf, errbuflen, "Unwanted, missing distribution");
+			}
 			return -1;
 		}
 
@@ -2066,7 +2695,13 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 		artinfo->prependlen = (size_t) snprintf(prepend, sizeof(prepend), "Path: %s!%s\r\n", newsname, PATH_TAIL);
 		artinfo->prepend = prepend;
 		artinfo->bytes += artinfo->prependlen; /* postlen stays unchanged because this isn't in the temp file */
-		/* We could do artinfo->path = strdup(prepend); here, but we never use artinfo->path after this so it would not serve much purpose */
+		artinfo->path = strdup(prepend); /* Need this for checking paths for article propagation, as well as for sending path to channel/program feeds */
+		if (ALLOC_FAILURE(artinfo->path)) {
+			SET_POST_ERROR("Temporary server error");
+			temp_fail = 1;
+			total_errors = 1;
+			goto cleanup;
+		}
 	}
 
 	/* Determine the newsgroups to which we'll add this article. */
@@ -2319,6 +2954,8 @@ cleanup:
 		/* Posting succeeded to at least one newsgroup (in which case Message-ID must be set). */
 		nntp_rx_reply2(nntp, postlen, artinfo->messageid, was_junk ? LOG_JUNK : LOG_ACCEPT,
 			streaming ? NNTP_OK_TAKETHIS : nntp->mode == NNTP_MODE_TRANSIT ? NNTP_OK_IHAVE : NNTP_OK_POST, "Article received OK");
+		/* If we succeeded, propagate the article to other sites */
+		propagate_article(artinfo);
 	}
 	return 0;
 }
@@ -2936,6 +3573,11 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 			lines++;
 			if (*s == '.') {
 				dot_stuffed_lines++; /* This line is dot-stuffed, keep track so we can adjust the length */
+				if (s[1] && s[1] != '.') {
+					bbs_client_err("Line %d was not dot-stuffed but should've been\n", lines);
+					postfail = 1;
+					continue;
+				}
 			}
 		}
 
@@ -3175,14 +3817,19 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		_nntp_send(nntp, "IMPLEMENTATION %s\r\n", BBS_SHORTNAME);
 		if (!bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
 			if (!nntp->node->secure) {
-				_nntp_send(nntp, "STARTTLS\r\n");
+				if (bbs_io_transformer_available(TRANSFORM_TLS_ENCRYPTION)) {
+					_nntp_send(nntp, "STARTTLS\r\n");
+				}
 			}
-			_nntp_send(nntp, "COMPRESS DEFLATE\r\n");
+			if (bbs_io_transformer_available(TRANSFORM_DEFLATE_COMPRESSION)) {
+				_nntp_send(nntp, "COMPRESS DEFLATE\r\n");
+			}
 		}
 		/* Don't advertise MODE-READER, just READER */
 		if (nntp->mode == NNTP_MODE_READER) { /* Reader mode */
 			_nntp_send(nntp, "READER\r\n");
 			_nntp_send(nntp, "POST\r\n");
+			_nntp_send(nntp, "NEWNEWS\r\n");
 		} else { /* Transit mode */
 			_nntp_send(nntp, "IHAVE\r\n");
 			if (!bbs_io_transform_active(&nntp->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) { /* RFC 8054 2.2.2: MUST NOT advertise MODE-READER after compression activated */
@@ -3765,6 +4412,12 @@ static void handle_client(struct nntp_session *nntp)
 	struct readline_data rldata;
 	int posting_allowed = can_post_at_all();
 
+	/* If we are trying to unload, reject new connections */
+	if (bbs_module_is_shutting_down()) {
+		nntp_send(nntp, NNTP_FAIL_TERMINATING, "Server currently unavailable");
+		return;
+	}
+
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 	/* 200 means client can post, 201 means not, but this is not a perfect distinction (see RFC) */
 	nntp_send(nntp, posting_allowed ? NNTP_OK_BANNER_POST : NNTP_OK_BANNER_NOPOST,
@@ -3774,6 +4427,9 @@ static void handle_client(struct nntp_session *nntp)
 
 	/* Default mode is transit mode (NNTP_MODE_TRANSIT) for mode-switching servers */
 	for (;;) {
+		/* The timeout length is mainly motivated by other peers keeping an idle connection open to send us article.
+		 * This avoids the overhead of setting up a connection each time if articles are frequently sent.
+		 * If after a few minutes, we haven't received any articles, we can probably go ahead and close it. */
 		ssize_t res = bbs_node_readline(nntp->node, &rldata, "\r\n", MIN_MS(5));
 		if (res < 0) {
 			/* We should NOT send any response to the client when terminating a connection due to timeout. */
@@ -3827,6 +4483,7 @@ static void *__nntp_handler(void *varg)
 static struct bbs_unit_test tests[] =
 {
 	{ "NNTP Wildmats", test_wildmats },
+	{ "NNTP Poison", test_poison },
 	{ "NNTP Date Parsing", test_dateparsing },
 	{ "NNTP Moderator Submission Templates", test_moderator_templates },
 	{ "NNTP Distribution Matching", test_distributions },
@@ -3837,6 +4494,8 @@ static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_rmgroup, "news rmgroup", 3, "Remove a newsgroup", "news rmgroup <group> [confirm]"),
 	BBS_CLI_COMMAND(cli_setstatus, "news setstatus", 4, "Edit posting status for a newsgroup", "news setstatus <group> <y/n/m>"),
 	BBS_CLI_COMMAND(cli_delarticle, "news delarticle", 4, "Delete an article", "news delarticle <group> <article number>"),
+	BBS_CLI_COMMAND(cli_feedflush, "news feedflush", 2, "Flush queued articles for feed(s)", "news feedflush [<site>]"),
+	BBS_CLI_COMMAND(cli_feedstats, "news feedstats", 2, "Show outgoing feed stats", "news feedstats [<site>]"),
 };
 
 static int load_config(void)
@@ -3854,6 +4513,9 @@ static int load_config(void)
 		bbs_config_unlock(cfg);
 		return -1;
 	}
+
+	
+
 	if (active_init() || spool_init()) {
 		bbs_config_unlock(cfg);
 		return -1;
@@ -3884,7 +4546,12 @@ static int load_config(void)
 
 	/* Article settings */
 	bbs_config_val_set_uint(cfg, "articles", "maxsize", &max_article_size);
-	bbs_config_val_set_uint(cfg, "articles", "maxgroups", &max_groups);
+	if (!bbs_config_val_set_uint(cfg, "articles", "maxgroups", &max_groups)) {
+		if (max_groups > MAX_ARTICLE_GROUPS) {
+			bbs_warning("maxgroups %u capped at %d instead\n", max_groups, MAX_ARTICLE_GROUPS);
+			max_groups = MAX_ARTICLE_GROUPS;
+		}
+	}
 	if (!bbs_config_val_set_uint(cfg, "articles", "maxacceptage", &max_accept_age)) {
 		if (max_accept_age < 3) {
 			/* Rejection interval SHOULD NOT be any shorter than 72 hours (RFC 5537 3.5) */
@@ -3909,6 +4576,7 @@ static int load_config(void)
 
 	RWLIST_WRLOCK(&acls);
 	RWLIST_WRLOCK(&inpeers);
+	RWLIST_WRLOCK(&sites);
 	RWLIST_WRLOCK(&distributions);
 	RWLIST_WRLOCK(&distrib_pats);
 	RWLIST_WRLOCK(&moderators);
@@ -3974,6 +4642,10 @@ static int load_config(void)
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				add_inpeer(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "outgoing")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_site(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
+			}
 		} else {
 			/* The only config section type that isn't defined by the section name is user ACLs */
 			const char *type = bbs_config_sect_val(section, "type");
@@ -4033,6 +4705,7 @@ static int load_config(void)
 
 	RWLIST_UNLOCK(&acls);
 	RWLIST_UNLOCK(&inpeers);
+	RWLIST_UNLOCK(&sites);
 	RWLIST_UNLOCK(&distributions);
 	RWLIST_UNLOCK(&distrib_pats);
 	RWLIST_UNLOCK(&moderators);
@@ -4044,6 +4717,11 @@ static int load_config(void)
 
 static void cleanup_lists(void)
 {
+	/* First, empty the site list, which will stop any article feeding.
+	 * Then we can clean up the feed types themselves. */
+	RWLIST_WRLOCK_REMOVE_ALL(&sites, entry, free_site);
+	sites_cleanup_feed_types();
+
 	RWLIST_WRLOCK_REMOVE_ALL(&acls, entry, free_acl);
 	RWLIST_WRLOCK_REMOVE_ALL(&inpeers, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&distributions, entry, free);
@@ -4059,6 +4737,7 @@ static int load_module(void)
 
 	RWLIST_HEAD_INIT(&acls);
 	RWLIST_HEAD_INIT(&inpeers);
+	RWLIST_HEAD_INIT(&sites);
 	RWLIST_HEAD_INIT(&distributions);
 	RWLIST_HEAD_INIT(&distrib_pats);
 	RWLIST_HEAD_INIT(&moderators);
@@ -4104,12 +4783,24 @@ static int load_module(void)
 		goto cleanup;
 	}
 
+	/* If we are good to go, initialize site feed types */
+	if (sites_init_feed_types()) {
+		bbs_rwlock_destroy(&nntp_lock);
+		fclose(newslog);
+		fclose(postlog);
+		goto cleanup;
+	}
+
 	if (bbs_start_tcp_listener3(nntp_enabled ? nntp_port : 0, nntps_enabled ? nntps_port : 0, nnsp_enabled ? nnsp_port : 0, "NNTP", "NNTPS", "NNSP", __nntp_handler)) {
 		bbs_rwlock_destroy(&nntp_lock);
 		fclose(newslog);
 		fclose(postlog);
 		goto cleanup;
 	}
+
+	/* Now, kick off any feeds themselves which may need to process a queue of backlogged articles */
+	sites_init_feeds();
+
 	bbs_register_tests(tests);
 	bbs_cli_register_multiple(cli_commands_nntp);
 	return 0;
@@ -4123,6 +4814,7 @@ cleanup:
 
 static int unload_module(void)
 {
+	nntp_unloading = 1;
 	bbs_cli_unregister_multiple(cli_commands_nntp);
 	bbs_unregister_tests(tests);
 	if (nntp_enabled) {

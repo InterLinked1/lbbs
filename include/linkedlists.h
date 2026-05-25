@@ -139,6 +139,18 @@ struct name {                                                   \
 }
 
 /*!
+ * \brief Initializes a list head structure.
+ * \param head This is a pointer to the list head structure
+ *
+ * This macro initializes a list head structure by setting the head
+ * entry to \a NULL (empty list).
+ */
+#define BBS_LIST_HEAD_INIT(head) {                                    \
+	(head)->first = NULL;                                           \
+	(head)->last = NULL;                                            \
+}
+
+/*!
  * \brief Destroys an rwlist head structure.
  * \param head This is a pointer to the list head structure
  *

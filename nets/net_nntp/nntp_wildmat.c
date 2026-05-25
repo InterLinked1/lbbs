@@ -38,7 +38,7 @@
 #define NEGATE_CLASS '^' /* What character marks an inverted character class? */
 #define OPTIMIZE_JUST_STAR /* Is "*" a common pattern? */
 
-static int wildmat_domatch(register const char *text, register const char *p)
+static int match_pattern(register const char *text, register const char *p)
 {
     register int last;
     register int matched;
@@ -72,7 +72,7 @@ static int wildmat_domatch(register const char *text, register const char *p)
 				return TRUE; /* Trailing star matches everything. */
 			}
 			while (*text) {
-				if ((matched = wildmat_domatch(text++, p)) != FALSE) {
+				if ((matched = match_pattern(text++, p)) != FALSE) {
 					return matched;
 				}
 			}
@@ -137,10 +137,9 @@ static int wildmat_pattern_match(const char *text, const char *p)
 		return TRUE;
 	}
 #endif
-    return wildmat_domatch(text, p) == TRUE;
+    return match_pattern(text, p) == TRUE;
 }
 
-#undef TRUE
 #undef FALSE
 #undef ABORT
 #undef INVALID_PATTERN
@@ -149,11 +148,12 @@ static int wildmat_pattern_match(const char *text, const char *p)
 /* End public domain wildmat code */
 
 /*! \brief Check for match for a whole wildmat */
-int uwildmat(const char *text, const char *patterns)
+static int match_expr(const char *text, const char *patterns, int allow_poison)
 {
 	char buf[1024];
 	char *p, *s = buf;
-	const char *rightmostmatch = NULL;
+	int match = 0, poisoned = 0;
+
 	safe_strncpy(buf, patterns, sizeof(buf));
 
 	/* The grammar described in RFC 3977 4.1 can be somewhat confusing, as it refers to wildmats and wildmat patterns.
@@ -170,19 +170,44 @@ int uwildmat(const char *text, const char *patterns)
 	 * crossposting to a group that would trigger a poison match "poisons" the whole article.
 	 * The poison entry still has to be the last one to match for poison logic to apply.
 	 *
-	 * At the moment, we do not natively support poison patterns (or UTF-8) in the wildmat code.
+	 * At the moment, we do not natively support UTF-8 in the wildmat code.
 	 *
 	 * In other words, we do not match if ANY pattern matches, but only if the rightmost match is non-negated (and there is such a match). */
 	while ((p = strsep(&s, ","))) {
-		int match = *p == '!' ? wildmat_pattern_match(text, p + 1) : wildmat_pattern_match(text, p); /* If it's a negated pattern, we check for matching without the negation */
-		if (match) {
-			rightmostmatch = p;
+		int reverse, poison = 0;
+		if (allow_poison) {
+			poison = *p == '@';
+		}
+		reverse = *p == '!' || poison;
+		if (reverse) {
+			p++;
+		}
+
+		/* Optimization: If the pattern can't change the result, don't bother checking this pattern */
+		if (match == !reverse && poison == poisoned) {
+			continue;
+		}
+
+		if (match_pattern(text, p) == TRUE) {
+			poisoned = poison;
+			match = !reverse;
 		}
 	}
-	if (!rightmostmatch) {
-		return 0;
+	if (poisoned) {
+		return -1;
 	}
-	return *rightmostmatch != '!'; /* If the rightmost match begins with !, not a match, otherwise the whole wildmat matches */
+	return match;
+}
+#undef TRUE
+
+int uwildmat(const char *text, const char *pattern)
+{
+	return match_expr(text, pattern, 0);
+}
+
+int uwildmat_poison(const char *text, const char *pattern)
+{
+	return match_expr(text, pattern, 1);
 }
 
 int uwildmat_simple(const char *text, const char *pattern)
@@ -228,10 +253,14 @@ int test_wildmats(void)
 	bbs_test_assert_equals(0, uwildmat("dead", "*a??"));
 
 	bbs_test_assert_equals(1, uwildmat("-adobe-courier-bold-o-normal--12-120-75-75-m-70-iso8859-1", "-*-*-*-*-*-*-12-*-*-*-m-*-*-*")); /* Example from wildmat.c: */
-	bbs_test_assert_equals(0, uwildmat("foobar", "foo[a-")); /* This example caused a crash in the original version of Rich Salz's wildmat_domatch */
+	bbs_test_assert_equals(0, uwildmat("foobar", "foo[a-")); /* This example caused a crash in the original version of Rich Salz's match_pattern */
 	bbs_test_assert_equals(0, uwildmat("foobar", "foo["));
 
 	bbs_test_assert_equals(1, uwildmat_simple("!aaabbb", "!a*b*"));
+
+	bbs_test_assert_equals(0, uwildmat_poison("foo.bar", "foo.*,!foo.bar,@*.poison"));
+	bbs_test_assert_equals(-1, uwildmat_poison("foo.poison", "*,@f*,@*.poison"));
+	bbs_test_assert_equals(1, uwildmat_poison("foo.poison", "*,@f*,@*.poison,*"));
 
 	return 0;
 

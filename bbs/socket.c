@@ -327,23 +327,32 @@ int bbs_block_fd(int fd)
 	return 0;
 }
 
-int bbs_node_cork(struct bbs_node *node, int enabled)
+int bbs_cork_fd(int fd, int enabled)
 {
 	int i = enabled;
 	/* This is TCP-specific, so it has to operate on the actual socket file descriptor,
 	 * not any of the other node file descriptors. */
 #ifdef __FreeBSD__
-	if (setsockopt(node->sfd, IPPROTO_TCP, TCP_NOPUSH, &i, sizeof(i))) { /* FreeBSD */
+	if (setsockopt(fd, IPPROTO_TCP, TCP_NOPUSH, &i, sizeof(i))) { /* FreeBSD */
 #else
-	if (setsockopt(node->sfd, IPPROTO_TCP, TCP_CORK, &i, sizeof(i))) { /* Linux */
+	if (setsockopt(fd, IPPROTO_TCP, TCP_CORK, &i, sizeof(i))) { /* Linux */
 #endif
-		bbs_error("setsockopt(%d) failed: %s\n", node->sfd, strerror(errno));
+		bbs_error("setsockopt(%d) failed: %s\n", fd, strerror(errno));
 		return -1;
 	} else {
+		
+	}
+	return 0;
+}
+
+int bbs_node_cork(struct bbs_node *node, int enabled)
+{
+	int res = bbs_cork_fd(node->sfd, enabled);
+	if (!res) {
 		/* net_imap fiddles corking around a lot, so high debug level to reduce noisiness */
 		bbs_debug(10, "%s corking on node %d\n", enabled ? "Enabled" : "Disabled", node->id);
 	}
-	return 0;
+	return res;
 }
 
 int bbs_set_fd_tcp_nodelay(int fd, int enabled)

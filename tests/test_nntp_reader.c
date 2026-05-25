@@ -539,6 +539,17 @@ static int run(void)
 	SWRITE(client1, "BODY 17\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, ".." ENDL);
 
+	/* Failure to dot-stuff should be rejected */
+	SWRITE(client1, "POST\r\n");
+	CLIENT_EXPECT_CODE(client1, NNTP_CONT_POST);
+	s = "Newsgroups: misc.test" ENDL
+		"From: \"Demo User\" <" TEST_EMAIL ">" ENDL
+		NNTP_DEFAULT_ARTICLE_BASE
+		".foo" ENDL
+		"." ENDL; /* EOM */
+	write(client1, s, strlen(s));
+	CLIENT_EXPECT_CODE(client1, NNTP_FAIL_POST_REJECT);
+
 	/* Test messages with multi-line headers */
 	POST_ARTICLE_TO_GROUP_ADDITIONAL_RESPONSE(client1, TEST_EMAIL, "misc.test", NNTP_OK_POST,
 		"References: <ancestor1.foo>" ENDL

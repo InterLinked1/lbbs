@@ -20,6 +20,8 @@
 #include "include/linkedlists.h"
 
 #define NNTP_MAX_PATH_LENGTH 1024
+#define MAX_ARTICLE_GROUPS 512
+#define MAX_ARTICLE_DISTRIBUTIONS 64
 
 #define NNTP_MAX_LINE_LENGTH 512 /* RFC 3977 3.1. Includes CR LF (but not NUL) */
 #define NNTP_MAX_ARG_LENGTH 497 /* RFC 3977 3.1 */
@@ -152,6 +154,7 @@ struct article_info {
 	const char *prepend; /* Headers to prepend before all other headers, i.e. Path */
 	size_t appendlen;
 	const char *append; /* Headers to append after all other headers, except Xref */
+	char *filepath;
 	unsigned int nntp_posting_host_set:1;
 	unsigned int organization_set:1;
 	unsigned int needinjectiondate:1;
@@ -490,6 +493,14 @@ int spool_article_send(struct nntp_session *nntp, enum article_part_filter filte
 
 /*! \brief Check for match for a whole wildmat */
 int uwildmat(const char *text, const char *patterns);
+
+/*!
+ * \brief Check for match for a whole wildmat, allowing poison patterns
+ * \retval 1 match
+ * \retval 0 doesn't match
+ * \retval -1 poison match
+ */
+int uwildmat_poison(const char *text, const char *pattern);
 
 /*! \brief Check for match with simple expression (neither , nor ! are special) */
 int uwildmat_simple(const char *text, const char *pattern);

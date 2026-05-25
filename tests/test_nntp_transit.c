@@ -25,6 +25,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "../include/test.h" /* use bbs_test_assert macros */
+
 #include "netnews.h"
 
 static int pre(void)
@@ -56,6 +58,7 @@ static int create_groups(void)
 	NEW_NEWSGROUP(sockfd, "test.junk", "A junk group", "Sysop", "j");
 	NEW_NEWSGROUP(sockfd, "test.nolocal", "A nolocal group", "Sysop", "n");
 	NEW_NEWSGROUP(sockfd, "test.aliased", "An aliased group", "Sysop", "=misc.test");
+	NEW_NEWSGROUP(sockfd, "feed.test", "An group fed to peers", "Sysop", "y");
 
 	close(sockfd);
 	return 0;
@@ -124,8 +127,8 @@ static int run(void)
 	/* Because dist1a is wanted, even though dist2a is not, article is accepted */
 	IHAVE_ADDITIONAL(peer1, "<testmessage.dist1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test", "Distribution: dist1a,dist1b\r\n");
 
-	/* Because dist2a is not wanted by any of the matching inpeer entries, article is rejected */
-	IHAVE_ADDITIONAL_RESPONSE(peer1, "<testmessage.dist2@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test", "Distribution: dist1b\r\n", NNTP_FAIL_IHAVE_REJECT);
+	/* Because rejdist is not wanted by any of the matching inpeer entries, article is rejected */
+	IHAVE_ADDITIONAL_RESPONSE(peer1, "<testmessage.rejdist@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test", "Distribution: rejdist\r\n", NNTP_FAIL_IHAVE_REJECT);
 
 	/* Test article deferral for in-progress articles */
 	peer2 = test_make_socket(433);
@@ -249,6 +252,30 @@ static int run(void)
 	write(peer1, s, strlen(s));
 	CLIENT_EXPECT_CODE(peer1, NNTP_FAIL_TAKETHIS_REJECT);
 
+	/* Now, test sending received articles to other peers (which are actually ourself, so these articles will all be refused) */
+	TAKETHIS(peer1, "<feedmessage.1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "feed.test");
+	TAKETHIS(peer1, "<feedmessage.2@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "feed.test");
+	TAKETHIS(peer1, "<feedmessage.3@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "feed.test");
+	TAKETHIS(peer1, "<feedmessage.4@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "feed.test");
+	TAKETHIS_ADDITIONAL(peer1, "<feedmessage.5@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "feed.test",
+		"Distribution: dist1a\r\n" /* this will cause the article to get fed to multiple sites */
+	);
+	TAKETHIS_ADDITIONAL(peer1, "<feedmessage.6@" TEST_HOSTNAME ">", TEST_EMAIL, "feed.test", /* Use a local email so it will be authorized to post */
+		"Distribution: post\r\n" /* this will cause the article to get fed using a reading connection */
+	);
+
+	TEST_CLI_COMMAND("news feedstats"); /* If running tests manually, inspect the stats and backlogs */
+	TEST_CLI_COMMAND("news feedflush queueflush"); /* Flush articles that were queued for site 'queueflush' */
+
+	/* Pause briefly or the last article might not get processed and will remain in the backlog file (esp. under valgrind) */
+	if (running_under_valgrind()) { /* An awful kludge, I know */
+		usleep(2500000);
+	} else {
+		usleep(500000);
+	}
+
+	TEST_CLI_COMMAND("news feedstats"); /* Backlog for that site should clear */
+
 	res = 0;
 
 cleanup:
@@ -258,4 +285,38 @@ cleanup:
 	return res;
 }
 
-TEST_MODULE_INFO_STANDARD("NNTP Transit Tests");
+static int post(void)
+{
+	struct stat st_loopback1, st_loopback2, st_loopback3, st_queueonly, st_queueflush;
+
+	/* After the BBS has exited, make sure the backlogs for the peers loopback1 and loopback2 are as expected: */
+	if (stat(TEST_NEWS_DIR "/.backlog/loopback1", &st_loopback1)) {
+		bbs_error("stat failed: %s\n", strerror(errno));
+		goto cleanup;
+	} else if (stat(TEST_NEWS_DIR "/.backlog/loopback2", &st_loopback2)) {
+		bbs_error("stat failed: %s\n", strerror(errno));
+		goto cleanup;
+	} else if (stat(TEST_NEWS_DIR "/.backlog/loopback3", &st_loopback3)) {
+		bbs_error("stat failed: %s\n", strerror(errno));
+		goto cleanup;
+	} else if (stat(TEST_NEWS_DIR "/.backlog/queueonly", &st_queueonly)) {
+		bbs_error("stat failed: %s\n", strerror(errno));
+		goto cleanup;
+	} else if (stat(TEST_NEWS_DIR "/.backlog/queueflush", &st_queueflush)) {
+		bbs_error("stat failed: %s\n", strerror(errno));
+		goto cleanup;
+	}
+
+	bbs_test_assert_long_equals(0L, st_loopback1.st_size);
+	bbs_test_assert_long_equals(67L, st_loopback2.st_size); /* Actual size was verified experimentally and doesn't matter, we just need it to be > 0 */
+	bbs_test_assert_long_equals(0L, st_loopback3.st_size);
+	bbs_test_assert_long_equals(67L, st_queueonly.st_size); /* All articles to this site are queued (and not flushed during the tests) */
+	bbs_test_assert_long_equals(0L, st_queueflush.st_size); /* Even though this site has identical configuration to the previous one, backlog should've been cleared by explicit flush */
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
+TEST_MODULE_INFO_POST("NNTP Transit Tests");

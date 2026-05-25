@@ -178,6 +178,9 @@ int bbs_parse_url(struct bbs_url *url, char *restrict s)
 	if (tmp) {
 		*tmp++ = '\0';
 		url->port = atoi(S_IF(tmp));
+		if (url->port < 0) {
+			return -1; /* Negative port is invalid */
+		}
 	}
 #pragma GCC diagnostic pop
 	return 0;
@@ -1045,7 +1048,9 @@ ssize_t bbs_send_file(const char *filepath, int wfd)
 
 	fd = open(filepath, O_RDONLY, 0600);
 	if (fd < 0) {
-		bbs_error("open(%s) failed: %s\n", filepath, strerror(errno));
+		int saved_errno = errno;
+		bbs_error("open(%s) failed: %s\n", filepath, strerror(saved_errno));
+		errno = saved_errno;
 		return -1;
 	}
 	size = lseek(fd, 0, SEEK_END);
@@ -1055,6 +1060,7 @@ ssize_t bbs_send_file(const char *filepath, int wfd)
 	close(fd);
 	if (sent != size) {
 		bbs_error("Wanted to write %lu bytes but only wrote %ld?\n", size, sent);
+		errno = 0; /* The real errno has been lost be now, don't lie */
 		return -1;
 	}
 	bbs_debug(6, "Sent %ld bytes to fd %d\n", sent, wfd);

@@ -1027,17 +1027,37 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 		xref_reformat(xref + STRLEN("Xref: ")); /* xref has been written to the file so we can now mutate it; replace CR LF with spaces and rtrim */
 		artinfo->xref = xref; /* We include the header name itself (Xref:), this is why LIST OVERVIEW.FMT returns Xref:full (includes header name itself) */
 		overview_add(artinfo, g->name, g->article_num);
-		artinfo->xref = NULL; /* Since this wasn't allocated, set to NULL so we don't free it later */
+		artinfo->xref = NULL; /* We didn't allocate memory, so set to NULL for now */
 		delivered++;
 		bbs_debug(6, "Successfully delivered article to %s (article %d)\n", g->name, g->article_num);
+		free_if(artinfo->xref);
 	}
 
 	if (delivered) {
+		/* Since no allocation was done previously, we cannot have failed up to this point. Now, duplicate the stack-allocated string so propagation to sites can access.
+		 * If allocation fails, at least only propagation will fail and not receiving the actual article itself and adding it to overview.
+		 * Duplication is done here instead of after the call to overview_add because that is in a loop. */
+		artinfo->xref = strdup(xref + STRLEN("Xref: "));
+
 		/* Add the article to history, so we can keep track of message-IDs of articles we've already seen */
 		if (artinfo->expires) {
 			/*! \todo If article has an Expires header, we would include that in expiresbuf instead - need to convert string to epoch time */
 		}
 		history_add(artinfo->messageid, arrival_time, expiresbuf, artinfo->bytes, links);
+		/* Save the file path (or a file path) for use when feeding the article.
+		 * Note that here, we simply pick the first path (corresponding to the first newsgroup).
+		 * However, we could be smarter about this. This is kept by the NNTP feeder in the backlog
+		 * so that it can easily send the article. However, if the first group's article retention
+		 * is much shorter than the other's, then this path may "go bad" before other paths
+		 * pointing to the same article.
+		 *
+		 * Thus, it would be better if we kept track of (among the successful groups),
+		 * which group has the longest retention policy, also considering any Expires header,
+		 * and use THAT for this value, instead of just the first one.
+		 *
+		 * However, since even short retention periods are likely to be longer than the time it takes
+		 * to feed articles to peer, this is unlikely to make much difference in practice. */
+		REPLACE(artinfo->filepath, hardpath);
 	} else {
 		errno = 0;
 	}

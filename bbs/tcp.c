@@ -20,6 +20,7 @@
 #include "include/bbs.h"
 
 #include <stdarg.h>
+#include <poll.h>
 
 #include "include/utils.h"
 #include "include/node.h"
@@ -31,13 +32,12 @@ void bbs_tcp_client_cleanup(struct bbs_tcp_client *client)
 	close_if(client->fd);
 }
 
-static int starttls(struct bbs_tcp_client *client, const char *snihostname)
+static int launch_transformation(struct bbs_tcp_client *client, enum bbs_io_transform_type type, const char *argument)
 {
-	if (!bbs_io_transformer_available(TRANSFORM_TLS_ENCRYPTION)) {
+	if (!bbs_io_transformer_available(type)) {
 		return 1;
 	}
-
-	return bbs_io_transform_setup(&client->trans, TRANSFORM_TLS_ENCRYPTION, TRANSFORM_CLIENT, &client->rfd, &client->wfd, snihostname);
+	return bbs_io_transform_setup(&client->trans, type, TRANSFORM_CLIENT, &client->rfd, &client->wfd, argument);
 }
 
 int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, int secure, char *buf, size_t len)
@@ -51,7 +51,7 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 	client->buf = buf;
 	client->len = len;
 	if (client->secure) {
-		if (starttls(client, url->host)) {
+		if (launch_transformation(client, TRANSFORM_TLS_ENCRYPTION, url->host)) {
 			bbs_debug(3, "Failed to set up TLS\n");
 			close_if(client->fd);
 			return -1;
@@ -67,11 +67,21 @@ int bbs_tcp_client_starttls(struct bbs_tcp_client *client, const char *hostname)
 {
 	bbs_assert(!client->secure);
 
-	if (starttls(client, hostname)) {
+	if (launch_transformation(client, TRANSFORM_TLS_ENCRYPTION, hostname)) {
 		bbs_warning("Failed to do STARTTLS\n");
 		return -1;
 	}
 	bbs_readline_flush(&client->rldata); /* Prevent STARTTLS response injection by resetting the buffer after TLS upgrade */
+	return 0;
+}
+
+int bbs_tcp_client_compress(struct bbs_tcp_client *client)
+{
+	if (launch_transformation(client, TRANSFORM_DEFLATE_COMPRESSION, NULL)) {
+		bbs_warning("Failed to start compression\n");
+		return -1;
+	}
+	bbs_readline_flush(&client->rldata);
 	return 0;
 }
 
@@ -115,4 +125,20 @@ int __bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, in
 	}
 	__bbs_log(LOG_NOTICE, 0, file, line, func, "Missing expected response (%s), got: %s\n", str, client->buf);
 	return 1;
+}
+
+int bbs_tcp_client_safe_sleep(struct bbs_tcp_client *client, int ms)
+{
+	struct pollfd pfd;
+
+	bbs_soft_assert(ms > 0);
+	if (ms < 0) {
+		ms = 0;
+	}
+
+	pfd.fd = client->rfd;
+	pfd.events = POLLPRI | POLLERR | POLLHUP | POLLNVAL; /* Don't include POLLIN, we don't care about data sent by client */
+	pfd.revents = 0;
+
+	return poll(&pfd, 1, ms);
 }

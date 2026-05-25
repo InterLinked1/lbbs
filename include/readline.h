@@ -96,6 +96,10 @@ char *bbs_readline_leftover_buf(struct readline_data *restrict rldata);
  */
 #define bbs_readline(fd, rldata, delim, timeout) __bbs_readline(__FILE__, __LINE__, __func__, fd, rldata, delim, timeout)
 
+/*!
+ * \note POSIX only requires that ssize_t hold the range [-1, SSIZE_MAX]; in practice, smaller negative values can usually be represented
+ * Nonetheless, our returning -2 and -3 may not be strictly compliant, though it seems to work on most (all?) platforms. */
+
 ssize_t __bbs_readline(const char *file, int line, const char *func, int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout);
 
 /*!

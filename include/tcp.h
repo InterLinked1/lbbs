@@ -19,14 +19,14 @@
 struct bbs_url;
 
 struct bbs_tcp_client {
-	char *buf;
-	size_t len;
+	char *buf; /*!< Pointer to the readline buffer */
+	size_t len; /*!< Length of readline buffer */
 	struct readline_data rldata;
-	int fd;
-	int rfd;
-	int wfd;
+	int fd; /*!< The actual socket file descriptor */
+	int rfd; /*!< Read file descriptor for the connection */
+	int wfd; /*!< Write file descriptor for the connection */
 	struct bbs_io_transformations trans; /*!< I/O transformations */
-	unsigned int secure:1;
+	unsigned int secure:1; /*!< Whether TLS is active on the connection */
 };
 
 /*! \brief Clean up a TCP client */
@@ -53,6 +53,14 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 int bbs_tcp_client_starttls(struct bbs_tcp_client *client, const char *hostname);
 
 /*!
+ * \brief Start compression on a TCP client
+ * \param client
+ * \retval 0 on success, -1 on failure
+ * \note The readline buffer is reset on success to prevent response injection attacks
+ */
+int bbs_tcp_client_compress(struct bbs_tcp_client *client);
+
+/*!
  * \brief Send data on a TCP client connection
  * \param client
  * \param fmt printf-style format string
@@ -72,3 +80,11 @@ ssize_t bbs_tcp_client_send(struct bbs_tcp_client *client, const char *fmt, ...)
 #define bbs_tcp_client_expect(client, delim, attempts, ms, str) __bbs_tcp_client_expect(client, delim, attempts, ms, str, __FILE__, __LINE__, __func__)
 
 int __bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int attempts, int ms, const char *str, const char *file, int line, const char *func) __attribute__((nonnull (1,2, 5)));
+
+/*!
+ * \brief Safe sleep on a TCP client
+ * \param client
+ * \param ms argument to poll()
+ * \returns Same as poll()
+ */
+int bbs_tcp_client_safe_sleep(struct bbs_tcp_client *client, int ms);

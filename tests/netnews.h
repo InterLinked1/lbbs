@@ -100,6 +100,21 @@
 
 #define IHAVE_ADDITIONAL(fd, messageid, email, group, addl) IHAVE_ADDITIONAL_RESPONSE(fd, messageid, email, group, addl, NNTP_OK_IHAVE)
 
+#define TAKETHIS(fd, messageid, email, group) \
+	SWRITE(fd, "TAKETHIS " messageid "\r\n"); \
+	SEND_PEER_NEWS_ARTICLE(s, fd, messageid, email, group, ""); \
+	CLIENT_EXPECT_CODE(fd, NNTP_OK_TAKETHIS);
+
+#define TAKETHIS_ADDITIONAL(fd, messageid, email, group, addl) \
+	SWRITE(fd, "TAKETHIS " messageid "\r\n"); \
+	SEND_PEER_NEWS_ARTICLE(s, fd, messageid, email, group, addl); \
+	CLIENT_EXPECT_CODE(fd, NNTP_OK_TAKETHIS);
+
+#define TAKETHIS_RESPONSE(fd, messageid, email, group, respcode) \
+	SWRITE(fd, "TAKETHIS " messageid "\r\n"); \
+	SEND_PEER_NEWS_ARTICLE(s, fd, messageid, email, group, ""); \
+	CLIENT_EXPECT_CODE(fd, respcode);
+
 #define TAKETHIS_ADDITIONAL_RESPONSE(fd, messageid, email, group, respcode, addl) \
 	SWRITE(fd, "TAKETHIS " messageid "\r\n"); \
 	SEND_PEER_NEWS_ARTICLE(s, fd, messageid, email, group, addl); \
