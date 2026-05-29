@@ -181,7 +181,7 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 		if (domain && smtp_node(f->smtp) && smtp_relay_authorized(smtp_sender_ip(f->smtp), domain)) {
 			/* Nothing to verify, but we can mabe sign it, so do that instead.
 			 * If we can't, we'll just return early anyways. */
-			bbs_debug(1, "Message being relayed from authorized host is not DKIM signed, seeing if we can sign it...\n");
+			bbs_debug(1, "Message being relayed from authorized host is not DKIM signed, seeing if we can sign it for %s\n", domain);
 			return dkim_sign_filter_cb(f);
 		}
 		return 0;
