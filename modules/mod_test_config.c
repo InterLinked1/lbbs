@@ -29,8 +29,10 @@
 
 #define START_TEST() \
 	char *str1 = NULL, *str2 = NULL; \
-	char template[256] = "/tmp/test_config_XXXXXX"; \
-	FILE *fp = bbs_mkftemp(template, 0660); \
+	char template[TMPNAME_BUFSIZ]; \
+	FILE *fp; \
+	bbs_tempname("test_config", template, sizeof(template)); \
+	fp = bbs_mkftemp(template, 0660); \
 	if (!fp) { \
 		return -1; \
 	}

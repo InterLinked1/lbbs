@@ -2226,7 +2226,7 @@ static int build_moderator_address(const char *group, char *buf, size_t len)
 static int process_moderated_group(const char *name, const char *filename)
 {
 	char modaddr[256];
-	char template[64];
+	char template[TMPNAME_BUFSIZ];
 	char buf[NNTP_MAX_LINE_LENGTH + 1];
 	char sender[256];
 	FILE *newfp, *artfp;
@@ -2239,7 +2239,7 @@ static int process_moderated_group(const char *name, const char *filename)
 
 	/* Prepend To to the received article, and send it to the moderator, simple as that!
 	 * (This is method #2 in RFC 5537 3.5.1) */
-	strcpy(template, "/tmp/nntpmodXXXXXX"); /* Safe */
+	bbs_renamable_tempname("nntpmod", template, sizeof(template));
 	artfp = fopen(filename, "r");
 	if (!artfp) {
 		bbs_error("Failed to open %s: %s\n", filename, strerror(errno));
@@ -3630,14 +3630,14 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 /* articleid is only set for MODE_TRANSIT */
 static int receive_article(struct nntp_session *nntp, struct readline_data *rldata, const char *articleid, int streaming)
 {
-	char template[64];
+	char template[TMPNAME_BUFSIZ];
 	FILE *fp;
 	size_t artlen;
 	int res;
 	struct article_info *artinfo = &nntp->artinfo;
 
 	nntp_reset_data(nntp);
-	strcpy(template, "/tmp/nntpXXXXXX"); /* Safe */
+	bbs_renamable_tempname("nntpart", template, sizeof(template));
 
 	fp = bbs_mkftemp(template, 0600);
 	if (!fp) {

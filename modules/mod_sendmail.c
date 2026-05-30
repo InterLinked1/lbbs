@@ -120,7 +120,7 @@ static int sendmail_simple(SIMPLE_MAILER_PARAMS)
 {
 	FILE *p;
 	int res;
-	char tmp[80] = "/tmp/bbsmail-XXXXXX";
+	char tmp[TMPNAME_BUFSIZ];
 
 	/* Not currently supported (it could be, using sendmail -f option, but since this module is deprecated, not worth the effort now,
 	 * anything that requires overriding the envelope sender requires net_smtp to be used instead anyways) */
@@ -138,6 +138,7 @@ static int sendmail_simple(SIMPLE_MAILER_PARAMS)
 	 * a) to make debugging easier
 	 * b) in case the mail command hangs
 	 */
+	bbs_renamable_tempname("bbsmail", tmp, sizeof(tmp));
 	p = bbs_mkftemp(tmp, MAIL_FILE_MODE);
 	if (!p) {
 		bbs_error("Unable to launch '%s' (can't create temporary file)\n", SENDMAIL_CMD);

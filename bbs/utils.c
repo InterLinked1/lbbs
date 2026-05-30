@@ -44,6 +44,8 @@
 #include "include/base64.h"
 #include "include/system.h"
 
+extern char *config_dir;
+
 void dyn_str_reset(struct dyn_str *dynstr)
 {
 	free_if(dynstr->buf);
@@ -894,6 +896,47 @@ int __bbs_delete_file(const char *path, const char *file, int line, const char *
 		return -1;
 	}
 	return 0;
+}
+
+static int _bbs_renamable_tempname(const char *template, char *buf, size_t len, int support_rename)
+{
+	static int have_checked_tmp = 0;
+	static int tmpfs = 0;
+	/* To avoid cross filesystem renames (which can happen on systems where /tmp is its own file system),
+	 * check if /tmp is a different filesystem from the "rest" of the file system. */
+	if (!have_checked_tmp) {
+		have_checked_tmp = 1;
+		/* There is probably a better way, but this solves the problem for now.
+		 * If systemctl exits 0, that means tmp.mount is enabled. */
+		if (config_dir && STARTS_WITH(config_dir, "/tmp")) {
+			/* The tests use /tmp to store configs and other data,
+			 * in which case we DO want to use this directory. */
+			bbs_debug(5, "-C directory specified a directory in /tmp, ignoring tmpfs for temp file naming\n");
+		} else {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+			struct bbs_exec_params x;
+			char *const argv[] = { "systemctl", "status", "tmp.mount", NULL };
+			EXEC_PARAMS_INIT_HEADLESS(x);
+			if (!bbs_execvp(NULL, &x, "systemctl", argv)) {
+				bbs_debug(5, "tmpfs appears to be enabled, will avoid using /tmp for temp files that need to be renamed\n");
+				tmpfs = 1;
+			}
+#pragma GCC diagnostic pop
+		}
+	}
+	snprintf(buf, len, "%s/%sXXXXXX", tmpfs && support_rename ? "/var/tmp" : "/tmp", template);
+	return 0;
+}
+
+int bbs_renamable_tempname(const char *template, char *buf, size_t len)
+{
+	return _bbs_renamable_tempname(template, buf, len, 1);
+}
+
+int bbs_tempname(const char *template, char *buf, size_t len)
+{
+	return _bbs_renamable_tempname(template, buf, len, 0);
 }
 
 FILE *bbs_mkftemp(char *template, mode_t mode)

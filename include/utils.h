@@ -262,6 +262,24 @@ int bbs_delete_directory(const char *path);
 
 int __bbs_delete_file(const char *path, const char *file, int line, const char *func);
 
+#define TMPNAME_BUFSIZ 128
+
+/*!
+ * \brief Create a temporary filename (suitable for mkstemp, etc.) such that the file can later be renamed
+ *        without a cross-system file operation (rename(2) can't handle cross-file operations, mv(1) can)
+ *        This will ensure efficiency so the file doesn't need to be copied between file systems.
+ * \note Use this instead of bbs_tempname if the temp file will be (or could be) renamed
+ * \note Do not include the XXXXXX, that will be added automatically
+ */
+int bbs_renamable_tempname(const char *template, char *buf, size_t len);
+
+/*!
+ * \brief Create a temporary filename (suitable for mkstemp, etc.)
+ * \note Do not include the XXXXXX, that will be added automatically
+ *  Use this instead of bbs_renamable_tempname if the temp file will simply be deleted, not renamed later
+ */
+int bbs_tempname(const char *template, char *buf, size_t len);
+
 /*!
  * \brief Create a temporary FILE*
  * \param template template ending in XXXXXX to pass to mkstemp

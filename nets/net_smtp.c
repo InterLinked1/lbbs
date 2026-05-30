@@ -1684,7 +1684,7 @@ static int filter_create_temp_file(struct smtp_filter_data *f)
 	if (f->outputfd != -1) {
 		return 0; /* Already created one that we can use */
 	}
-	strcpy(f->outputfile, "/tmp/smtpfXXXXXX");
+	bbs_renamable_tempname("smtpfilter", f->outputfile, sizeof(f->outputfile));
 	f->outputfd = mkstemp(f->outputfile);
 	if (f->outputfd < 0) {
 		bbs_error("mkstemp failed: %s\n", strerror(errno));
@@ -2267,7 +2267,7 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 {
 	int i, res;
 	char full_sender[256];
-	char tmpattach[32] = "/tmp/bouncemsgXXXXXX";
+	char tmpattach[TMPNAME_BUFSIZ];
 	FILE *fp;
 	char bound[256];
 	char date[50], date2[50];
@@ -2304,6 +2304,7 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 	}
 	bbs_debug(1, "Sending SMTP DSN to %s\n", full_sender);
 
+	bbs_renamable_tempname("bouncemsg", tmpattach, sizeof(tmpattach));
 	fp = bbs_mkftemp(tmpattach, 0600);
 	if (!fp) {
 		return -1;
@@ -2996,7 +2997,7 @@ static int injectmail_simple(SIMPLE_MAILER_PARAMS)
 	int res;
 	FILE *fp;
 	long int length;
-	char tmp[80] = "/tmp/bbsmail-XXXXXX";
+	char tmp[TMPNAME_BUFSIZ];
 	char sender[256];
 	char recipient[256];
 	const char *tmpaddr;
@@ -3004,6 +3005,7 @@ static int injectmail_simple(SIMPLE_MAILER_PARAMS)
 	UNUSED(async); /* Currently they're synchronous if local and asynchronous if external, which is just fine */
 
 	/* Build the message itself */
+	bbs_renamable_tempname("bbsmail", tmp, sizeof(tmp));
 	fp = bbs_mkftemp(tmp, MAIL_FILE_MODE);
 	if (!fp) {
 		return -1;
@@ -3538,7 +3540,7 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 static int handle_data(struct smtp_session *smtp, char *s, struct readline_data *rldata)
 {
 	FILE *fp;
-	char template[256];
+	char template[TMPNAME_BUFSIZ];
 	int datafail = 0;
 	int fatal = 0;
 	int indataheaders = 1;
@@ -3550,7 +3552,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 	REQUIRE_RCPT();
 	REQUIRE_EMPTY(s);
 
-	strcpy(template, "/tmp/smtpdXXXXXX");
+	bbs_renamable_tempname("smtpd", template, sizeof(template));
 	fp = bbs_mkftemp(template, 0600);
 	if (!fp) {
 		smtp_reply_nostatus(smtp, 452, "Server error, unable to allocate buffer");

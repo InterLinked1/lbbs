@@ -465,12 +465,13 @@ static int merge_backlog(struct site *site, struct site_articles *articles, int 
 	char buf[NNTP_MAX_LINE_LENGTH];
 	char backlogpath[sizeof(backlogdir) + 32];
 	struct site_article *art;
-	char tmpfilepath[256] = "/tmp/nntpfeedtmpXXXXXX";
+	char tmpfilepath[TMPNAME_BUFSIZ];
 
 	/* We can prune articles from the backlog.
 	 * This is the common case; in most cases, if we are able to connect to a peer at all,
 	 * most articles will be either accepted or refused/rejected, i.e. most of the file can get thrown away. */
 
+	bbs_renamable_tempname("nntpfeedtmp", tmpfilepath, sizeof(tmpfilepath));
 	fp = bbs_mkftemp(tmpfilepath, 0600);
 	if (!fp) {
 		return -1;

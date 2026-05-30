@@ -80,7 +80,7 @@ struct post_field {
 	const char *type;		/* Content-Type, if available */
 	const char *filename;	/* For files, name of file */
 	unsigned char *buffer;	/* For non files */
-	char tmpfile[128];		/* For files, path to tmp file */
+	char tmpfile[TMPNAME_BUFSIZ];		/* For files, path to tmp file */
 	size_t length;			/* Length of data */
 	RWLIST_ENTRY(post_field) entry;
 	char data[];

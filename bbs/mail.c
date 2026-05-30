@@ -382,7 +382,7 @@ int bbs_mail_message(const char *tmpfile, const char *mailfrom, struct stringlis
 {
 	struct mailer *m;
 	char mailfrombuf[256];
-	char tmpfile2[256];
+	char tmpfile2[TMPNAME_BUFSIZ];
 	int res = -1;
 	struct stringlist reciplist;
 
@@ -446,7 +446,7 @@ int bbs_mail_message(const char *tmpfile, const char *mailfrom, struct stringlis
 		if (rewrite) {
 			int inheaders = 1;
 			FILE *fp2;
-			strcpy(tmpfile2, "/tmp/smtpbccXXXXXX");
+			bbs_renamable_tempname("smtpbcc", tmpfile2, sizeof(tmpfile2));
 			fp2 = bbs_mkftemp(tmpfile2, MAIL_FILE_MODE);
 			if (!fp2) {
 				stringlist_empty_destroy(&reciplist);

@@ -519,8 +519,9 @@ static void generate_report(struct upstream_groups *grps, time_t start, int allg
 	struct upstream_group *g;
 	FILE *fp;
 	int overall_count = 0;
-	char tmpfilepath[256] = "/tmp/nntpsuckgroupsXXXXXX";
+	char tmpfilepath[TMPNAME_BUFSIZ];
 
+	bbs_renamable_tempname("nntpsuckgroups", tmpfilepath, sizeof(tmpfilepath));
 	fp = bbs_mkftemp(tmpfilepath, 0600);
 	if (!fp) {
 		return;
@@ -907,7 +908,7 @@ skip:
  */
 static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct upstream_group *g, int artnum)
 {
-	char template[64] = "/tmp/nntpsuckartXXXXXX";
+	char template[TMPNAME_BUFSIZ];
 	size_t artlen = 0;
 	char errbuf[NNTP_MAX_LINE_LENGTH + 24] = "";
 	struct article_info artinfo;
@@ -920,6 +921,7 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 	memset(&artinfo, 0, sizeof(artinfo));
 	memset(&groups, 0, sizeof(groups));
 
+	bbs_renamable_tempname("nntpsuckart", template, sizeof(template));
 	fp = bbs_mkftemp(template, 0600);
 	if (!fp) {
 		return -1;

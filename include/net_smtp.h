@@ -129,6 +129,9 @@ enum smtp_direction {
 
 /* == SMTP filter callbacks - these receive a message and potentially modify it == */
 
+/* We use SMTP_TMPNAME_BUFSIZ instead of TMPNAME_BUFSIZE, so other source files don't need to include utils.h just for that */
+#define SMTP_TMPNAME_BUFSIZ 128
+
 struct smtp_filter_data {
 	struct smtp_session *smtp;		/*!< SMTP session */
 	int inputfd;					/*!< File descriptor from which message can be read */
@@ -152,7 +155,7 @@ struct smtp_filter_data {
 	/* INTERNAL: Do not access these fields directly. Use the publicly exposed functions. */
 	struct stringlist headers;		/*!< Prepended headers that need to be written to the message */
 	int outputfd;					/*!< File descriptor to write to, to prepend to message */
-	char outputfile[64];			/*!< Temporary output file name */
+	char outputfile[SMTP_TMPNAME_BUFSIZ]; /*!< Temporary output file name */
 	char *body;						/*!< RFC822 message as string */
 };
 

@@ -1127,7 +1127,7 @@ static int push_post_param(struct http_session *http, const char *name, const ch
 	if (filename) {
 		int fd;
 		/* Write the buffer into a temp file, and save the name of the temp file. */
-		strcpy(p->tmpfile, "/tmp/uploadXXXXXX");
+		bbs_renamable_tempname("upload", p->tmpfile, sizeof(p->tmpfile));
 		fd = mkstemp(p->tmpfile);
 		if (fd < 0) {
 			bbs_error("Failed to create temporary file %s: %s\n", p->tmpfile, strerror(errno));

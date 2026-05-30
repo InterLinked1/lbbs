@@ -489,7 +489,7 @@ cleanup:
 	return res;
 }
 
-static char range_tmpfile[84] = "";
+static char range_tmpfile[TMPNAME_BUFSIZ] = "";
 
 static enum http_response_code range_test(struct http_session *http)
 {
@@ -521,7 +521,7 @@ static int test_http_range_single(void)
 	if (s_strlen_zero(range_tmpfile)) {
 		FILE *fp;
 		int i;
-		strcpy(range_tmpfile, "/tmp/rangeXXXXXX");
+		bbs_tempname("range", range_tmpfile, sizeof(range_tmpfile));
 		fp = bbs_mkftemp(range_tmpfile, 0600);
 		if (!fp) {
 			goto cleanup;
@@ -573,7 +573,7 @@ static int test_http_range_multiple(void)
 	if (s_strlen_zero(range_tmpfile)) {
 		FILE *fp;
 		int i;
-		strcpy(range_tmpfile, "/tmp/rangeXXXXXX");
+		bbs_tempname("range", range_tmpfile, sizeof(range_tmpfile));
 		fp = bbs_mkftemp(range_tmpfile, 0600);
 		if (!fp) {
 			goto cleanup;

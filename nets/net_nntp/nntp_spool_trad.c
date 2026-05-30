@@ -410,7 +410,7 @@ static int overview_rebuild(const char *group, int article_to_remove)
 	FILE *oldfp, *newfp;
 	int res = 0;
 	char grouppath[NNTP_MAX_PATH_LENGTH];
-	char template[64] = "/tmp/nntp_overviewXXXXXX";
+	char template[TMPNAME_BUFSIZ];
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
 	char buf[NNTP_BUFSIZ];
 	/* for scandir: */
@@ -434,6 +434,7 @@ static int overview_rebuild(const char *group, int article_to_remove)
 		bbs_rwlock_unlock(&overviewlock);
 		return 1; /* If an overview file doesn't already exist, there is nothing to rebuild */
 	}
+	bbs_renamable_tempname("nntp_overview", template, sizeof(template));
 	newfp = bbs_mkftemp(template, 0644);
 	if (!newfp) {
 		fclose(oldfp);

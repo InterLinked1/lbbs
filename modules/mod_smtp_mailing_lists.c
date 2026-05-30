@@ -723,7 +723,7 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 	}
 
 	if (strlen_zero(subaddr)) { /* It's the reflector address */
-		char tmpattach[256] = "/tmp/lbbsmailXXXXXX";
+		char tmpattach[TMPNAME_BUFSIZ];
 		size_t msglen;
 		FILE *fp;
 
@@ -749,6 +749,7 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 			return -1;
 		}
 
+		bbs_tempname("exploder", tmpattach, sizeof(tmpattach));
 		fp = bbs_mkftemp(tmpattach, 0600);
 		if (!fp) {
 			/* Local error in processing */

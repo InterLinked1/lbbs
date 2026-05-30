@@ -270,10 +270,12 @@ static int email_flush(struct bouncer_channel *bc, FILE *in_fp, time_t now)
 	char buf[612];
 	char date[48];
 	char mailfrom[256];
-	char tmpfilename[128] = "/tmp/ircbouncerXXXXXX";
+	char tmpfilename[TMPNAME_BUFSIZ];
 	struct tm tm;
-	FILE *fp = bbs_mkftemp(tmpfilename, 0666);
+	FILE *fp;
 
+	bbs_renamable_tempname("ircbouncer", tmpfilename, sizeof(tmpfilename));
+	fp = bbs_mkftemp(tmpfilename, 0666);
 	if (!fp) {
 		return -1;
 	}

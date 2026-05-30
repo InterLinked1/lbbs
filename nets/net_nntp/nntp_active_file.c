@@ -171,7 +171,7 @@ static inline void update_and_set_group(struct group_info *g, struct group_info 
 static int regenerate_active_file(enum group_mod_type modtype, struct group_info *g)
 {
 	FILE *oldfp, *newfp;
-	char template[64] = "/tmp/nntp_activeXXXXXX";
+	char template[TMPNAME_BUFSIZ];
 	int inserted = 0;
 	int error = 0;
 	int found_group = 0;
@@ -188,6 +188,7 @@ static int regenerate_active_file(enum group_mod_type modtype, struct group_info
 		/* Not an error, but this will only happen once, ever, so it's noteworthy: */
 		bbs_debug(1, "Active file '%s' doesn't exist yet (no newsgroups exist yet), creating for first time\n", active_file);
 	}
+	bbs_renamable_tempname("nntp_active", template, sizeof(template));
 	newfp = bbs_mkftemp(template, 0644);
 	if (!newfp) {
 		if (oldfp) {

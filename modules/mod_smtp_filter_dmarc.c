@@ -406,9 +406,10 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 		case DMARC_POLICY_REJECT: /* Explicit reject */
 		case DMARC_POLICY_QUARANTINE: /* Explicit quarantine */
 			if (report_failures) {
-				char tmpfilename[128] = "/tmp/dmarcrufXXXXXX";
+				char tmpfilename[TMPNAME_BUFSIZ];
 				FILE *fp;
 				unsigned char **ruv = opendmarc_policy_fetch_ruf(pctx, NULL, 0, 1);
+				bbs_renamable_tempname("dmarcruf", tmpfilename, sizeof(tmpfilename));
 				fp = bbs_mkftemp(tmpfilename, MAIL_FILE_MODE);
 				if (fp) {
 					char date[48];

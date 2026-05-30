@@ -170,7 +170,7 @@ static void io_finalize(void *varg)
 static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restrict data, const void *arg)
 {
 	struct log_data *l;
-	char template[64] = "/tmp/iolog_XXXXXX";
+	char template[TMPNAME_BUFSIZ];
 
 	/* Since we generally want to log the data without encryption or compression, etc.
 	 * (we want to log the application layer data, without any presentation layer stuff),
@@ -190,6 +190,7 @@ static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restr
 	l->rpfd[0] = l->rpfd[1] = -1;
 	l->wpfd[0] = l->wpfd[1] = -1;
 
+	bbs_tempname("iolog", template, sizeof(template));
 	l->fp = bbs_mkftemp(template, 0600);
 	if (!l->fp) {
 		goto fail;

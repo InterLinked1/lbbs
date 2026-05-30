@@ -642,7 +642,7 @@ int bbs_config_set_keyval(const char *filename, const char *section, const char 
 	struct bbs_config *cfg;
 	size_t fsize;
 	struct stat st;
-	char tmpfile[256] = "/tmp/bbs_config_XXXXXX";
+	char tmpfile[TMPNAME_BUFSIZ];
 
 	/* Unlike Asterisk, we do not parse the entire config into memory,
 	 * modify config objects, and then serialize it back to disk.
@@ -657,6 +657,7 @@ int bbs_config_set_keyval(const char *filename, const char *section, const char 
 	 * (and may not know or care what the old value is).
 	 * So, do a brute force copy and update/add/replace. */
 
+	bbs_renamable_tempname("bbs_config", tmpfile, sizeof(tmpfile));
 	newfp = bbs_mkftemp(tmpfile, 0660);
 	if (!newfp) {
 		return -1;

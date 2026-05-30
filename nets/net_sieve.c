@@ -48,7 +48,7 @@ struct sieve_session {
 	const char *sievedir; /* Directory containing the mailbox's Sieve scripts (~/.config for personal mailboxes) */
 	const char *symlinkdir; /* Directory containing the .sieve symlink to the active Sieve script (always the mailbox's maildir) */
 	char *scriptname;
-	char template[32];
+	char template[TMPNAME_BUFSIZ];
 	long unsigned int quotaleft;
 	unsigned int uploadsofar;
 	unsigned int uploadexpected;
@@ -159,7 +159,7 @@ static int putscript_helper(struct sieve_session *sieve, char *s, int put)
 	 * (also possible with IMAP, but not required for a server to support that).
 	 * This means the input follows, and in fact may already be in the readline
 	 * buffer. */
-	strcpy(sieve->template, "/tmp/sieveputXXXXXX");
+	bbs_renamable_tempname("sieveput", sieve->template, sizeof(sieve->template));
 	sieve->fp = bbs_mkftemp(sieve->template, 0600);
 	sieve->uploadexpected = bytes + 2; /* Add 2 for the final CR LF */
 	sieve->uploadsofar = 0;
