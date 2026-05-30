@@ -85,7 +85,7 @@ void nntp_feed_add_stats(struct site *site, struct site_feed_stats *s);
 
 /* NNTP feed type */
 int feed_nntp_init(void);
-int feed_nntp_shutdown(void);
+void feed_nntp_shutdown(void);
 int feed_nntp_init_feed(struct site *site);
 void feed_nntp_cleanup_feed(struct site *site);
 int feed_nntp_send(struct article_info *artinfo, struct site *site);

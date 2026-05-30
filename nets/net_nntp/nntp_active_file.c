@@ -17,6 +17,8 @@
 
 #include "include/bbs.h"
 
+#include <dirent.h>
+
 #include "include/node.h"
 #include "include/utils.h"
 
@@ -28,6 +30,33 @@ static char active_file[sizeof(newsdir) + STRLEN("/active")] = ""; /* active fil
 
 static int newsdir_has_subdirs = 0;
 
+static int newsdir_contains_groups(const char *path)
+{
+	DIR *dir;
+	struct dirent *entry;
+	int res = 0;
+
+	if (!(dir = opendir(path))) {
+		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	while ((entry = readdir(dir)) != NULL) { /* Don't just bail out if errno becomes set, modules could set errno when we load them. */
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		} else if (entry->d_type == DT_DIR) {
+			/* Exclude special directories, e.g. .backlog */
+			if (entry->d_name[0] == '.') {
+				continue;
+			}
+			res = 1;
+			break;
+		}
+	}
+	closedir(dir);
+	return res;
+}
+
 int active_file_init(void)
 {
 	snprintf(active_file, sizeof(active_file), "%s/active", newsdir);
@@ -35,7 +64,7 @@ int active_file_init(void)
 	/* Note that we aren't concerned here with what the directories themselves are
 	 * or how they are organized (only the spool implementation is concerned with these details),
 	 * but all implementations (as of now) will create subdirectories. */
-	if (bbs_dir_has_subdirs(newsdir)) {
+	if (newsdir_contains_groups(newsdir)) {
 		newsdir_has_subdirs = 1;
 		if (!bbs_file_exists(active_file)) {
 			/* We have groups in the spool, but no active file, that's not good... */

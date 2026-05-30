@@ -70,12 +70,13 @@ static void back_off(int *restrict attempts)
 	}
 }
 
-int nntp_client_connect(struct nntp_client *nc, int secure)
+int nntp_client_connect(struct nntp_client *nc, struct bbs_url *url, int secure)
 {
 	int res, attempts, code;
+	nc->url = url; /* Save pointer to URL so we can log hostname later in log messages if needed */
 	/* Establish a connection to the site and make sure we can send articles */
 	for (attempts = 0 ; attempts != -1 ; back_off(&attempts)) {
-		res = bbs_tcp_client_connect(&nc->tcpclient, &nc->url, secure, nc->buf, sizeof(nc->buf));
+		res = bbs_tcp_client_connect(&nc->tcpclient, url, secure, nc->buf, sizeof(nc->buf));
 		/* If we fail now, it's possible the connection could succeed later;
 		 * we should periodically retry. */
 		if (res) {
@@ -211,7 +212,7 @@ int nntp_client_mode_reader(struct nntp_client *nc)
 	nntp_client_send(nc, "MODE READER\r\n");
 	res = nntp_client_expect(nc, SEC_MS(30), "20"); /* Looking for 200 or 201 response */
 	if (res || !(code = atoi(nc->buf)) || !(code == NNTP_OK_BANNER_POST || code == NNTP_OK_BANNER_NOPOST)) {
-		bbs_notice("MODE READER failed for %s (%s), aborting\n", nc->url.host, nc->buf);
+		bbs_notice("MODE READER failed for %s (%s), aborting\n", nc->url->host, nc->buf);
 		return -1;
 	}
 	return 0;
@@ -220,17 +221,17 @@ int nntp_client_mode_reader(struct nntp_client *nc)
 int nntp_client_starttls(struct nntp_client *nc)
 {
 	if (!bbs_io_transformer_available(TRANSFORM_TLS_ENCRYPTION)) {
-		bbs_notice("STARTTLS required for %s, but unavailable, aborting\n", nc->url.host);
+		bbs_notice("STARTTLS required for %s, but unavailable, aborting\n", nc->url->host);
 		return -1;
 	} else if (!nc->caps.starttls) {
-		bbs_notice("STARTTLS not offered by %s, aborting\n", nc->url.host);
+		bbs_notice("STARTTLS not offered by %s, aborting\n", nc->url->host);
 		return -1;
 	}
 	nntp_client_send(nc, "STARTTLS\r\n");
 	if (nntp_client_expect_code(nc, SEC_MS(30), NNTP_CONT_STARTTLS)) {
 		return -1;
 	}
-	if (bbs_tcp_client_starttls(&nc->tcpclient, nc->url.host)) {
+	if (bbs_tcp_client_starttls(&nc->tcpclient, nc->url->host)) {
 		return -1;
 	}
 	return 0;
@@ -239,10 +240,10 @@ int nntp_client_starttls(struct nntp_client *nc)
 int nntp_client_compress(struct nntp_client *nc)
 {
 	if (!bbs_io_transformer_available(TRANSFORM_DEFLATE_COMPRESSION)) {
-		bbs_notice("Compression required for %s, but unavailable, aborting\n", nc->url.host);
+		bbs_notice("Compression required for %s, but unavailable, aborting\n", nc->url->host);
 		return -1;
 	} else if (!nc->caps.compress) {
-		bbs_notice("COMPRESS DEFLATE not offered by %s, aborting\n", nc->url.host);
+		bbs_notice("COMPRESS DEFLATE not offered by %s, aborting\n", nc->url->host);
 		return -1;
 	}
 	nntp_client_send(nc, "COMPRESS DEFLATE\r\n");
@@ -281,7 +282,7 @@ int nntp_client_authenticate(struct nntp_client *nc, const char *username, const
 			return -1;
 		}
 	} else {
-		bbs_notice("No mutual authentication methods supported by %s\n", nc->url.host);
+		bbs_notice("No mutual authentication methods supported by %s\n", nc->url->host);
 		return -1;
 	}
 	return 0;

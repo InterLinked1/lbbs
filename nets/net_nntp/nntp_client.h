@@ -39,8 +39,8 @@ struct nntp_capabilities {
 struct nntp_client {
 	struct bbs_tcp_client tcpclient;
 	struct nntp_capabilities caps;
-	struct bbs_url url;
-	char buf[NNTP_MAX_LINE_LENGTH + 1];
+	struct bbs_url *url;
+	char buf[8192]; /* Large for leniency when sucking articles */
 };
 
 #define nntp_client_send(nc, fmt, ...) \
@@ -57,7 +57,7 @@ struct nntp_client {
 	_x; \
 })
 
-int nntp_client_connect(struct nntp_client *nc, int secure);
+int nntp_client_connect(struct nntp_client *nc, struct bbs_url *url, int secure);
 int nntp_client_read(struct nntp_client *nc, int timeout);
 int nntp_client_read_code(struct nntp_client *nc, int timeout);
 int nntp_client_capabilities(struct nntp_client *nc);

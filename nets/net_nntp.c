@@ -58,6 +58,7 @@
 #define MAIN_NNTP_FILE
 #include "net_nntp/nntp.h"
 #include "net_nntp/nntp_feed.h"
+#include "net_nntp/nntp_suck.h"
 
 /* NNTP ports */
 /* Reading server */
@@ -89,6 +90,7 @@ static int nnsp_port = DEFAULT_NNSP_PORT;
 
 static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
 int nntp_unloading = 0; /* Used extern by nntp_feed_nntp.c */
+void *thismodule; /* Used extern by nntp_suck.c */
 
 static bbs_rwlock_t nntp_lock;
 static FILE *newslog;
@@ -100,7 +102,7 @@ static char newsorg[256] = ""; /* Organization */
 char newsdir[256] = ""; /* Non-static so other files can access it extern */
 
 /* Global settings for incoming articles */
-static unsigned int max_article_size = 100000; /* ~100 KB should be plenty */
+unsigned int max_article_size = 100000; /* ~100 KB should be plenty; used extern from nntp_suck.c */
 static unsigned int max_groups = 100;
 static unsigned int max_accept_age = 10;
 static char poisongroups[NNTP_MAX_LINE_LENGTH];
@@ -297,7 +299,7 @@ static int add_moderator(const char *wildmat, const char *template)
 	return 0;
 }
 
-static int group_is_poison(const char *grp)
+int group_is_poison(const char *grp)
 {
 	return uwildmat(grp, poisongroups);
 }
@@ -1247,9 +1249,13 @@ static int cli_feedstats(struct bbs_cli_args *a)
 		print_feedstats(a, "(Overall)", total_backlog, &overallstats);
 	}
 	bbs_rwlock_unlock(&statlock);
-	if (name && !c) {
-		/* We wanted a specific site, but didn't find it */
-		bbs_dprintf(a->fdout, "No such feed site '%s'\n", name);
+	if (!c) {
+		if (name) {
+			/* We wanted a specific site, but didn't find it */
+			bbs_dprintf(a->fdout, "No such feed site '%s'\n", name);
+		} else {
+			bbs_dprintf(a->fdout, "No feed sites configured\n");
+		}
 		return -1;
 	}
 	return 0;
@@ -1451,7 +1457,7 @@ static int propagate_article(struct article_info *artinfo)
 
 /* =============== End Article Propagation =============== */
 
-static void artinfo_reset(struct article_info *artinfo)
+void artinfo_reset(struct article_info *artinfo)
 {
 	free_if(artinfo->filepath);
 
@@ -1694,7 +1700,7 @@ static void nntp_destroy(struct nntp_session *nntp)
  *
  */
 
-static int group_create(const char *groupname, const char *status, const char *creator, const char *description)
+int group_create(const char *groupname, const char *status, const char *creator, const char *description)
 {
 	struct group_info g;
 	int res;
@@ -1740,7 +1746,7 @@ static int group_delete(const char *groupname)
 	return res;
 }
 
-static int group_exists(const char *groupname)
+int group_exists(const char *groupname)
 {
 	int res;
 
@@ -1751,6 +1757,17 @@ static int group_exists(const char *groupname)
 	 * Once we have a hash table mapping groups to offsets in the active file,
 	 * adding an active_group_exists variant would probably be better. */
 	res = spool_group_exists(groupname);
+	if (res) {
+		/* There is an edge case here, groups that themselves contain other groups
+		 * (since we mirror the hierarchy in the way folders are created).
+		 * e.g. if we carry test.foo.bar but not test.foo, the directory test.foo
+		 * will still exist, even though test.foo isn't in the active file, which is the "real" source of truth.
+		 * Thus, if the directory doesn't exist, we don't carry it, but just because it does, doesn't mean we do.
+		 * If an .overview file is present in the directory, then it's a real group (though we can't check that from outside nntp_spool_trad.c)
+		 * If not, then we have to query the active file after all. */
+		res = active_group_info(groupname, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, 0, NULL, 0);
+		res = !res ? 1 : 0;
+	}
 	bbs_rwlock_unlock(&nntp_lock);
 	return res;
 }
@@ -2111,7 +2128,7 @@ static int identity_allowed_for_posting(struct nntp_session *nntp, const char *f
 	return nntp->node->user && userid == nntp->node->user->id;
 }
 
-static void free_article_groups(struct article_groups *groups)
+void free_article_groups(struct article_groups *groups)
 {
 	struct article_group *g;
 	while ((g = BBS_LIST_REMOVE_HEAD(groups, entry))) {
@@ -2119,7 +2136,7 @@ static void free_article_groups(struct article_groups *groups)
 	}
 }
 
-static int article_groups_contains(struct article_groups *groups, const char *name)
+int article_groups_contains(struct article_groups *groups, const char *name)
 {
 	struct article_group *g;
 	BBS_LIST_TRAVERSE(groups, g, entry) {
@@ -2130,7 +2147,7 @@ static int article_groups_contains(struct article_groups *groups, const char *na
 	return 0;
 }
 
-static int article_groups_add(struct article_groups *groups, const char *name)
+int article_groups_add(struct article_groups *groups, const char *name)
 {
 	struct article_group *g = calloc(1, sizeof(*g) + strlen(name) + 1);
 	if (ALLOC_FAILURE(g)) {
@@ -2479,7 +2496,7 @@ static int already_posted(const char *path)
 #define contains_invalid_newsgroups(s) (uwildmat(s, "example,example.*,poster,to,to.*,control,control.*,all,all.*,ctl,ctl.*,junk"))
 
 /*! \retval 0 on success, or 1 on duplicate or -1 for the default error code depending on mode */
-static int check_article(struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen, enum nntp_control_msg *cmsg)
+int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen)
 {
 #define REQUIRE_ARTINFO_FIELD(field) \
 	if (!artinfo->field) { \
@@ -2492,16 +2509,17 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 	REQUIRE_ARTINFO_FIELD(from);
 	REQUIRE_ARTINFO_FIELD(messageid);
 	REQUIRE_ARTINFO_FIELD(newsgroups);
-	if (nntp->mode == NNTP_MODE_TRANSIT) {
+	if (mode == NNTP_MODE_TRANSIT) {
 		REQUIRE_ARTINFO_FIELD(path); /* For proto-articles, we have yet to prepend this header and will do it later */
 	}
 	REQUIRE_ARTINFO_FIELD(subject);
 
 	/* Check for malformed headers */
 	if (strstr(artinfo->newsgroups, ",,")) {
-		snprintf(errbuf, errbuflen, "Newsgroups header is malformed");
-		return -1;
-	} else if (artinfo->distribution && strstr(artinfo->distribution, ",,")) {
+		/* Tolerate, since we'll ignore the empty group later, but this is poor form! */
+		bbs_client_err("Newsgroups header is malformed\n");
+	}
+	if (artinfo->distribution && strstr(artinfo->distribution, ",,")) {
 		snprintf(errbuf, errbuflen, "Distribution header is malformed");
 		return -1;
 	}
@@ -2521,7 +2539,7 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 		}
 	}
 
-	if (nntp->mode == NNTP_MODE_TRANSIT) {
+	if (mode == NNTP_MODE_TRANSIT) {
 		if (artinfo->messageid[0] != '<' && !bbs_str_ends_with(artinfo->messageid, ">")) {
 			/* Invalid Message-ID */
 			snprintf(errbuf, errbuflen, "Invalid Message-ID %s", artinfo->messageid);
@@ -2529,7 +2547,7 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 		}
 
 		/* If we limit what distributions we get from this peer, check if we want this article or not. */
-		if (!we_want_distribution(nntp, artinfo->distribution)) {
+		if (nntp && !we_want_distribution(nntp, artinfo->distribution)) {
 			if (artinfo->distribution) {
 				snprintf(errbuf, errbuflen, "Unwanted distribution \"%s\"", artinfo->distribution);
 			} else {
@@ -2543,11 +2561,11 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 		if (artinfo->control) {
 			/* If it has a Control header, it's a control message.
 			 * Here, we only validate that it's a known control message type and that it's approved (if required). */
-			*cmsg = parse_cmsg(artinfo->control);
-			if (*cmsg == CMSG_UNKNOWN) {
+			enum nntp_control_msg cmsg = parse_cmsg(artinfo->control);
+			if (cmsg == CMSG_UNKNOWN) {
 				snprintf(errbuf, errbuflen, "Unknown control message: %s", artinfo->control);
 				return -1;
-			} else if (!artinfo->approved && (*cmsg == CMSG_NEWGROUP || *cmsg == CMSG_RMGROUP)) {
+			} else if (!artinfo->approved && (cmsg == CMSG_NEWGROUP || cmsg == CMSG_RMGROUP)) {
 				snprintf(errbuf, errbuflen, "Ignoring unapproved newgroup/rmgroup message");
 				return -1;
 			}
@@ -2634,28 +2652,43 @@ static int check_article(struct nntp_session *nntp, struct article_info *artinfo
 
 #define RX_REJECT(nntp, streaming) (streaming ? NNTP_FAIL_TAKETHIS_REJECT : nntp->mode == NNTP_MODE_TRANSIT ? NNTP_FAIL_IHAVE_REJECT : NNTP_FAIL_POST_REJECT)
 
-#define nntp_rx_reply(nntp, postlen, messageid, logcode, code, msg) nntp_rx_reply_streaming(nntp, streaming, postlen, messageid, logcode, code, msg)
+#define nntp_rx_reply(nntp, artlen, messageid, logcode, code, msg) nntp_rx_reply_streaming(nntp, streaming, artlen, messageid, logcode, code, msg)
 
-#define nntp_rx_reply_streaming(nntp, streaming, postlen, messageid, logcode, code, msg) \
-	log_article(nntp, streaming, postlen, messageid, logcode, msg); \
+#define nntp_rx_reply_streaming(nntp, streaming, artlen, messageid, logcode, code, msg) \
+	log_article(nntp, streaming, artlen, messageid, logcode, msg); \
 	nntp_send(nntp, code, msg)
 
 /* Send a custom error message to client (unless streaming) and do NOT include it in the log */
-#define nntp_rx_reply2(nntp, postlen, messageid, logcode, code, msg) nntp_rx_reply2_streaming(nntp, streaming, postlen, messageid, logcode, code, msg)
+#define nntp_rx_reply2(nntp, artlen, messageid, logcode, code, msg) nntp_rx_reply2_streaming(nntp, streaming, artlen, messageid, logcode, code, msg)
 
 /* Send a custom error message to client (unless streaming) but include it in the log */
-#define nntp_rx_reply3(nntp, postlen, messageid, logcode, code, msg) nntp_rx_reply3_streaming(nntp, streaming, postlen, messageid, logcode, code, msg)
+#define nntp_rx_reply3(nntp, artlen, messageid, logcode, code, msg) nntp_rx_reply3_streaming(nntp, streaming, artlen, messageid, logcode, code, msg)
 
-#define nntp_rx_reply2_streaming(nntp, streaming, postlen, messageid, logcode, code, msg) \
-	log_article(nntp, streaming, postlen, messageid, logcode, ""); \
+#define nntp_rx_reply2_streaming(nntp, streaming, artlen, messageid, logcode, code, msg) \
+	log_article(nntp, streaming, artlen, messageid, logcode, ""); \
 	nntp_send(nntp, code, "%s", streaming ? messageid : msg)
 
-#define nntp_rx_reply3_streaming(nntp, streaming, postlen, messageid, logcode, code, msg) \
-	log_article(nntp, streaming, postlen, messageid, logcode, msg); \
+#define nntp_rx_reply3_streaming(nntp, streaming, artlen, messageid, logcode, code, msg) \
+	log_article(nntp, streaming, artlen, messageid, logcode, msg); \
 	nntp_send(nntp, code, "%s", streaming ? messageid : msg)
+
+int article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t artlen)
+{
+	int delivered;
+
+	bbs_rwlock_wrlock(&nntp_lock);
+	delivered = spool_article_create(groups, artinfo, srcfd, artlen); /* Assign article numbers, add Xref header, and deliver to spool */
+	bbs_rwlock_unlock(&nntp_lock);
+
+	if (delivered > 0) {
+		propagate_article(artinfo);
+	}
+
+	return delivered;
+}
 
 /*! \brief Final processing of POST/IHAVE/TAKETHIS */
-static int process_article(struct nntp_session *nntp, const char *srcfilename, size_t postlen, const char *articleid, int streaming)
+static int process_article(struct nntp_session *nntp, const char *srcfilename, size_t filesize, const char *articleid, int streaming)
 {
 	char *newsgroup, *newsgroups = NULL;
 	int delivered = 0;
@@ -2674,17 +2707,21 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 	memset(&groups, 0, sizeof(groups));
 
 	/* Perform non-group specific checks for article and header validity. If any fail, the entire post is rejected. */
-	res = check_article(nntp, artinfo, errorbuf, sizeof(errorbuf), &cmsg);
+	res = check_article(nntp->mode, nntp, artinfo, errorbuf, sizeof(errorbuf));
 	if (res) {
 		/* errorbuf is set if we fail, send the error message now (except for TAKETHIS, where we only send Message-ID) */
 		if (res == -1) {
 			res = RX_REJECT(nntp, streaming); /* Use the default error for rejecting an article depending on mode (reader/transit and streaming or not) */
-			nntp_rx_reply3(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, res, errorbuf);
+			nntp_rx_reply3(nntp, filesize, S_OR(artinfo->messageid, articleid), LOG_REJECT, res, errorbuf);
 		} else if (res == 1) {
 			res = nntp->mode == NNTP_MODE_TRANSIT && !streaming ? NNTP_FAIL_IHAVE_REFUSE : RX_REJECT(nntp, streaming); /* Duplicate */
-			nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_DUPLICATE, res, errorbuf);
+			nntp_rx_reply2(nntp, filesize, S_OR(artinfo->messageid, articleid), LOG_DUPLICATE, res, errorbuf);
 		}
 		return 0;
+	}
+
+	if (artinfo->control) {
+		cmsg = parse_cmsg(artinfo->control);
 	}
 
 #define PATH_TAIL ".POSTED!not-for-mail"
@@ -2694,7 +2731,7 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 	if (!artinfo->path) {
 		artinfo->prependlen = (size_t) snprintf(prepend, sizeof(prepend), "Path: %s!%s\r\n", newsname, PATH_TAIL);
 		artinfo->prepend = prepend;
-		artinfo->bytes += artinfo->prependlen; /* postlen stays unchanged because this isn't in the temp file */
+		artinfo->bytes += artinfo->prependlen; /* filesize stays unchanged because this isn't in the temp file */
 		artinfo->path = strdup(prepend); /* Need this for checking paths for article propagation, as well as for sending path to channel/program feeds */
 		if (ALLOC_FAILURE(artinfo->path)) {
 			SET_POST_ERROR("Temporary server error");
@@ -2709,6 +2746,11 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 	newsgroups = artinfo->newsgroups; /* Duplicate pointer since we'll mutate it */
 	while ((newsgroup = strsep(&newsgroups, ","))) {
 		char status[NNTP_BUFSIZ] = "y"; /* Default to 'y' in case it's a control message */
+
+		ltrim(newsgroup); /* The Newsgroups header could contain spaces between groups */
+		if (strlen_zero(newsgroup)) {
+			continue;
+		}
 
 		/* Check if this group is poison. We need to do this first, because most likely the group isn't carried locally. */
 		if (group_is_poison(newsgroup)) {
@@ -2910,14 +2952,11 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 		bbs_error("Failed to open %s: %s\n", srcfilename, strerror(errno));
 		goto cleanup;
 	}
-
-	bbs_rwlock_wrlock(&nntp_lock);
-	delivered = spool_article_create(&groups, artinfo, srcfd, postlen); /* Assign article numbers, add Xref header, and deliver to spool */
-	bbs_rwlock_unlock(&nntp_lock);
+	delivered = article_create(&groups, artinfo, srcfd, filesize); /* Assign article numbers, add Xref header, and deliver to spool */
+	close(srcfd);
 	if (delivered <= 0) {
 		temp_fail = 1; /* If we got this far and failed, for peers, this is a temporary failure, we want them to retry deliver later */
 	}
-	close(srcfd);
 
 cleanup:
 	free_article_groups(&groups);
@@ -2926,36 +2965,34 @@ cleanup:
 		if (nntp->mode == NNTP_MODE_READER) {
 			if (total_errors == 1 && errorbuf[0]) {
 				/* If attempted to post only to one group, use the specific error message we constructed */
-				nntp_rx_reply3(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, permission_errors ? NNTP_FAIL_POST_AUTH : NNTP_FAIL_POST_REJECT, errorbuf);
+				nntp_rx_reply3(nntp, filesize, S_OR(artinfo->messageid, articleid), LOG_REJECT, permission_errors ? NNTP_FAIL_POST_AUTH : NNTP_FAIL_POST_REJECT, errorbuf);
 			} else if (permission_errors && total_errors == permission_errors) {
 				/* We weren't authorized to post to the group(s) */
-				nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, NNTP_FAIL_POST_AUTH, "Posting not allowed");
+				nntp_rx_reply2(nntp, filesize, S_OR(artinfo->messageid, articleid), LOG_REJECT, NNTP_FAIL_POST_AUTH, "Posting not allowed");
 			} else {
-				nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, NNTP_FAIL_POST_REJECT, "Posting failed");
+				nntp_rx_reply2(nntp, filesize, S_OR(artinfo->messageid, articleid), LOG_REJECT, NNTP_FAIL_POST_REJECT, "Posting failed");
 			}
 		} else {
 			if (temp_fail) {
 				if (streaming) {
 					/* RFC 4644 2.5.2 says to defer with TAKETHIS, we MUST send a 400 response and disconnect */
-					nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_DEFER, NNTP_FAIL_TERMINATING, "Service temporarily unavailable");
+					nntp_rx_reply2(nntp, filesize, S_OR(artinfo->messageid, articleid), LOG_DEFER, NNTP_FAIL_TERMINATING, "Service temporarily unavailable");
 					return -1;
 				}
-				nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Transfer failed; retry later");
+				nntp_rx_reply2(nntp, filesize, S_OR(artinfo->messageid, articleid), LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Transfer failed; retry later");
 			} else {
 				/* If multiple errors occured, use a generic error response, otherwise provide the specific message */
 				if (total_errors == 1 && errorbuf[0]) {
-					nntp_rx_reply3(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, streaming ? NNTP_FAIL_TAKETHIS_REJECT : NNTP_FAIL_IHAVE_REJECT, errorbuf);
+					nntp_rx_reply3(nntp, filesize, S_OR(artinfo->messageid, articleid), LOG_REJECT, streaming ? NNTP_FAIL_TAKETHIS_REJECT : NNTP_FAIL_IHAVE_REJECT, errorbuf);
 				} else {
-					nntp_rx_reply2(nntp, postlen, S_OR(artinfo->messageid, articleid), LOG_REJECT, streaming ? NNTP_FAIL_TAKETHIS_REJECT : NNTP_FAIL_IHAVE_REJECT, "Transfer rejected; do not retry");
+					nntp_rx_reply2(nntp, filesize, S_OR(artinfo->messageid, articleid), LOG_REJECT, streaming ? NNTP_FAIL_TAKETHIS_REJECT : NNTP_FAIL_IHAVE_REJECT, "Transfer rejected; do not retry");
 				}
 			}
 		}
 	} else {
 		/* Posting succeeded to at least one newsgroup (in which case Message-ID must be set). */
-		nntp_rx_reply2(nntp, postlen, artinfo->messageid, was_junk ? LOG_JUNK : LOG_ACCEPT,
-			streaming ? NNTP_OK_TAKETHIS : nntp->mode == NNTP_MODE_TRANSIT ? NNTP_OK_IHAVE : NNTP_OK_POST, "Article received OK");
-		/* If we succeeded, propagate the article to other sites */
-		propagate_article(artinfo);
+		nntp_rx_reply2(nntp, filesize, artinfo->messageid, was_junk ? LOG_JUNK : LOG_ACCEPT,
+			streaming ? NNTP_OK_TAKETHIS : nntp->mode == NNTP_MODE_TRANSIT ? NNTP_OK_IHAVE : NNTP_OK_POST, "Article received OK");/* If we succeeded, propagate the article to other sites */
 	}
 	return 0;
 }
@@ -3158,11 +3195,12 @@ static int save_header_value(struct article_info *artinfo, char *s)
 		hval = s + STRLEN(hdrname ":"); \
 		ltrim(hval); \
 		if (unlikely(strlen_zero(hval))) { \
-			bbs_client_err("Empty header '%s'?\n", var); \
-			return -1; /* We MAY reject articles with header fields without valid contents (RFC 5537 3.6) */ \
+			bbs_client_err("Empty header '%s'?\n", hdrname); \
+			/* We MAY reject articles with header fields without valid contents (RFC 5537 3.6), we just omit the header (e.g. can happen for References with no value) */ \
+			return 0; \
 		} \
 		if (unlikely(var != NULL)) { \
-			bbs_client_err("Duplicate header '%s'?\n", var); \
+			bbs_client_err("Duplicate header '%s'?\n", hdrname); \
 			return -1; /* RFC 5536 Section 3 says these headers MUST NOT occur more than once */ \
 		} \
 		REPLACE(var, hval); \
@@ -3275,7 +3313,7 @@ static int is_valid_messageid(const char *s)
 	return 1;
 }
 
-static int process_last_header(struct nntp_session *nntp, struct article_info *artinfo, char *s, FILE *fp, size_t *restrict postlen, const char *articleid)
+static int process_last_header(enum nntp_mode mode, struct article_info *artinfo, char *s, FILE *fp, size_t *restrict artlen, const char *articleid)
 {
 	int bytes;
 	char hdrval[NNTP_MAX_LINE_LENGTH];
@@ -3288,7 +3326,7 @@ static int process_last_header(struct nntp_session *nntp, struct article_info *a
 
 #define APPEND_HDR(fp, hdrname, fmt, ...) \
 	bytes = fprintf(fp, hdrname ": " fmt "\r\n", ## __VA_ARGS__); \
-	*postlen += (size_t) bytes;
+	*artlen += (size_t) bytes;
 
 #define ADD_HDR(fp, field, hdrname, fmt, ...) \
 	REPLACE(field, __VA_ARGS__); \
@@ -3304,7 +3342,7 @@ static int process_last_header(struct nntp_session *nntp, struct article_info *a
 		}
 	}
 
-	if (nntp->mode == NNTP_MODE_TRANSIT) {
+	if (articleid) { /* Usually if MODE_TRANSIT, but if sucking news, articleid isn't set */
 		if (artinfo->messageid && strcmp(artinfo->messageid, articleid)) {
 			/* The article better be the article that the other server said it was in IHAVE */
 			bbs_debug(1, "Article Message-ID mismatch: IHAVE=%s, Message-ID=%s\n", articleid, s);
@@ -3320,7 +3358,7 @@ static int process_last_header(struct nntp_session *nntp, struct article_info *a
 		}
 	}
 
-	if (nntp->mode == NNTP_MODE_READER) {
+	if (mode == NNTP_MODE_READER) {
 		/* Certain mandatory fields are optional in proto-articles, i.e. we need to add them if they are missing (Date, Message-ID, Path).
 		 * If they are present, they MUST be valid (RFC 5537 3.4.1). If we find them invalid, we REMOVE them, which will
 		 * cause the proto-article to be rejected since a mandatory header will be missing. */
@@ -3375,106 +3413,50 @@ static int process_last_header(struct nntp_session *nntp, struct article_info *a
 	return 0;
 }
 
-static inline int article_too_large(struct nntp_session *nntp, size_t bytes)
+static inline int article_too_large(enum nntp_mode mode, size_t bytes)
 {
-	return bytes >= max_article_size || (nntp->mode == NNTP_MODE_READER && bytes >= max_post_size);
+	return bytes >= max_article_size || (mode == NNTP_MODE_READER && bytes >= max_post_size);
 }
 
-/* articleid is only set for MODE_TRANSIT */
-static int receive_article(struct nntp_session *nntp, struct readline_data *rldata, const char *articleid, int streaming)
+int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct bbs_node *node, struct readline_data *rldata, struct bbs_tcp_client *tcpclient, FILE *fp, size_t *artlen, const char *articleid)
 {
-	char template[64];
-	FILE *fp;
 	int inheaders = 1;
 	int permerror = 0, postfail = 0;
-	size_t postlen = 0;
 	int lines = 0;
 	char headerbuf[4096]; /* Max header size for multi-line headers, this should be plenty - this isn't email! The main culprit is probably References... */
 	size_t headerleft = sizeof(headerbuf);
 	char *headerpos = headerbuf;
 	size_t dot_stuffed_lines = 0;
-	struct article_info *artinfo = &nntp->artinfo;
 
-	nntp_reset_data(nntp);
-	strcpy(template, "/tmp/nntpXXXXXX"); /* Safe */
-
-	fp = bbs_mkftemp(template, 0600);
-	if (!fp) {
-		if (streaming) { /* TAKETHIS */
-			nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_TERMINATING, "Service temporarily unavailable"); /* RFC 4644 2.5.2 says to defer with TAKETHIS, we MUST send a 400 response and disconnect */
-			return -1;
-		} else if (nntp->mode == NNTP_MODE_READER) {
-			nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_POST_AUTH, "Server error, posting temporarily unavailable");
-		} else {
-			nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Temporary server error, try again later");
-		}
-		return 0;
-	}
-
-	if (!streaming) {
-		if (nntp->mode == NNTP_MODE_READER) {
-			nntp_send(nntp, NNTP_CONT_POST, "Input article");
-		} else {
-			nntp_send(nntp, NNTP_CONT_IHAVE, "Send it");
-		}
-	}
+	*artlen = 0;
 
 	for (;;) {
 		int res;
 		char *s;
-		ssize_t len = bbs_node_readline(nntp->node, rldata, "\r\n", MIN_MS(5));
+		ssize_t len;
+		if (tcpclient) {
+			len = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", MIN_MS(5));
+			s = tcpclient->buf;
+		} else {
+			len = bbs_node_readline(node, rldata, "\r\n", MIN_MS(5));
+			s = rldata->buf;
+		}
 		if (len < 0) {
-			fclose(fp);
-			unlink(template);
 			return -1;
 		}
-		s = rldata->buf;
 		if (!strcmp(s, ".")) {
-			fclose(fp);
-			if (postfail) {
-				unlink(template);
-				if (inheaders || permerror || article_too_large(nntp, postlen)) {
-					/* Permanent error */
-					if (inheaders) {
-						nntp_rx_reply(nntp, postlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected (ill-formed article); do not retry");
-					} else if (article_too_large(nntp, postlen)) {
-						nntp_rx_reply(nntp, postlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected (too large); do not retry");
-					} else {
-						nntp_rx_reply(nntp, postlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected; do not retry"); /* Catch-all, but I don't think this case is possible */
-					}
-				} else {
-					/* Temporary error */
-					if (streaming) {
-						nntp_rx_reply(nntp, postlen, articleid, LOG_DEFER, NNTP_FAIL_TERMINATING, "Transfer failed; retry later");
-						return -1;
-					} else if (nntp->mode == NNTP_MODE_TRANSIT) {
-						nntp_rx_reply(nntp, postlen, articleid, LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Transfer not possible; retry later");
-					} else {
-						nntp_rx_reply(nntp, postlen, articleid, LOG_DEFER, NNTP_FAIL_POST_REJECT, "Posting failed");
-					}
-				}
-				return 0;
-			}
-			/* We handle dot-stuffing mostly transparently, i.e. the leading dots are stored in the spool
-			 * so they can be efficiently served to clients without further processing.
-			 * However, that means the "real" length of the file differs from the reported # of bytes.
-			 * This is intended (see RFC 3977 8.1.1, :bytes is not supposed to include dot-stuffing). */
-			artinfo->bytes = postlen - dot_stuffed_lines;
-			artinfo->lines = lines;
-			res = process_article(nntp, template, postlen, articleid, streaming);
-			unlink(template);
-			return res;
+			break; /* End of article */
 		}
 
 		if (postfail) {
-			postlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
+			*artlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
 			continue; /* Corruption already happened, just ignore the rest of the message for now. */
 		} else if (inheaders) {
 			if (!len) {
 				int hres;
 				inheaders = 0; /* Got CR LF, end of headers */
-				hres = process_last_header(nntp, artinfo, headerbuf, fp, &postlen, articleid);
-				artinfo->headerslen = postlen; /* We are now done processing/adding headers */
+				hres = process_last_header(mode, artinfo, headerbuf, fp, artlen, articleid);
+				artinfo->headerslen = *artlen; /* We are now done processing/adding headers */
 				if (hres) {
 					bbs_client_err("Failed to finalize headers\n");
 					postfail = 1;
@@ -3489,6 +3471,11 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 						continue; /* Skipping rest of a header we don't want */
 					}
 					SAFE_FAST_APPEND(headerbuf, sizeof(headerbuf), headerpos, headerleft, "%s", s + 1); /* Append to existing header (skip first char, space or tab, since we already add a space) */
+					if (!headerleft) {
+						bbs_client_err("Header length too long\n");
+						postfail = 1;
+						continue;
+					}
 				} else {
 					/* Flush any existing header */
 					if (headerpos > headerbuf) {
@@ -3509,7 +3496,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 						 * The only exception to this would be when using a suck feed where we want to slave our article numbers off the feeder's.
 						 *
 						 * Readers MUST NOT send an Xref header. Therefore, we DO also process it here for readers so later we can reject proto-articles with Xref headers. */
-						if (nntp->mode == NNTP_MODE_TRANSIT) {
+						if (mode == NNTP_MODE_TRANSIT) {
 							continue;
 						}
 					} else if (STARTS_WITH(s, "Path:")) {
@@ -3530,7 +3517,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 						 *
 						 * RFC 5537 allows us to append the FQDN/IP of the source to !.POSTED; we do not, to protect poster privacy. */
 						SAFE_FAST_APPEND(headerbuf, sizeof(headerbuf), headerpos, headerleft, "Path: %s%s",
-							newsname, nntp->mode == NNTP_MODE_READER ? "!.POSTED" : "");
+							newsname, mode == NNTP_MODE_READER ? "!.POSTED" : "");
 						pbytes = sizeof(headerbuf) - headerleft;
 						res = (int) fwrite(headerbuf, 1, pbytes, fp); /* Use headerbuf directly; since this is the first line, we know we appended to the beginning */
 						if (res != (int) pbytes) {
@@ -3538,7 +3525,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 							postfail = 1;
 							continue;
 						}
-						postlen += (size_t) res;
+						*artlen += (size_t) res;
 						if (len > NNTP_MAX_LINE_LENGTH - 256) {
 							/* Very crude, but if the path is pretty long, then also wrap what's to come onto another line.
 							 * Examples in RFC 5537 3.2.2 show that the ! then begins on the next line.
@@ -3551,7 +3538,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 								postfail = 1;
 								continue;
 							}
-							postlen += (size_t) res;
+							*artlen += (size_t) res;
 							wrapped = 1;
 						}
 						restpos = headerpos; /* Save beginning of where we'll write this next line: */
@@ -3563,7 +3550,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 							postfail = 1;
 							continue;
 						}
-						postlen += (size_t) res;
+						*artlen += (size_t) res;
 						continue;
 					}
 					SAFE_FAST_APPEND(headerbuf, sizeof(headerbuf), headerpos, headerleft, "%s", s);
@@ -3581,10 +3568,20 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 			}
 		}
 
-		if (article_too_large(nntp, (unsigned int) (postlen + (long unsigned int) len + 2))) {
+		/* Reject articles that significantly exceed the line length limit to avoid propagating ill-formed articles.
+		 * NNTP has a command line length limit of 512, we use twice that to be more consistent with SMTP length limits,
+		 * and as in practice, there are a lot of Usenet articles with lines between 512 and 1024. */
+		if (len > 2 * NNTP_MAX_LINE_LENGTH - 2) {
+			bbs_client_err("Article contains excessively long line (%lu > %d bytes)\n", len + 2, 2 * NNTP_MAX_LINE_LENGTH);
+			postfail = 1;
+			*artlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
+			continue;
+		}
+
+		if (article_too_large(mode, (unsigned int) (*artlen + (long unsigned int) len + 2))) {
 			bbs_client_err("Article size has exceeded site size limit\n");
 			postfail = 1;
-			postlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
+			*artlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
 			continue;
 		}
 
@@ -3612,8 +3609,89 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 			bbs_error("Failed to append line\n");
 			postfail = 1;
 		}
-		postlen += (size_t) res;
+		*artlen += (size_t) res;
 	}
+
+	if (postfail) {
+		return permerror ? 2 : 1;
+	}
+
+	/* We handle dot-stuffing mostly transparently, i.e. the leading dots are stored in the spool
+	 * so they can be efficiently served to clients without further processing.
+	 * However, that means the "real" length of the file differs from the reported # of bytes.
+	 * This is intended (see RFC 3977 8.1.1, :bytes is not supposed to include dot-stuffing). */
+	artinfo->bytes = *artlen - dot_stuffed_lines;
+	artinfo->lines = lines;
+	fflush(fp);
+
+	return 0;
+}
+
+/* articleid is only set for MODE_TRANSIT */
+static int receive_article(struct nntp_session *nntp, struct readline_data *rldata, const char *articleid, int streaming)
+{
+	char template[64];
+	FILE *fp;
+	size_t artlen;
+	int res;
+	struct article_info *artinfo = &nntp->artinfo;
+
+	nntp_reset_data(nntp);
+	strcpy(template, "/tmp/nntpXXXXXX"); /* Safe */
+
+	fp = bbs_mkftemp(template, 0600);
+	if (!fp) {
+		if (streaming) { /* TAKETHIS */
+			nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_TERMINATING, "Service temporarily unavailable"); /* RFC 4644 2.5.2 says to defer with TAKETHIS, we MUST send a 400 response and disconnect */
+			return -1;
+		} else if (nntp->mode == NNTP_MODE_READER) {
+			nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_POST_AUTH, "Server error, posting temporarily unavailable");
+		} else {
+			nntp_rx_reply(nntp, 0, articleid, LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Temporary server error, try again later");
+		}
+		return 0;
+	}
+
+	if (!streaming) {
+		if (nntp->mode == NNTP_MODE_READER) {
+			nntp_send(nntp, NNTP_CONT_POST, "Input article");
+		} else {
+			nntp_send(nntp, NNTP_CONT_IHAVE, "Send it");
+		}
+	}
+
+	res = nntp_read_article(artinfo, nntp->mode, nntp->node, rldata, NULL, fp, &artlen, articleid);
+	fclose(fp);
+
+	if (res < 0) {
+		unlink(template);
+		return -1;
+	} else if (res) {
+		unlink(template);
+		if (res == 2 || article_too_large(nntp->mode, artlen)) {
+			/* Permanent error */
+			if (article_too_large(nntp->mode, artlen)) {
+				nntp_rx_reply(nntp, artlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected (too large); do not retry");
+			} else {
+				nntp_rx_reply(nntp, artlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected; do not retry"); /* Catch-all, but I don't think this case is possible */
+			}
+		} else {
+			/* Temporary error */
+			if (streaming) {
+				nntp_rx_reply(nntp, artlen, articleid, LOG_DEFER, NNTP_FAIL_TERMINATING, "Transfer failed; retry later");
+				return -1;
+			} else if (nntp->mode == NNTP_MODE_TRANSIT) {
+				nntp_rx_reply(nntp, artlen, articleid, LOG_DEFER, NNTP_FAIL_IHAVE_DEFER, "Transfer not possible; retry later");
+			} else {
+				nntp_rx_reply(nntp, artlen, articleid, LOG_DEFER, NNTP_FAIL_POST_REJECT, "Posting failed");
+			}
+		}
+		return 0;
+	}
+
+	res = process_article(nntp, template, artlen, articleid, streaming);
+	unlink(template);
+	return res;
 }
 
 /*! \brief "Work in progress" article currently being received */
@@ -4514,9 +4592,9 @@ static int load_config(void)
 		return -1;
 	}
 
-	
-
-	if (active_init() || spool_init()) {
+	/* Note: nntp_suckfeed_init needs to be initialized before the bulk of load_config() so the list is ready to receive items when processing the config
+	 * However, it also needs to be after loading newsdir */
+	if (active_init() || spool_init() || nntp_suckfeed_init()) {
 		bbs_config_unlock(cfg);
 		return -1;
 	}
@@ -4650,7 +4728,7 @@ static int load_config(void)
 			/* The only config section type that isn't defined by the section name is user ACLs */
 			const char *type = bbs_config_sect_val(section, "type");
 			if (!type) {
-				bbs_error("Unrecognized section name '%s' (if this is an ACL, add type=acl)\n", bbs_config_section_name(section));
+				bbs_error("Unrecognized section name '%s' (add type=acl or type=suckfeed)\n", bbs_config_section_name(section));
 			} else if (!strcasecmp(type, "acl")) {
 				const char *guests = NULL, *userswm = NULL, *readwm = NULL, *postwm = NULL;
 				int tmp, minreadpriv = 0, minpostpriv = 0, minapprovepriv = 1;
@@ -4695,6 +4773,100 @@ static int load_config(void)
 				}
 				/* Create the ACL */
 				load_acl(guests, userswm, readwm, postwm, minreadpriv, minpostpriv, minapprovepriv);
+			} else if (!strcasecmp(type, "suckfeed")) {
+				const char *server = NULL;
+				int modereader = 0, starttls = 0, compress = 0;
+				int autocreate = 0, xrefslave = 0;
+				int maxactivity = 0, mincount = 0, minlow = 0;
+				size_t maxsize = 0;
+				int minlines = 0, maxlines = 0, maxgroups = 0, maxgroupsxref = 0;
+				struct suck_feed *sf;
+				while ((keyval = bbs_config_section_walk(section, keyval))) {
+#define LOAD_NON_NEGATIVE_INT(setting) \
+	else if (!strcasecmp(key, #setting)) { \
+		setting = atoi(val); \
+		if (setting < 0) { \
+			bbs_warning("Invalid %s '%s'\n", #setting, val); \
+			setting = 0; \
+		} \
+	}
+#define LOAD_SIZE(setting) \
+	else if (!strcasecmp(key, #setting)) { \
+		long tmpsize = atol(val); \
+		if (tmpsize < 0) { \
+			bbs_warning("Invalid %s '%s'\n", #setting, val); \
+			setting = 0; \
+		} else { \
+			setting = (size_t) tmpsize; \
+		} \
+	}
+					const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);
+					if (!strcasecmp(key, "type")) {
+						continue;
+					/* Suckfeed general settings */
+					} else if (!strcasecmp(key, "server")) {
+						server = val;
+					} else if (!strcasecmp(key, "modereader")) {
+						modereader = S_TRUE(val);
+					} else if (!strcasecmp(key, "starttls")) {
+						starttls = S_TRUE(val);
+					} else if (!strcasecmp(key, "compress")) {
+						compress = S_TRUE(val);
+					} else if (!strcasecmp(key, "autocreate")) {
+						autocreate = S_TRUE(val);
+					} else if (!strcasecmp(key, "xrefslave")) {
+						xrefslave = S_TRUE(val);
+					}
+					/* Group filters */
+					LOAD_NON_NEGATIVE_INT(maxactivity)
+					LOAD_NON_NEGATIVE_INT(mincount)
+					LOAD_NON_NEGATIVE_INT(minlow)
+					/* Article filters */
+					LOAD_SIZE(maxsize)
+					LOAD_NON_NEGATIVE_INT(minlines)
+					LOAD_NON_NEGATIVE_INT(maxlines)
+					LOAD_NON_NEGATIVE_INT(maxgroups)
+					LOAD_NON_NEGATIVE_INT(maxgroupsxref)
+					else {
+						continue; /* Everything else is a kill pattern or group pattern, skip for now */
+					}
+				}
+				if (strlen_zero(server)) {
+					bbs_error("Must specify server for suck feed %s\n", bbs_config_section_name(section));
+					continue;
+				}
+				sf = nntp_suckfeed_create(bbs_config_section_name(section), server, modereader, starttls, compress, autocreate, xrefslave,
+					maxactivity, mincount, minlow, maxsize, minlines, maxlines, maxgroups, maxgroupsxref);
+				if (!sf) {
+					continue;
+				}
+				/* If we succeeded, then load in the kill patterns and group patterns */
+				while ((keyval = bbs_config_section_walk(section, keyval))) {
+					const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);
+					if (!strcasecmp(key, "type") || !strcasecmp(key, "server") || !strcasecmp(key, "modereader") || !strcasecmp(key, "starttls") || !strcasecmp(key, "compress")) {
+						continue; /* Skip general */
+					} else if (!strcasecmp(key, "autocreate") || !strcasecmp(key, "xrefslave")) {
+						continue; /* Skip general */
+					} else if (!strcasecmp(key, "maxactivity") || !strcasecmp(key, "mincount") || !strcasecmp(key, "minlow")) {
+						continue; /* Skip group filters */
+					} else if (!strcasecmp(key, "maxsize") || !strcasecmp(key, "minlines") || !strcasecmp(key, "maxlines") || !strcasecmp(key, "maxgroups") || !strcasecmp(key, "maxgroupsxref")) {
+						continue;
+					}
+					/* Technically, we don't have the suck_feeds list locked at this point,
+					 * but since we're still loading, there's no real harm yet
+					 * with adding to the suck_feed without locking. Later, this would be illegal. */
+					if (!strcasecmp(key, "kill")) {
+						/* Kill pattern */
+						char pattern[NNTP_BUFSIZ], *hdr, *killpat;
+						safe_strncpy(pattern, val, sizeof(pattern));
+						killpat = pattern;
+						hdr = strsep(&killpat, ":");
+						nntp_suckfeed_add_killpat(sf, hdr, killpat);
+					} else {
+						/* Group pattern */
+						nntp_suckfeed_add_suckpat(sf, key, val);
+					}
+				}
 			} else {
 				bbs_error("Unrecognized section type '%s'\n", type);
 			}
@@ -4722,6 +4894,8 @@ static void cleanup_lists(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&sites, entry, free_site);
 	sites_cleanup_feed_types();
 
+	nntp_suckfeed_cleanup();
+
 	RWLIST_WRLOCK_REMOVE_ALL(&acls, entry, free_acl);
 	RWLIST_WRLOCK_REMOVE_ALL(&inpeers, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&distributions, entry, free);
@@ -4734,6 +4908,7 @@ static int load_module(void)
 {
 	char newslogpath[512];
 	char postlogpath[512];
+	thismodule = BBS_MODULE_SELF;
 
 	RWLIST_HEAD_INIT(&acls);
 	RWLIST_HEAD_INIT(&inpeers);
@@ -4744,9 +4919,7 @@ static int load_module(void)
 	stringlist_init(&subscriptions);
 
 	if (load_config()) {
-		active_cleanup();
-		spool_cleanup();
-		return -1;
+		goto cleanup;
 	}
 	/* Since load_config returns 0 if no config, do this check here instead of in load_config: */
 	if (!nntp_enabled && !nntps_enabled && !nnsp_enabled) {
@@ -4826,8 +4999,8 @@ static int unload_module(void)
 	if (nnsp_enabled) {
 		bbs_stop_tcp_listener(nnsp_port);
 	}
-	bbs_rwlock_destroy(&nntp_lock);
 	cleanup_lists();
+	bbs_rwlock_destroy(&nntp_lock);
 	active_cleanup();
 	spool_cleanup();
 	fclose(newslog);

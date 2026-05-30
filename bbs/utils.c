@@ -1216,7 +1216,7 @@ int bbs_parse_rfc822_date(const char *s, struct tm *tm)
 	/* Multiple possible date formats:
 	 * 15 Oct 2002 23:57:35 +0300
 	 * Tues, 15 Oct 2002 23:57:35 +0300
-	 *  Mon, 3 Jul 2023 22:01:33 GMT */
+	 * Mon, 3 Jul 2023 22:01:33 GMT */
 	if ((t = strptime(s, "%a, %d %b %Y %H:%M:%S %z", tm)) || (t = strptime(s, "%d %b %Y %H:%M:%S %z", tm))) {
 		return 0;
 	}
@@ -1226,7 +1226,15 @@ int bbs_parse_rfc822_date(const char *s, struct tm *tm)
 	 * Note that instead of an offset, you just have a TZ abbreviation.
 	 * Valid according to RFC 822 5.1, but not according to RFC 2822 3.3, and not very common. */
 	if ((t = strptime(s, "%a, %d %b %Y %H:%M:%S %Z", tm))) {
-		bbs_debug(1, "Non-RFC2822 compliant date: %s (%s)\n", s, t);
+		bbs_debug(1, "Non-RFC2822 compliant date: %s\n", s);
+		return 0;
+	}
+
+	/* Be liberal in what we receive. Other formats observed in netnews:
+	 * 28 May 2026 01:21:20 GMT (GMT instead of +0000)
+	 * Tue, 10 Mar 2026 23:38 -0400 (missing seconds) */
+	if ((t = strptime(s, "%d %b %Y %H:%M:%S %Z", tm)) || (t = strptime(s, "%a, %d %b %Y %H:%M %z", tm))) {
+		bbs_debug(1, "Non-RFC2822 compliant date: %s\n", s);
 		return 0;
 	}
 

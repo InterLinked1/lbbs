@@ -185,11 +185,6 @@ static int run(void)
 	write(peer1, s, strlen(s));
 	CLIENT_EXPECT_CODE(peer1, NNTP_FAIL_TAKETHIS_REJECT);
 
-	/* Send article with malformed header */
-	SWRITE(peer2, "TAKETHIS <malformed.article>" ENDL);
-	SEND_PEER_NEWS_ARTICLE(s, peer2, "<malformed.article>", TEST_EMAIL_EXTERNAL, "misc.test,,misc.foo", "");
-	CLIENT_EXPECT(peer2, XSTR(NNTP_FAIL_TAKETHIS_REJECT) " <malformed.article>");
-
 	/* Send article with Xref header, which should be ignored and replaced */
 	TAKETHIS_ADDITIONAL_RESPONSE(peer1, "<testmessage.xref@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "misc.test", NNTP_OK_TAKETHIS,
 		"Xref: news.example.com misc.test:9832\r\n"

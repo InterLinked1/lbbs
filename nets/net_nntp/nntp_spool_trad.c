@@ -56,12 +56,13 @@ int tradspool_init(void)
 
 void tradspool_cleanup(void)
 {
+	/* If startup failed, we never initialized the mutexes so don't destroy them now */
 	if (histfp) {
 		fclose(histfp);
 		histfp = NULL;
+		bbs_mutex_destroy(&histlock);
+		bbs_rwlock_destroy(&overviewlock);
 	}
-	bbs_mutex_destroy(&histlock);
-	bbs_rwlock_destroy(&overviewlock);
 }
 
 static int build_newsgroup_path(const char *name, char *buf, size_t len)
@@ -898,6 +899,9 @@ static size_t construct_xref(struct article_groups *groups, char *buf, size_t le
 
 	SAFE_FAST_APPEND(buf, len, xrefpos, xrefleft, "Xref: %s", newsname); /* SAFE_FAST_APPEND automatically adds spaces between items */
 	BBS_LIST_TRAVERSE(groups, g, entry) {
+		if (!g->article_num) {
+			continue; /* Group was skipped */
+		}
 		SAFE_FAST_APPEND(buf, len, xrefpos, xrefleft, "%s:%d", g->name, g->article_num);
 		xreftotal = (size_t) (xrefpos - buf);
 		/* If there are a lot of groups, it could be more than we'll fit in a single line. */
@@ -951,6 +955,7 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 	 * First, assign the article numbers for all the groups. This way we can add the Xref header before actually adding the article to the spool. */
 	BBS_LIST_TRAVERSE(groups, g, entry) {
 		if (group_assign_article_number_locked(g->name, &g->article_num) || !g->article_num) {
+			bbs_notice("Couldn't assign article number for group %s\n", g->name);
 			continue; /* Group is full! */
 		}
 		/* Since we assigned the article number in this group for this article,
@@ -978,6 +983,9 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 	 * subsequent groups (cross-posts) will just get a link to the file, to save space. */
 	BBS_LIST_TRAVERSE(groups, g, entry) {
 		char articlepath[NNTP_MAX_PATH_LENGTH];
+		if (!g->article_num) {
+			continue;
+		}
 		/* Shouldn't fail, as group was already verified to exist, but it will return -1 so we need to check errno */
 		if (!build_group_article_path(g->name, g->article_num, articlepath, sizeof(articlepath)) || errno != ENOENT) {
 			continue;
@@ -1009,14 +1017,24 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 			 * Would be nice to use iovec to reduce number of system calls,
 			 * but we are combining write() with copy_file_range or sendfile, so not sure if that is possible. */
 			if (artinfo->prepend) {
-				bbs_write(destfd, artinfo->prepend, artinfo->prependlen);
+				if (bbs_write(destfd, artinfo->prepend, artinfo->prependlen) < 0) {
+					return -1;
+				}
 			}
-			bbs_copy_file(srcfd, destfd, 0, (int) artinfo->headerslen); /* Copy original headers, not including empty line */
+			if (bbs_copy_file(srcfd, destfd, 0, (int) artinfo->headerslen) < 0) { /* Copy original headers, not including empty line */
+				return -1;
+			}
 			if (artinfo->append) {
-				bbs_write(destfd, artinfo->append, artinfo->appendlen);
+				if (bbs_write(destfd, artinfo->append, artinfo->appendlen) < 0) {
+					return -1;
+				}
 			}
-			bbs_write(destfd, xref, xrefbytes); /* Add the Xref header now so it's the very last header */
-			bbs_copy_file(srcfd, destfd, (int) artinfo->headerslen, (int) (len - artinfo->headerslen)); /* Copy blank line and the body */
+			if (bbs_write(destfd, xref, xrefbytes) < 0) { /* Add the Xref header now so it's the very last header */
+				return -1;
+			}
+			if (bbs_copy_file(srcfd, destfd, (int) artinfo->headerslen, (int) (len - artinfo->headerslen)) < 0) { /* Copy blank line and the body */
+				return -1;
+			}
 
 			close(destfd);
 			safe_strncpy(hardpath, articlepath, sizeof(hardpath)); /* Save the filename so we can create links to this for further groups */

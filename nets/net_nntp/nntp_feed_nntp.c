@@ -53,10 +53,11 @@ int feed_nntp_init(void)
 	return 0;
 }
 
-int feed_nntp_shutdown(void)
+void feed_nntp_shutdown(void)
 {
-	fclose(logfp);
-	return 0;
+	if (logfp) {
+		fclose(logfp);
+	}
 }
 
 struct site_article {
@@ -765,22 +766,23 @@ static void feed_thread(struct site *site)
 	int res, spooled;
 	struct feed_stats fs;
 	time_t elapsed, start;
+	struct bbs_url url;
 	struct nntp_client nc_stack, *nc = &nc_stack;
 
 	memset(&nc->tcpclient, 0, sizeof(struct bbs_tcp_client));
-	memset(&nc->url, 0, sizeof(nc->url));
-	nc->url.port = site->feed.nntp.port;
+	memset(&url, 0, sizeof(url));
+	url.port = site->feed.nntp.port;
 
 	start = time(NULL);
 
 	/* If we have an explicit hostname, use that.
 	 * Otherwise, if any exclusions are specified, use the first exclusion.
 	 * Otherwise, use the site name (assume it's the hostname, since it's probably the site's path identity) */
-	nc->url.host = site->feed.nntp.hostname;
-	if (!nc->url.host) {
-		nc->url.host = stringlist_peek(&site->exclusions);
-		if (!nc->url.host) {
-			nc->url.host = site->name;
+	url.host = site->feed.nntp.hostname;
+	if (!url.host) {
+		url.host = stringlist_peek(&site->exclusions);
+		if (!url.host) {
+			url.host = site->name;
 		}
 	}
 
@@ -788,7 +790,7 @@ static void feed_thread(struct site *site)
 	 * so allow ourselves to be interrupted here if we want to shut down feeding.
 	 * This scenario actually occurs in test_nntp_transit, speeding the test up so we don't need to wait 30 seconds. */
 	site->feed.nntp.waiting = 1;
-	res = nntp_client_connect(nc, site->feed.nntp.secure);
+	res = nntp_client_connect(nc, &url, site->feed.nntp.secure);
 	site->feed.nntp.waiting = 0;
 	if (res || site->feed.nntp.wantexit) {
 		goto done;

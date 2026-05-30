@@ -30,9 +30,6 @@
 /* 2^31-1 */
 #define NNTP_MAX_ARTICLE_NUMBER 2147483647
 
-#define NNTP_MODE_TRANSIT 0
-#define NNTP_MODE_READER 1
-
 #define _nntp_send_fd(nntp, fd, fmt, ...) ({ bbs_debug(4, "%p <= " fmt, nntp, ## __VA_ARGS__); bbs_node_fd_writef(nntp->node, fd, fmt, ## __VA_ARGS__); })
 #define _nntp_send(nntp, fmt, ...) bbs_debug(4, "%p <= " fmt, nntp, ## __VA_ARGS__); bbs_node_fd_writef(nntp->node, nntp->node->wfd, fmt, ## __VA_ARGS__);
 #define nntp_send(nntp, code, fmt, ...) _nntp_send(nntp, "%d " fmt "\r\n", code, ## __VA_ARGS__)
@@ -162,6 +159,11 @@ struct article_info {
 
 struct bbs_node;
 
+enum nntp_mode {
+	NNTP_MODE_TRANSIT = 0,
+	NNTP_MODE_READER = 1,
+};
+
 /*! \brief NNTP client (either reader or transit) */
 struct nntp_session {
 	struct bbs_node *node;
@@ -169,7 +171,7 @@ struct nntp_session {
 	int currentarticle;
 	char *user;
 	struct article_info artinfo; /* Temporary info saved about the current article being received */
-	unsigned int mode:1; /* MODE (0 = transit, 1 = reader) */
+	enum nntp_mode mode;
 	unsigned int inpeer_any:1; /* Whether this is an in peer authorized in at least one inpeer ACL */
 };
 
@@ -177,6 +179,50 @@ struct nntp_session {
 extern char newsname[256];
 extern char newsdir[256];
 #endif
+
+/* Article processing functions */
+
+struct bbs_tcp_client;
+struct readline_data;
+
+void artinfo_reset(struct article_info *artinfo);
+
+/*!
+ * \brief Read an NNTP article from a TCP client
+ * \param[out] artinfo Article info
+ * \param[in] mode NNTP_MODE_READER or NNTP_MODE_TRANSIT
+ * \param node Node if server receiving article, NULL otherwise
+ * \param rldata Readline data structure if using node
+ * \param tcpclient Client if acting as client receiving article from server, NULL otherwise
+ * \param fp Temporary file handle
+ * \param[out] artlen Article size, in bytes
+ * \param[in] Article/Message ID, if expected (IHAVE/TAKETHIS)
+ * \retval 0 on success, process article
+ * \retval -1 Connection closed, abort
+ * \retval 1 Temporary error, reject article for now.
+ * \retval 2 Permanent error (e.g. too big, malformed, etc.) Reject article.
+ */
+int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct bbs_node *node, struct readline_data *rldata, struct bbs_tcp_client *tcpclient, FILE *fp, size_t *artlen, const char *articleid);
+
+/*! \retval 0 on success, or 1 on duplicate or -1 for the default error code depending on mode */
+int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen);
+
+void free_article_groups(struct article_groups *groups);
+int article_groups_contains(struct article_groups *groups, const char *name);
+int article_groups_add(struct article_groups *groups, const char *name);
+
+int group_is_poison(const char *grp);
+
+/*!
+ * \brief Save a processed article into the spool and propagate it to peers
+ * \param[in] groups NULL to autocreate from Newsgroups header
+ * \param[in] artinfo
+ * \param[in] srcfd File descriptor from which to read article
+ * \param[in] artlen
+ * \retval -1 on failure (not delivered to any groups)
+ * \returns Number of groups that received the article
+ */
+int article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t artlen);
 
 /* ACLs */
 enum nntp_acl_action {
@@ -302,6 +348,8 @@ int authorized_inpeer_for_group_locked(struct nntp_session *nntp, const char *gr
 /* Because only group APIs that need to be accessed from the active and spool implementations
  * are available here, and we are normally locked there, only LOCKED variants should appear here: */
 
+int group_create(const char *groupname, const char *status, const char *creator, const char *description);
+int group_exists(const char *groupname);
 int group_update_counts_locked(const char *groupname, int high, int low, int count);
 int group_assign_article_number_locked(const char *groupname, int *restrict article_num);
 int group_get_stats_locked(const char *groupname, int *last, int *high, int *low, int *count);
