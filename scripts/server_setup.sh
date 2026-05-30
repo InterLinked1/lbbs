@@ -21,6 +21,7 @@ service ssh restart
 
 # Create a non-root user for the BBS:
 useradd -c "BBS" -s /usr/sbin/nologin -M bbs
+mkdir /home/bbs && chown -R bbs:bbs /home/bbs
 
 # Install MariaDB: https://www.digitalocean.com/community/tutorials/how-to-install-mariadb-on-debian-11
 apt-get -y install mariadb-server

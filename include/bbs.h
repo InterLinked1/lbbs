@@ -198,11 +198,12 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 	if (buflen > 0 && (cond)) { \
 		int _bytes = snprintf(bufpos, (size_t) buflen, bufpos == bufstart ? fmt : " " fmt, ## __VA_ARGS__); \
 		bufpos += (typeof((buflen))) _bytes; \
-		buflen -= (typeof((buflen))) _bytes; \
-		if ((int) buflen <= 0) { \
-			bbs_warning("Buffer truncation (%lu)\n", (size_t) buflen); \
+		if ((size_t) _bytes >= (size_t) buflen) { \
+			bbs_warning("Buffer truncation (%d >= %lu)\n", _bytes, (size_t) buflen); \
 			*(bufstart + bufsize - 1) = '\0';  \
 			buflen = 0; \
+		} else { \
+			buflen -= (typeof((buflen))) _bytes; \
 		} \
 	}
 
@@ -211,11 +212,12 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 	if (buflen > 0 && (cond)) { \
 		int _bytes = snprintf(bufpos, (size_t) buflen, fmt, ## __VA_ARGS__); \
 		bufpos += (typeof((buflen))) _bytes; \
-		buflen -= (typeof((buflen))) _bytes; \
-		if ((int) buflen <= 0) { \
-			bbs_warning("Buffer truncation (%lu)\n", (size_t) buflen); \
+		if ((size_t) _bytes >= (size_t) buflen) { \
+			bbs_warning("Buffer truncation (%d >= %lu)\n", _bytes, (size_t) buflen); \
 			*(bufstart + bufsize - 1) = '\0';  \
 			buflen = 0; \
+		} else { \
+			buflen -= (typeof((buflen))) _bytes; \
 		} \
 	}
 
