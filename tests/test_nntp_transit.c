@@ -247,6 +247,16 @@ static int run(void)
 	write(peer1, s, strlen(s));
 	CLIENT_EXPECT_CODE(peer1, NNTP_FAIL_TAKETHIS_REJECT);
 
+	/* Killed sender */
+	TAKETHIS_ADDITIONAL_RESPONSE(peer1, "<feedmessage.kill1@" TEST_HOSTNAME ">", "a.killedsender@example.com", "misc.test", NNTP_FAIL_TAKETHIS_REJECT,
+		"Organization: Test Org\r\n"
+	);
+
+	/* Killed organization */
+	TAKETHIS_ADDITIONAL_RESPONSE(peer1, "<feedmessage.kill2@" TEST_HOSTNAME ">", TEST_EMAIL, "misc.test", NNTP_FAIL_TAKETHIS_REJECT,
+		"Organization: My Blocked Org\r\n"
+	);
+
 	/* Now, test sending received articles to other peers (which are actually ourself, so these articles will all be refused) */
 	TAKETHIS(peer1, "<feedmessage.1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "feed.test");
 	TAKETHIS(peer1, "<feedmessage.2@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "feed.test");

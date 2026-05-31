@@ -28,7 +28,8 @@
 #include "nntp_client.h"
 #include "nntp_suck.h"
 
-extern unsigned int max_article_size;
+/* from net_nntp.c: */
+extern unsigned int max_groups;
 
 static RWLIST_HEAD_STATIC(suck_feeds, suck_feed);
 static int stop_sucking = 0;
@@ -41,9 +42,6 @@ static char suckdir[512];
  * In the worst case, that could result in an array of list of size NNTP_MAX_ARTICLE_NUMBER, too big!
  * Additionally, this is used for pipelining downloads, and we probably want to chunk those up anyways. */
 #define SUCK_CHUNKSIZE 1024
-
-/* Check for duplicates first when processing OVER response before asking for articles */
-#define CHECK_FOR_EXISTING_ARTICLES_BEFORE_SUCKING
 
 struct upstream_group {
 	const char *name;
@@ -297,74 +295,108 @@ static int read_end_of_response(struct nntp_client *nc)
 	return 0;
 }
 
+#define SKIP_LATEST_ARTICLE_CHECK(g) (g->excluded || g->latestarticledate || !g->count)
+
+static int get_latest_articles_pass(struct nntp_client *nc, struct upstream_groups *grps)
+{
+	struct upstream_group *g;
+
+	/* Most commands MAY be pipelined, so we do that to speed this up, since we need at least 2 commands per group. */
+	BBS_LIST_TRAVERSE(grps, g, entry) {
+		if (SKIP_LATEST_ARTICLE_CHECK(g)) {
+			continue;
+		}
+		nntp_client_send(nc, "GROUP %s\r\n", g->name); /* This should succeed if we were able to list the group... */
+		/* This COULD fail if the high water mark does not reflect the actual latest article.
+		 * No need for LISTGROUP, we could use HDR Date low-high to get any existing articles' Dates at once */
+		nntp_client_send(nc, "HDR Date %d\r\n", g->high);
+	}
+	BBS_LIST_TRAVERSE(grps, g, entry) {
+		struct tm tm;
+		char *date;
+		int code;
+		if (SKIP_LATEST_ARTICLE_CHECK(g)) {
+			continue;
+		}
+		/* Read GROUP response */
+		if (nntp_client_expect_code(nc, SEC_MS(30), NNTP_OK_GROUP)) {
+			continue;
+		}
+		/* Did HDR succeed? */
+		code = nntp_client_read_code(nc, SEC_MS(30));
+		if (code != NNTP_OK_HDR) {
+			bbs_debug(5, "Group %s: %s\n", g->name, nc->buf);
+			continue; /* Could get back 423 if article not found, skip for now */
+		}
+		/* If OK, read HDR response */
+		if (read_hdr_response(nc, &date)) {
+			bbs_debug(1, "Failed to read Date header for high water article in group %s\n", g->name);
+			return -1;
+		}
+		bbs_strterm(date, '('); /* CFWS is frequently used for human-readable time zone in Date header, trim that */
+		bbs_debug(7, "Latest post in group %s: %s\n", g->name, date);
+		if (bbs_parse_rfc822_date(date, &tm)) {
+			return -1;
+		}
+		g->latestarticledate = timegm(&tm);
+		if (read_end_of_response(nc)) {
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static int get_latest_article_available(struct nntp_client *nc, struct upstream_group *g)
+{
+	int latest_article = 0;
+	for (;;) {
+		ssize_t res = bbs_readline(nc->tcpclient.rfd, &nc->tcpclient.rldata, "\r\n", SEC_MS(30));
+		if (res <= 0) {
+			return -1;
+		}
+		if (!strcmp(nc->buf, ".")) {
+			break; /* That's all, folks !*/
+		}
+		latest_article = atoi(nc->buf);
+	}
+	if (latest_article) {
+		g->high = latest_article; /* Substitute in the actual high water mark */
+	}
+	return 0;
+}
+
 static int get_latest_articles(struct nntp_client *nc, struct upstream_groups *grps)
 {
 	struct upstream_group *g;
-	int pass, keeptrying = 1;
 
-	/* Most commands MAY be pipelined, so we do that to speed this up, since
-	 * we need at least 2 commands per group. */
-
-	/* The common case is that the high water mark IS the latest article in a group,
-	 * so we try that first.
-	 * Make a few passes in case articles not found. */
-	for (pass = 1; pass < 9 && keeptrying; pass++) {
-		int passcount = 0;
-		keeptrying = 0;
-		BBS_LIST_TRAVERSE(grps, g, entry) {
-			if (g->excluded || g->latestarticledate) {
-				continue; /* Skip groups that are already excluded or we already got date */
-			}
-			nntp_client_send(nc, "GROUP %s\r\n", g->name); /* This should succeed if we were able to list the group... */
-			/* This COULD fail if the high water mark does not reflect the actual latest article.
-			 * No need for LISTGROUP, we could use HDR Date low-high to get any existing articles' Dates at once */
-			nntp_client_send(nc, "HDR Date %d\r\n", g->high);
-		}
-		BBS_LIST_TRAVERSE(grps, g, entry) {
-			struct tm tm;
-			char *date;
-			int code;
-			if (g->excluded || g->latestarticledate) {
-				continue; /* Skip groups that are already excluded or we already got date */
-			}
-			/* Read GROUP response */
-			if (nntp_client_expect_code(nc, SEC_MS(30), NNTP_OK_GROUP)) {
-				continue;
-			}
-			/* Did HDR succeed? */
-			code = nntp_client_read_code(nc, SEC_MS(30));
-			if (code != NNTP_OK_HDR) {
-				bbs_debug(5, "Group %s: %s\n", g->name, nc->buf);
-				if (code == NNTP_FAIL_ARTNUM_NOTFOUND) {
-					/* Make our stats more accurate for the next pass */
-					if (g->count) {
-						g->count--;
-					}
-					if (g->high > 0) {
-						g->high--;
-					}
-					keeptrying = 1; /* Try to make another pass */
-				}
-				continue; /* Could get back 423 if article not found, skip for now */
-			}
-			/* If OK, read HDR response */
-			if (read_hdr_response(nc, &date)) {
-				bbs_debug(1, "Failed to read Date header for high water article in group %s\n", g->name);
-				return -1;
-			}
-			bbs_strterm(date, '('); /* CFWS is frequently used for human-readable time zone in Date header, trim that */
-			bbs_debug(7, "Latest post in group %s: %s\n", g->name, date);
-			if (bbs_parse_rfc822_date(date, &tm)) {
-				return -1;
-			}
-			g->latestarticledate = timegm(&tm);
-			if (read_end_of_response(nc)) {
-				return -1;
-			}
-			passcount++;
-		}
-		bbs_debug(3, "Pass %d: got %d date%s\n", pass, passcount, ESS(passcount));
+	/* The common case is that the high water mark IS the latest article in a group, so we try that first.
+	 * XXX It's true that lowered number articles could have a more recent date, so this check isn't foolproof,
+	 * but it would be silly to scan the whole group when this is a good enough heuristic for us. */
+	if (get_latest_articles_pass(nc, grps)) {
+		return -1;
 	}
+
+	/* For any groups for which the latest article was not the reported high water mark, do LISTGROUP to get the right #
+	 * Do not pipeline the LISTGROUP commands in case there are a lot of groups we need to check. */
+	BBS_LIST_TRAVERSE(grps, g, entry) {
+		if (SKIP_LATEST_ARTICLE_CHECK(g)) {
+			continue;
+		}
+		nntp_client_send(nc, "LISTGROUP %s\r\n", g->name);
+		/* Read LISTGROUP response */
+		if (nntp_client_expect_code(nc, SEC_MS(30), NNTP_OK_GROUP) || stop_sucking) {
+			return -1;
+		}
+		if (get_latest_article_available(nc, g)) {
+			return -1;
+		}
+	}
+
+	/* Now that we used LISTGROUP to get the highest article number in each group, use that instead */
+	if (get_latest_articles_pass(nc, grps)) {
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -780,40 +812,15 @@ static int get_recent_article_numbers(struct nntp_client *nc, int artnums[SUCK_C
 	}
 }
 
-static int killpat_match(struct suck_feed *sf, int artnum, const char *subj, const char *from)
-{
-	struct kill_pattern *k;
-	BBS_LIST_TRAVERSE(&sf->kills, k, entry) {
-		/* Shortcut, since only these 2 headers are supported right now: */
-		if (toupper(k->header[0]) == 'S') {
-			if (uwildmat(subj, k->pattern)) {
-				bbs_debug(8, "Article %d disqualified: matches kill pattern %s (%s)\n", artnum, k->pattern, subj)
-				return 1;
-			}
-		} else {
-			if (uwildmat(from, k->pattern)) {
-				bbs_debug(8, "Article %d disqualified: matches kill pattern %s (%s)\n", artnum, k->pattern, from);
-				return 1;
-			}
-		}
-	}
-	return 0;
-}
-
-static int process_over(struct nntp_client *nc, struct suck_feed *sf, struct upstream_group *g, int artnums[SUCK_CHUNKSIZE], int *restrict count, int *restrict skipped, int *restrict upperbound)
+static int process_over(struct nntp_client *nc, struct upstream_group *g, int artnums[SUCK_CHUNKSIZE], int *restrict count, int *restrict skipped, int *restrict lowerbound, int *restrict upperbound)
 {
 	int i = 0, full = 0;
 
-	/* Use the smaller of the overall site limit and the limit for this suck feed */
-	long max_size = (long) max_article_size;
-	if (sf->maxsize && sf->maxsize < max_article_size) {
-		max_size = (long) sf->maxsize;
-	}
-
 	for (;;) {
+		char errbuf[128];
 		long size;
 		int artnum, numlines;
-		char *art, *subj, *from, *msgid, *bytes, *lines, *tmp;
+		char *art, *subj, *from, *date, *msgid, *references, *bytes, *lines, *xref, *tmp;
 		ssize_t res = bbs_readline(nc->tcpclient.rfd, &nc->tcpclient.rldata, "\r\n", SEC_MS(30));
 		if (res <= 0) {
 			return -1;
@@ -828,59 +835,48 @@ static int process_over(struct nntp_client *nc, struct suck_feed *sf, struct ups
 		art = strsep(&tmp, "\t");
 		subj = strsep(&tmp, "\t"); /* Subject */
 		from = strsep(&tmp, "\t"); /* From */
-		strsep(&tmp, "\t"); /* Date */
+		date = strsep(&tmp, "\t"); /* Date */
 		msgid = strsep(&tmp, "\t"); /* Message-ID */
-		strsep(&tmp, "\t"); /* References */
+		references = strsep(&tmp, "\t"); /* References */
 		bytes = strsep(&tmp, "\t"); /* :bytes */
 		lines = strsep(&tmp, "\t"); /* :lines */
-		if (strlen_zero(lines)) {
-			bbs_client_err("Malformed OVER response\n");
-			continue;
-		}
 		artnum = atoi(art);
 		*upperbound = artnum;
-		numlines = atoi(lines);
-		if (sf->minlines && numlines < sf->minlines) {
-			bbs_debug(8, "Article %d disqualified: %d < %d lines\n", artnum, numlines, sf->minlines);
-			goto skip;
-		}
-		if (sf->maxlines && numlines > sf->maxlines) {
-			bbs_debug(8, "Article %d disqualified: %d > %d lines\n", artnum, numlines, sf->maxlines);
-			goto skip;
-		}
 		size = atol(bytes);
-		if (size > max_size) {
-			bbs_debug(8, "Article %d disqualified: %ld > %lu bytes\n", artnum, size, max_size);
+		if (strlen_zero(lines)) {
+			bbs_client_err("Article %s:%d: Malformed OVER response\n", g->name, artnum);
+			continue;
+		}
+		if (size < 0) {
+			bbs_client_err("Article %s:%d: Malformed size %ld\n", g->name, artnum, size);
+			continue;
+		}
+		numlines = atoi(lines);
+		if (!strlen_zero(tmp) && STARTS_WITH(tmp, "Xref: " )) { /* XXX It might not start with the header name, LIST OVERVIEW.FMT would say for sure */
+			xref = tmp += STRLEN("Xref: ");
+			bbs_strterm(xref, '\t'); /* In case there are further fields */
+		} else {
+			xref = NULL;
+		}
+
+		/* Check global site policy */
+		if (check_article_overview(subj, from, date, msgid, references, (size_t) size, numlines, xref, errbuf, sizeof(errbuf))) {
+			bbs_debug(5, "Article %s:%d disqualified: %s\n", g->name, artnum, errbuf);
 			goto skip;
 		}
-		if (sf->maxgroupsxref && !strlen_zero(tmp) && STARTS_WITH(tmp, "Xref: ")) {
-			int xrefgroups;
-			bbs_strterm(tmp, '\t');
-			/* If we have the Xref header available in overview, count the number of newsgroups
-			 * We don't query LIST OVERVIEW.FMT for the format here, but we don't really need to. */
-			xrefgroups = bbs_str_count(tmp + STRLEN("Xref: "), ' ');
-			if (xrefgroups > sf->maxgroupsxref) {
-				bbs_debug(8, "Article %d disqualified: %d > %d Xref groups\n", artnum, xrefgroups, sf->maxgroupsxref);
-				goto skip;
-			}
-		}
-		if (killpat_match(sf, artnum, subj, from)) {
-			goto skip;
-		}
-#ifdef CHECK_FOR_EXISTING_ARTICLES_BEFORE_SUCKING
-		/* As long as we have the Message-ID, we may as well check if it exists
-		 * This is more expensive for us, since it means inspecting history,
-		 * but it means we can save bandwidth if the article doesn't exist already. */
+
+		/* As long as we have the Message-ID, we may as well check if it exists, so we don't request the article if we already have it. */
 		if (spool_article_exists(msgid)) {
 			/* Sadly, if it already existed in another group, we can't just "add it" to another group now
 			 * (we could link it, but the Xref header would need to get modified, and articles are immutable). */
-			bbs_debug(6, "Article %d disqualified: %s already exists\n", artnum, msgid);
+			bbs_debug(6, "Article %s:%d disqualified: %s already exists\n", g->name, artnum, msgid);
 			goto skip;
 		}
-#else
-		UNUSED(msgid);
-#endif
+
 		/* If we're good so far, save the article number for now */
+		if (i == 0) {
+			*lowerbound = artnum;
+		}
 		artnums[i++] = artnum;
 		if (i == SUCK_CHUNKSIZE) {
 			full = 1;
@@ -900,6 +896,63 @@ skip:
 	return 0;
 }
 
+static inline int disqualify_article(int artnums[SUCK_CHUNKSIZE], int count, int artnum)
+{
+	int i;
+	for (i = 0; i < count; i++) {
+		if (artnums[i] == artnum) {
+			artnums[i] = 0;
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static int process_hdr(struct nntp_client *nc, struct upstream_group *g, int artnums[SUCK_CHUNKSIZE], int count, int *restrict skipped)
+{
+	for (;;) {
+		char groupsbuf[NNTP_MAX_LINE_LENGTH];
+		const char *newsgroups;
+		char *grps, *grp;
+		int artnum;
+		ssize_t res = bbs_readline(nc->tcpclient.rfd, &nc->tcpclient.rldata, "\r\n", SEC_MS(30));
+		if (res <= 0) {
+			return -1;
+		}
+		if (!strcmp(nc->buf, ".")) {
+			break; /* That's all, folks! */
+		}
+
+		artnum = atoi(nc->buf);
+		newsgroups = bbs_strcnext(nc->buf, ' ');
+		if (!newsgroups) {
+			bbs_client_err("Article %s:%d has empty Newsgroups header?\n", g->name, artnum);
+			continue;
+		}
+		safe_strncpy(groupsbuf, newsgroups, sizeof(groupsbuf));
+		grps = groupsbuf;
+		while ((grp = strsep(&grps, ","))) {
+			ltrim(grp);
+			if (!strlen_zero(grp)) {
+				/* No, this is not an efficient implementation right (linear scan of artnums each time)
+				 * However, even if we can filter out a handful of articles with poison groups from doing this,
+				 * the saved bandwidth is worth it.
+				 * It is probably quicker to look for poison groups than find the article in the array each time,
+				 * so that's why we only scan the array if there is a match. */
+				if (group_is_poison(grp)) {
+					if (!disqualify_article(artnums, count, artnum)) {
+						/* It only counts as another article skipped if it wasn't already disqualified */
+						bbs_notice("Article %s:%d rejected: contains poison group %s\n", g->name, artnum, grp);
+						*skipped += 1;
+						break;
+					}
+				}
+			}
+		}
+	}
+	return 0;
+}
+
 /*!
  * \brief Read response to ARTICLE and try to save the article
  * \retval 0 on success
@@ -915,7 +968,7 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 	FILE *fp;
 	int res, delivered;
 	struct article_groups groups;
-	int grpcount = 0;
+	unsigned int grpcount = 0;
 	char *newsgroup, *newsgroups;
 
 	memset(&artinfo, 0, sizeof(artinfo));
@@ -928,7 +981,7 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 	}
 
 	/* Receive the full article */
-	res = nntp_read_article(&artinfo, NNTP_MODE_TRANSIT, NULL, NULL, &nc->tcpclient, fp, &artlen, NULL);
+	res = nntp_read_article(&artinfo, NNTP_MODE_TRANSIT, NULL, NULL, &nc->tcpclient, fp, &artlen, NULL, errbuf, sizeof(errbuf));
 	if (res) {
 		fclose(fp);
 		unlink(template);
@@ -937,25 +990,16 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 			bbs_notice("Failed to read article %s:%d\n", g->name, artnum);
 			return -1;
 		} else {
-			bbs_notice("Article %s:%d rejected (ill-formed)\n", g->name, artnum); /* e.g. line length too long */
-			return 0; /* Continue */
+			bbs_notice("Article %s:%d rejected: %s\n", g->name, artnum, errbuf); /* e.g. line length too long */
+			return 1; /* Continue */
 		}
 	}
 	res = 1; /* Reject article by default */
 
-	/* Reject invalid articles, e.g. missing headers */
+	/* Reject invalid or unwanted articles, e.g. missing headers, too many crossposts, etc. */
 	if (check_article(NNTP_MODE_TRANSIT, NULL, &artinfo, errbuf, sizeof(errbuf))) {
 		bbs_notice("Article %s:%d rejected: %s\n", g->name, artnum, errbuf);
 		goto skip;
-	}
-
-	/* Finally, we apply the maxgroups check for this article (since Newsgroups isn't present in overview) */
-	if (sf->maxgroups) {
-		int groupcount = bbs_str_count(artinfo.newsgroups, ',') + 1;
-		if (groupcount > sf->maxgroups) {
-			bbs_notice("Article %s:%d rejected: %d > %d newsgroups\n", g->name, artnum, groupcount, sf->maxgroups);
-			goto skip;
-		}
 	}
 
 	/* Process the Newsgroups headers to see which groups we want */
@@ -965,6 +1009,7 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 		if (strlen_zero(newsgroup)) {
 			continue;
 		}
+		/* In theory, this should only happen if the HDR command was not supported, as we already checked for poison groups using HDR: */
 		if (group_is_poison(newsgroup)) {
 			bbs_notice("Article %s:%d rejected: contains poison group %s\n", g->name, artnum, newsgroup);
 			goto skip;
@@ -975,11 +1020,13 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 		}
 	}
 
-	/* max_groups from net_nntp not enforced here */
 	if (!grpcount) {
 		/* Shouldn't happen if we requested an article directly from a group (because we clearly want that group?),
 		 * but maybe could happen with NEWNEWS. */
 		bbs_notice("Article %s:%d rejected: contains only unwanted groups\n", g->name, artnum);
+		goto skip;
+	} else if (grpcount > max_groups) {
+		bbs_notice("Article %s:%d rejected: contains too many groups (%u > %u)\n", g->name, artnum, grpcount, max_groups);
 		goto skip;
 	}
 
@@ -1041,8 +1088,9 @@ static int suck_articles(struct nntp_client *nc, struct suck_feed *sf, struct up
 		res = save_article(nc, sf, g, artnum);
 		if (res < 0) {
 			return -1;
+		} else if (!res) {
+			*saved += 1;
 		}
-		*saved += 1;
 		/* Keep track that we successfully processed up through this article in case a failure happens in the middle of the article range,
 		 * that way we don't needlessly request articles we already have. */
 		g->lasthigh = artnum;
@@ -1127,7 +1175,7 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct upstr
 	}
 
 	do {
-		int upperbound = 0; /* can't be used uninitialized, shut gcc up */
+		int lowerbound = 0, upperbound = 0; /* can't be used uninitialized, shut gcc up */
 		/* First, interrogate the metadata for articles available and filter out as many articles as we can before downloading them */
 		/* If OVER capability advertised, use OVER, otherwise XOVER (since it's older) */
 
@@ -1144,11 +1192,25 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct upstr
 		}
 		/* We could use XPAT for the kill patterns in a second pass, but since the headers we care about are in the OVER response anyways,
 		 * it's more efficient to just do it ourselves. */
-		if (process_over(nc, sf, g, artnums, &count, skipped, &upperbound) || stop_sucking) {
+		if (process_over(nc, g, artnums, &count, skipped, &lowerbound, &upperbound) || stop_sucking) {
 			*total += count;
 			return -1;
 		}
 		*total += count;
+
+		if (lowerbound && upperbound) {
+			/* An optimization: use HDR To ask for the Newsgroups header, since it's the only remaining header
+			 * that could allow us to easily filter articles, outside of the ones already processed as part of overview headers.
+			 * We know the exact bounds of the range, so use the most constrictive range possible if we filtered out articles on both sides. */
+			nntp_client_send(nc, "%sHDR Newsgroups %d-%d\r\n", nc->caps.hdr ? "" : "X", lowerbound, upperbound);
+			if (!nntp_client_expect_code(nc, SEC_MS(30), NNTP_OK_HDR)) {
+				if (process_hdr(nc, g, artnums, count, skipped) || stop_sucking) {
+					return -1;
+				}
+			} else {
+				bbs_debug(3, "HDR not supported? Got: %s\n", nc->buf);
+			}
+		}
 		if (suck_articles(nc, sf, g, artnums, count, saved) || stop_sucking) {
 			return -1;
 		}
@@ -1156,7 +1218,6 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct upstr
 		g->lasthigh = upperbound; /* We successfully processed up to this article (even if it wasn't saved) */
 	} while (count == SUCK_CHUNKSIZE && artlow <= g->high);
 
-	bbs_debug(3, "Group %s: sucked %d/%d article%s (next: %d)\n", g->name, *saved, *total, ESS(*total), artlow);
 	bbs_verb(7, "Sucked newsgroup %s: saved %d/%d article%s\n", g->name, *saved, *total, ESS(*total));
 	return 0;
 }
@@ -1224,7 +1285,11 @@ static void suck_news(struct suck_feed *sf)
 				break;
 			}
 		}
-		bbs_debug(4, "Suck feed %s: sucked %d group%s, saved %d/%d article%s (skipped %d)\n", sf->name, c, ESS(c), total_saved, total_processed, ESS(total_processed), total_skipped);
+		/* Note that saved + skipped != total
+		 * skipped articles are not included in total, which only reflects the articles we attempted to download using "ARTICLE".
+		 * If an article is rejected at that point, then it is not included in "saved", otherwise saved/total usually match.
+		 * Total articles inspected is thus closer to total_processed + total_skipped. */
+		bbs_verb(5, "Suck feed %s: sucked %d group%s, saved %d/%d article%s (skipped %d)\n", sf->name, c, ESS(c), total_saved, total_processed, ESS(total_processed), total_skipped);
 	}
 
 	/* Even if an error occured, at least persist the groups that got sucked successfully so we don't repeat them next time */
@@ -1436,13 +1501,12 @@ static void free_suckfeed(struct suck_feed *sf)
 		bbs_pthread_join(sf->thread, NULL);
 		sf->thread = 0;
 	}
-	BBS_LIST_REMOVE_ALL(&sf->kills, entry, free);
 	BBS_LIST_REMOVE_ALL(&sf->groups, entry, free);
 	free(sf);
 }
 
 struct suck_feed *nntp_suckfeed_create(const char *name, const char *server, int modereader, int starttls, int compress, int autocreate, int xrefslave,
-	int maxactivity, int mincount, int minlow, size_t maxsize, int minlines, int maxlines, int maxgroups, int maxgroupsxref)
+	int maxactivity, int mincount, int minlow)
 {
 	char serverbuf[1024];
 	struct bbs_url url;
@@ -1494,49 +1558,16 @@ struct suck_feed *nntp_suckfeed_create(const char *name, const char *server, int
 
 	/* General */
 	SET_BITFIELD(sf->autocreate, autocreate);
-	SET_BITFIELD(sf->xrefslave, xrefslave);
+	SET_BITFIELD(sf->xrefslave, xrefslave); /*! \todo Not yet implemented */
 
 	/* Group filters */
 	sf->maxactivity = maxactivity;
 	sf->mincount = mincount;
 	sf->minlow = minlow;
 
-	/* Article filters */
-	sf->maxsize = maxsize;
-	sf->minlines = minlines;
-	sf->maxlines = maxlines;
-	sf->maxgroups = maxgroups;
-	sf->maxgroupsxref = maxgroupsxref;
 	RWLIST_INSERT_TAIL(&suck_feeds, sf, entry);
 	RWLIST_UNLOCK(&suck_feeds);
 	return sf;
-}
-
-int nntp_suckfeed_add_killpat(struct suck_feed *sf, const char *header, const char *pattern)
-{
-	struct kill_pattern *k;
-	size_t hdrlen, patlen;
-	char *data;
-
-	if (strcasecmp(header, "Subject") && strcasecmp(header, "From")) {
-		bbs_error("Kill patterns only support headers 'Subject' and 'From'\n");
-		return -1;
-	}
-
-	hdrlen = STRING_ALLOC_SIZE(header);
-	patlen = STRING_ALLOC_SIZE(pattern);
-
-	k = calloc(1, sizeof(*k) + hdrlen + patlen);
-	if (ALLOC_FAILURE(k)) {
-		return -1;
-	}
-
-	data = k->data;
-	SET_FSM_STRING_VAR(k, data, header, header, hdrlen);
-	SET_FSM_STRING_VAR(k, data, pattern, pattern, patlen);
-
-	RWLIST_INSERT_TAIL(&sf->kills, k, entry);
-	return 0;
 }
 
 int nntp_suckfeed_add_suckpat(struct suck_feed *sf, const char *pattern, const char *args)

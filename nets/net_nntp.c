@@ -102,9 +102,12 @@ static char newsorg[256] = ""; /* Organization */
 char newsdir[256] = ""; /* Non-static so other files can access it extern */
 
 /* Global settings for incoming articles */
-unsigned int max_article_size = 100000; /* ~100 KB should be plenty; used extern from nntp_suck.c */
-static unsigned int max_groups = 100;
+static unsigned int max_article_size = 100000; /* ~100 KB should be plenty */
+unsigned int max_groups = 100; /* used extern in nntp_suck.c */
+static unsigned int max_crossposts = 10;
 static unsigned int max_accept_age = 10;
+static unsigned int min_lines = 0;
+static unsigned int max_lines = 0;
 static char poisongroups[NNTP_MAX_LINE_LENGTH];
 static char poisonsites[NNTP_MAX_LINE_LENGTH];
 
@@ -302,6 +305,67 @@ static int add_moderator(const char *wildmat, const char *template)
 int group_is_poison(const char *grp)
 {
 	return uwildmat(grp, poisongroups);
+}
+
+enum kill_pattern_header {
+	KILL_SUBJECT,
+	KILL_FROM,
+	KILL_MESSAGEID,
+	KILL_REFERENCES,
+	KILL_XREF,
+	KILL_OTHER,
+};
+
+struct kill_pattern {
+	enum kill_pattern_header hdr;
+	const char *otherheader; /* If KILL_OTHER */
+	const char *pattern;
+	RWLIST_ENTRY(kill_pattern) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(kill_patterns, kill_pattern);
+
+static enum kill_pattern_header parse_killpat_header(const char *h)
+{
+	if (!strcasecmp(h, "From")) {
+		return KILL_FROM;
+	} else if (!strcasecmp(h, "Subject")) {
+		return KILL_SUBJECT;
+	} else if (!strcasecmp(h, "Xref")) {
+		return KILL_XREF;
+	} else if (!strcasecmp(h, "Message-ID")) {
+		return KILL_MESSAGEID;
+	} else if (!strcasecmp(h, "References")) {
+		return KILL_REFERENCES;
+	}
+	return KILL_OTHER;
+}
+
+static int add_killpat(const char *header, const char *pattern)
+{
+	struct kill_pattern *k;
+	size_t patlen, hdrlen;
+	char *data;
+	enum kill_pattern_header pathdr = parse_killpat_header(header);
+
+	patlen = STRING_ALLOC_SIZE(pattern);
+	hdrlen = pathdr == KILL_OTHER ? STRING_ALLOC_SIZE(header) : 0;
+
+	k = calloc(1, sizeof(*k) + patlen + hdrlen);
+	if (ALLOC_FAILURE(k)) {
+		return -1;
+	}
+
+	k->hdr = pathdr;
+
+	data = k->data;
+	SET_FSM_STRING_VAR(k, data, pattern, pattern, patlen);
+	if (pathdr == KILL_OTHER) {
+		SET_FSM_STRING_VAR(k, data, otherheader, header, hdrlen);
+	}
+	RWLIST_INSERT_TAIL(&kill_patterns, k, entry);
+	return 0;
 }
 
 /* =============== Begin ACL Code =============== */
@@ -1464,6 +1528,7 @@ void artinfo_reset(struct article_info *artinfo)
 	free_if(artinfo->newsgroups);
 	free_if(artinfo->distribution);
 	free_if(artinfo->path);
+	free_if(artinfo->organization);
 	free_if(artinfo->injectioninfo);
 	free_if(artinfo->injectiondate);
 	free_if(artinfo->xref);
@@ -1484,7 +1549,6 @@ void artinfo_reset(struct article_info *artinfo)
 	artinfo->prependlen = 0;
 	artinfo->appendlen = 0;
 	artinfo->nntp_posting_host_set = 0;
-	artinfo->organization_set = 0;
 	artinfo->needinjectiondate = 0;
 }
 
@@ -2492,33 +2556,189 @@ static int already_posted(const char *path)
 	return path_contains_posted(p);
 }
 
-/* RFC 5536 3.1.4 (reserved invalid groups and implementation-specific groups that MAY be used for their specific purpose or by local agreement) */
-#define contains_invalid_newsgroups(s) (uwildmat(s, "example,example.*,poster,to,to.*,control,control.*,all,all.*,ctl,ctl.*,junk"))
-
-/*! \retval 0 on success, or 1 on duplicate or -1 for the default error code depending on mode */
-int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen)
+static int matches_basic_kill_pattern(const char *subject, const char *from, const char *messageid, const char *references, const char *xref, char *errbuf, size_t errbuflen)
 {
-#define REQUIRE_ARTINFO_FIELD(field) \
-	if (!artinfo->field) { \
+	struct kill_pattern *k;
+
+#define KILL_CASE(enumval, field, hdrname) \
+	case enumval: \
+		if (uwildmat_simple(field, k->pattern)) { \
+			snprintf(errbuf, errbuflen, "Matches kill pattern %s: %s (%s)", hdrname, k->pattern, field); \
+			goto match; \
+		} \
+		break;
+
+	RWLIST_RDLOCK(&kill_patterns);
+	RWLIST_TRAVERSE(&kill_patterns, k, entry) {
+		switch (k->hdr) {
+			KILL_CASE(KILL_SUBJECT, subject, "Subject")
+			KILL_CASE(KILL_FROM, from, "From")
+			KILL_CASE(KILL_MESSAGEID, messageid, "Message-ID")
+			KILL_CASE(KILL_REFERENCES, references, "References")
+			KILL_CASE(KILL_XREF, xref, "Xref")
+			case KILL_OTHER:
+				break;
+		}
+	}
+	RWLIST_UNLOCK(&kill_patterns);
+	return 0;
+
+match:
+	RWLIST_UNLOCK(&kill_patterns);
+	return 1;
+}
+
+static int matches_custom_kill_pattern(struct article_info *artinfo, char *errbuf, size_t errbuflen)
+{
+	struct kill_pattern *k;
+
+#define KILL_CUSTOM_CASE(field, hdrname) \
+	if (artinfo->field && !strcasecmp(k->otherheader, hdrname)) { \
+		if (uwildmat(artinfo->field, k->pattern)) { \
+			snprintf(errbuf, errbuflen, "Matches kill pattern %s: %s (%s)", k->pattern, hdrname, artinfo->field); \
+			goto match; \
+		} \
+	}
+
+	RWLIST_RDLOCK(&kill_patterns);
+	RWLIST_TRAVERSE(&kill_patterns, k, entry) {
+		switch (k->hdr) {
+			default:
+				break;
+			case KILL_OTHER:
+				/* At the moment, these are the only other sensible headers to check that we have available */
+				KILL_CUSTOM_CASE(organization, "Organization")
+				else KILL_CUSTOM_CASE(distribution, "Distribution")
+				else KILL_CUSTOM_CASE(injectioninfo, "Injection-Info")
+				break;
+		}
+	}
+	RWLIST_UNLOCK(&kill_patterns);
+	return 0;
+
+match:
+	RWLIST_UNLOCK(&kill_patterns);
+	return 1;
+}
+
+int check_article_overview(const char *subject, const char *from, const char *date, const char *messageid, const char *references, size_t bytes, int lines, const char *xref, char *errbuf, size_t errbuflen)
+{
+#define REQUIRE_FIELD(field) \
+	if (!field) { \
 		snprintf(errbuf, errbuflen, "Missing or invalid %s", #field); \
 		return -1; \
 	}
 
-	/* These are the six mandatory headers according to RFC 5536 */
-	REQUIRE_ARTINFO_FIELD(date);
-	REQUIRE_ARTINFO_FIELD(from);
-	REQUIRE_ARTINFO_FIELD(messageid);
-	REQUIRE_ARTINFO_FIELD(newsgroups);
-	if (mode == NNTP_MODE_TRANSIT) {
-		REQUIRE_ARTINFO_FIELD(path); /* For proto-articles, we have yet to prepend this header and will do it later */
-	}
-	REQUIRE_ARTINFO_FIELD(subject);
+	/* 4 of the 6 mandatory headers according to RFC 5536 (the other 2 are not present in overview: Path, Newsgroups) */
+	REQUIRE_FIELD(date);
+	REQUIRE_FIELD(from);
+	REQUIRE_FIELD(messageid);
+	REQUIRE_FIELD(subject);
 
-	/* Check for malformed headers */
-	if (strstr(artinfo->newsgroups, ",,")) {
+	UNUSED(references);
+
+	/* Check size */
+	if (bytes > (size_t) max_article_size) {
+		snprintf(errbuf, errbuflen, "Too large (%lu > %u bytes)", bytes, max_article_size);
+		return -1;
+	}
+
+	/* Check number of lines */
+	if (min_lines && (unsigned int) lines < min_lines) {
+		snprintf(errbuf, errbuflen, "Too few lines (%d < %u)", lines, min_lines);
+		return -1;
+	} else if (max_lines && (unsigned int) lines > max_lines) {
+		snprintf(errbuf, errbuflen, "Too many lines (%d > %u)", lines, max_lines);
+		return -1;
+	}
+
+	/* Only for sucking, if Xref is present, we can perform some checks that would normally be done with the Newsgroups header */
+	if (xref) {
+		char *grp, *grps;
+		char xref_dup[2084];
+		int xrefgroups;
+
+		/* If we have the Xref header available in overview, count the number of newsgroups
+		 * We don't query LIST OVERVIEW.FMT for the format here, but we don't really need to. */
+		xrefgroups = bbs_str_count(xref, ' '); /* The hostname is first with a space following, so we don't need to add 1 to the count after */
+		if (xrefgroups > (int) max_crossposts) {
+			snprintf(errbuf, errbuflen, "Too many crossposts (%d > %d)", xrefgroups, max_crossposts);
+			return -1;
+		}
+
+		/* Also check for poison groups here; this way if there is a match in this header, and we're sucking articles, we don't need to request the article only to discard it */
+		safe_strncpy(xref_dup, xref, sizeof(xref_dup));
+		grps = xref_dup;
+		strsep(&grps, " "); /* Eat the news server hostname */
+		while ((grp = strsep(&grps, " "))) {
+			bbs_strterm(grp, ':'); /* Strip article number */
+			if (group_is_poison(grp)) {
+				snprintf(errbuf, errbuflen, "Contains poison group %s", grp);
+				return -1;
+			}
+		}
+	}
+
+	/* Last, check for any kill pattern matches */
+	if (matches_basic_kill_pattern(subject, from, messageid, references, xref, errbuf, errbuflen)) {
+		return -1;
+	}
+
+	return 0;
+}
+
+/* RFC 5536 3.1.4 (reserved invalid groups and implementation-specific groups that MAY be used for their specific purpose or by local agreement) */
+#define contains_invalid_newsgroups(s) (uwildmat(s, "example,example.*,poster,to,to.*,control,control.*,all,all.*,ctl,ctl.*,junk"))
+
+static int check_newsgroups(const char *newsgroups, char *errbuf, size_t errbuflen)
+{
+	int ngrp_count;
+
+	REQUIRE_FIELD(newsgroups);
+
+	if (strstr(newsgroups, ",,")) {
 		/* Tolerate, since we'll ignore the empty group later, but this is poor form! */
 		bbs_client_err("Newsgroups header is malformed\n");
 	}
+
+	/* Crossposted too much? */
+	ngrp_count = bbs_str_count(newsgroups, ',') + 1; /* Crude way of counting newsgroups (may overcount if there are consecutive commas like ,, ) */
+	if (ngrp_count > (int) max_crossposts) {
+		snprintf(errbuf, errbuflen, "Crossposted to too many groups (%d > %u)", ngrp_count, max_crossposts);
+		return -1;
+	}
+
+	/* Ensure there are no invalid newsgroups (we already know the header is non-empty at this point)
+	 * We SHOULD reject proto-articles without at least valid group or with any reserved group names (RFC 5537 3.5) */
+	if (contains_invalid_newsgroups(newsgroups)) {
+		snprintf(errbuf, errbuflen, "Invalid newsgroups specified");
+		return -1;
+	}
+
+	return 0;
+}
+
+/*! \retval 0 on success, or 1 on duplicate or -1 for the default error code depending on mode */
+int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen)
+{
+	/* Perform basic checks that only involve data that is stored in overview.
+	 * This is shared in common with the sucking logic in nntp_suck.c, which requests overview information using OVER/XOVER first,
+	 * so it can efficiently exclude articles that don't meet our criteria. */
+	if (check_article_overview(artinfo->subject, artinfo->from, artinfo->date, artinfo->messageid, artinfo->references, artinfo->bytes, artinfo->lines, NULL, errbuf, errbuflen)) {
+		return -1;
+	}
+
+	if (check_newsgroups(artinfo->newsgroups, errbuf, errbuflen)) {
+		return -1;
+	}
+
+	/* The only remaining (possibly) mandatory header that hasn't been checked yet */
+	if (mode == NNTP_MODE_TRANSIT && !artinfo->path) { /* For proto-articles, we have yet to prepend this header and will do it later */
+		snprintf(errbuf, errbuflen, "Missing Path");
+		return -1;
+	}
+
+	/* We tolerate consecutive commas in Newsgroups but not in Distribution. */
 	if (artinfo->distribution && strstr(artinfo->distribution, ",,")) {
 		snprintf(errbuf, errbuflen, "Distribution header is malformed");
 		return -1;
@@ -2534,7 +2754,7 @@ int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article
 			 * the newsmaster can later determine what site caused rejection if needed.
 			 * Unfortunately, uwildmat only returns whether it matched, not what caused the match,
 			 * so we have to log the full header value here. */
-			snprintf(errbuf, errbuflen, "Rejected; unacceptable site in Path '%s'", artinfo->path);
+			snprintf(errbuf, errbuflen, "Unwanted site in Path '%s'", artinfo->path);
 			return -1;
 		}
 	}
@@ -2573,7 +2793,7 @@ int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article
 	} else {
 		/* Path is optional for proto-articles, but if present, it SHOULD NOT contain a "POSTED" diag-keyword (RFC 5537 3.4.1) */
 		if (artinfo->path && already_posted(artinfo->path)) {
-			snprintf(errbuf, errbuflen, "Article has already been posted");
+			snprintf(errbuf, errbuflen, "Has already been posted");
 			return -1;
 		}
 
@@ -2587,7 +2807,7 @@ int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article
 		 * indicating injection by an agent that did not add Injection-Info/Injection-Date (RFC 5537 3.5)
 		 * Currently, we only check this header but could expand this check. */
 		if (artinfo->nntp_posting_host_set) {
-			snprintf(errbuf, errbuflen, "Article has already been posted");
+			snprintf(errbuf, errbuflen, "Has already been posted");
 			return -1;
 		}
 
@@ -2597,10 +2817,10 @@ int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article
 		}
 
 		if (article_too_new(artinfo)) {
-			snprintf(errbuf, errbuflen, "Article date too far in future");
+			snprintf(errbuf, errbuflen, "Dated too far in future");
 			return -1;
 		} else if (article_too_old(artinfo)) {
-			snprintf(errbuf, errbuflen, "Article too old for injection");
+			snprintf(errbuf, errbuflen, "Too old for injection");
 			return -1;
 		}
 
@@ -2628,17 +2848,15 @@ int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article
 		}
 	}
 
-	/* Ensure there are no invalid newsgroups (we already know the header is non-empty at this point)
-	 * We SHOULD reject proto-articles without at least valid group or with any reserved group names (RFC 5537 3.5) */
-	if (contains_invalid_newsgroups(artinfo->newsgroups)) {
-		snprintf(errbuf, errbuflen, "Invalid newsgroups specified");
+	/* Check any kill patterns involving custom fields */
+	if (matches_custom_kill_pattern(artinfo, errbuf, errbuflen)) {
 		return -1;
 	}
 
 	/* Could be a race condition, maybe we didn't have the article when the client said CHECK/IHAVE,
 	 * but now we do (possibly from some other server). Check one last time before we attempt to store it in the spool. */
 	if (spool_article_exists(artinfo->messageid)) {
-		snprintf(errbuf, errbuflen, "Message %s is a duplicate", artinfo->messageid);
+		snprintf(errbuf, errbuflen, "%s is a duplicate", artinfo->messageid);
 		return 1; /* Use specific response to refuse articles with IHAVE, otherwise use default */
 	}
 
@@ -3186,7 +3404,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		return 0; \
 	}
 
-static int save_header_value(struct article_info *artinfo, char *s)
+static int save_header_value(struct article_info *artinfo, char *s, char *errbuf, size_t errbuflen)
 {
 	char *hval;
 
@@ -3200,11 +3418,15 @@ static int save_header_value(struct article_info *artinfo, char *s)
 			return 0; \
 		} \
 		if (unlikely(var != NULL)) { \
-			bbs_client_err("Duplicate header '%s'?\n", hdrname); \
+			if (var == artinfo->organization) { /* Multiple Organization headers appear in practice, so tolerate duplicates */ \
+				return 0; \
+			} \
+			snprintf(errbuf, errbuflen, "Duplicate header '%s'", hdrname); \
 			return -1; /* RFC 5536 Section 3 says these headers MUST NOT occur more than once */ \
 		} \
 		REPLACE(var, hval); \
 		if (ALLOC_FAILURE(var)) { \
+			snprintf(errbuf, errbuflen, "Temporary system error"); \
 			return -1; \
 		} \
 	}
@@ -3218,6 +3440,7 @@ static int save_header_value(struct article_info *artinfo, char *s)
 	else SAVE_HEADER("Expires", artinfo->expires)
 	else SAVE_HEADER("Subject", artinfo->subject)
 	else SAVE_HEADER("From", artinfo->from)
+	else SAVE_HEADER("Organization", artinfo->organization)
 	else SAVE_HEADER("Date", artinfo->date)
 	else SAVE_HEADER("References", artinfo->references)
 	else SAVE_HEADER("Message-ID", artinfo->messageid)
@@ -3229,8 +3452,6 @@ static int save_header_value(struct article_info *artinfo, char *s)
 		/* Don't care about value, but for certain headers, keep track that header has been set */
 		if (STARTS_WITH(s, "NNTP-Posting-Host")) {
 			artinfo->nntp_posting_host_set = 1;
-		} else if (STARTS_WITH(s, "Organization")) {
-			artinfo->organization_set = 1;
 		}
 		return 0; /* Not a header of interest */
 	}
@@ -3313,12 +3534,12 @@ static int is_valid_messageid(const char *s)
 	return 1;
 }
 
-static int process_last_header(enum nntp_mode mode, struct article_info *artinfo, char *s, FILE *fp, size_t *restrict artlen, const char *articleid)
+static int process_last_header(enum nntp_mode mode, struct article_info *artinfo, char *s, FILE *fp, size_t *restrict artlen, const char *articleid, char *errbuf, size_t errbuflen)
 {
 	int bytes;
 	char hdrval[NNTP_MAX_LINE_LENGTH];
 
-	if (save_header_value(artinfo, s)) {
+	if (save_header_value(artinfo, s, errbuf, errbuflen)) {
 		return -1;
 	}
 
@@ -3345,7 +3566,7 @@ static int process_last_header(enum nntp_mode mode, struct article_info *artinfo
 	if (articleid) { /* Usually if MODE_TRANSIT, but if sucking news, articleid isn't set */
 		if (artinfo->messageid && strcmp(artinfo->messageid, articleid)) {
 			/* The article better be the article that the other server said it was in IHAVE */
-			bbs_debug(1, "Article Message-ID mismatch: IHAVE=%s, Message-ID=%s\n", articleid, s);
+			snprintf(errbuf, errbuflen, "Message-ID mismatch: advertised %s, actually %s", articleid, s);
 			return 1; /* Permanently reject message */
 		}
 		/* Check that header fields are valid. If not, remove the header to trigger rejection.
@@ -3380,6 +3601,7 @@ static int process_last_header(enum nntp_mode mode, struct article_info *artinfo
 		}
 		if (artinfo->messageid) {
 			if (!is_valid_messageid(artinfo->messageid)) {
+				snprintf(errbuf, errbuflen, "Invalid Message-ID");
 				FREE(artinfo->messageid);
 			}
 		} else {
@@ -3395,8 +3617,8 @@ static int process_last_header(enum nntp_mode mode, struct article_info *artinfo
 
 		/* Either the client or the server can add the Organization header.
 		 * If the client has already set it, we don't touch it. */
-		if (!artinfo->organization_set && !s_strlen_zero(newsorg)) {
-			APPEND_HDR(fp, "Organization", "%s", newsorg); /* Append only, we don't need to store the organization (again!) */
+		if (!artinfo->organization && !s_strlen_zero(newsorg)) {
+			ADD_HDR(fp, artinfo->organization, "Organization", "%s", newsorg);
 		}
 
 		/* The Path header is a special exception here.
@@ -3418,7 +3640,7 @@ static inline int article_too_large(enum nntp_mode mode, size_t bytes)
 	return bytes >= max_article_size || (mode == NNTP_MODE_READER && bytes >= max_post_size);
 }
 
-int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct bbs_node *node, struct readline_data *rldata, struct bbs_tcp_client *tcpclient, FILE *fp, size_t *artlen, const char *articleid)
+int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct bbs_node *node, struct readline_data *rldata, struct bbs_tcp_client *tcpclient, FILE *fp, size_t *artlen, const char *articleid, char *errbuf, size_t errbuflen)
 {
 	int inheaders = 1;
 	int permerror = 0, postfail = 0;
@@ -3455,7 +3677,7 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 			if (!len) {
 				int hres;
 				inheaders = 0; /* Got CR LF, end of headers */
-				hres = process_last_header(mode, artinfo, headerbuf, fp, artlen, articleid);
+				hres = process_last_header(mode, artinfo, headerbuf, fp, artlen, articleid, errbuf, errbuflen);
 				artinfo->headerslen = *artlen; /* We are now done processing/adding headers */
 				if (hres) {
 					bbs_client_err("Failed to finalize headers\n");
@@ -3472,7 +3694,9 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 					}
 					SAFE_FAST_APPEND(headerbuf, sizeof(headerbuf), headerpos, headerleft, "%s", s + 1); /* Append to existing header (skip first char, space or tab, since we already add a space) */
 					if (!headerleft) {
-						bbs_client_err("Header length too long\n");
+						char *headername = headerbuf;
+						bbs_strterm(headername, ':');
+						snprintf(errbuf, errbuflen, "Header %s too long", headername);
 						postfail = 1;
 						continue;
 					}
@@ -3481,7 +3705,7 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 					if (headerpos > headerbuf) {
 						/* If this is a header we care about, save it into the artinfo structure with each header unfolded into a single line; otherwise ignore.
 						 * Of course, all the headers are saved as is in the file, unless we explicitly skip the header. */
-						if (save_header_value(artinfo, headerbuf)) {
+						if (save_header_value(artinfo, headerbuf, errbuf, errbuflen)) {
 							bbs_client_err("Failed to finalize header\n");
 							postfail = 1;
 							continue;
@@ -3561,7 +3785,7 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 			if (*s == '.') {
 				dot_stuffed_lines++; /* This line is dot-stuffed, keep track so we can adjust the length */
 				if (s[1] && s[1] != '.') {
-					bbs_client_err("Line %d was not dot-stuffed but should've been\n", lines);
+					snprintf(errbuf, errbuflen, "Line %d was not dot-stuffed but should've been", lines);
 					postfail = 1;
 					continue;
 				}
@@ -3572,14 +3796,14 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 		 * NNTP has a command line length limit of 512, we use twice that to be more consistent with SMTP length limits,
 		 * and as in practice, there are a lot of Usenet articles with lines between 512 and 1024. */
 		if (len > 2 * NNTP_MAX_LINE_LENGTH - 2) {
-			bbs_client_err("Article contains excessively long line (%lu > %d bytes)\n", len + 2, 2 * NNTP_MAX_LINE_LENGTH);
+			snprintf(errbuf, errbuflen, "Contains excessively long line (%lu > %d B)", len + 2, 2 * NNTP_MAX_LINE_LENGTH);
 			postfail = 1;
 			*artlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
 			continue;
 		}
 
 		if (article_too_large(mode, (unsigned int) (*artlen + (long unsigned int) len + 2))) {
-			bbs_client_err("Article size has exceeded site size limit\n");
+			snprintf(errbuf, errbuflen, "Size exceeds site size limit");
 			postfail = 1;
 			*artlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
 			continue;
@@ -3634,6 +3858,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 	FILE *fp;
 	size_t artlen;
 	int res;
+	char errbuf[128] = "";
 	struct article_info *artinfo = &nntp->artinfo;
 
 	nntp_reset_data(nntp);
@@ -3660,7 +3885,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 		}
 	}
 
-	res = nntp_read_article(artinfo, nntp->mode, nntp->node, rldata, NULL, fp, &artlen, articleid);
+	res = nntp_read_article(artinfo, nntp->mode, nntp->node, rldata, NULL, fp, &artlen, articleid, errbuf, sizeof(errbuf));
 	fclose(fp);
 
 	if (res < 0) {
@@ -3670,10 +3895,11 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 		unlink(template);
 		if (res == 2 || article_too_large(nntp->mode, artlen)) {
 			/* Permanent error */
-			if (article_too_large(nntp->mode, artlen)) {
-				nntp_rx_reply(nntp, artlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected (too large); do not retry");
+			if (!s_strlen_zero(errbuf)) {
+				log_article(nntp, streaming, artlen, articleid, LOG_REJECT, errbuf);
+				nntp_send(nntp, RX_REJECT(nntp, streaming), "%s", errbuf)
 			} else {
-				nntp_rx_reply(nntp, artlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected; do not retry"); /* Catch-all, but I don't think this case is possible */
+				nntp_rx_reply(nntp, artlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected"); /* Catch-all, but I don't think this case is possible */
 			}
 		} else {
 			/* Temporary error */
@@ -4637,6 +4863,8 @@ static int load_config(void)
 			max_accept_age = 3;
 		}
 	}
+	bbs_config_val_set_uint(cfg, "articles", "minlines", &min_lines);
+	bbs_config_val_set_uint(cfg, "articles", "maxlines", &max_lines);
 
 	/* Reader settings */
 	bbs_config_val_set_true(cfg, "readers", "requiresecurelogin", &require_secure_login);
@@ -4658,6 +4886,7 @@ static int load_config(void)
 	RWLIST_WRLOCK(&distributions);
 	RWLIST_WRLOCK(&distrib_pats);
 	RWLIST_WRLOCK(&moderators);
+	RWLIST_WRLOCK(&kill_patterns);
 	RWLIST_WRLOCK(&subscriptions);
 
 	while ((section = bbs_config_walk(cfg, section))) {
@@ -4724,6 +4953,10 @@ static int load_config(void)
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				add_site(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "kill")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_killpat(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
+			}
 		} else {
 			/* The only config section type that isn't defined by the section name is user ACLs */
 			const char *type = bbs_config_sect_val(section, "type");
@@ -4778,8 +5011,6 @@ static int load_config(void)
 				int modereader = 0, starttls = 0, compress = 0;
 				int autocreate = 0, xrefslave = 0;
 				int maxactivity = 0, mincount = 0, minlow = 0;
-				size_t maxsize = 0;
-				int minlines = 0, maxlines = 0, maxgroups = 0, maxgroupsxref = 0;
 				struct suck_feed *sf;
 				while ((keyval = bbs_config_section_walk(section, keyval))) {
 #define LOAD_NON_NEGATIVE_INT(setting) \
@@ -4790,16 +5021,7 @@ static int load_config(void)
 			setting = 0; \
 		} \
 	}
-#define LOAD_SIZE(setting) \
-	else if (!strcasecmp(key, #setting)) { \
-		long tmpsize = atol(val); \
-		if (tmpsize < 0) { \
-			bbs_warning("Invalid %s '%s'\n", #setting, val); \
-			setting = 0; \
-		} else { \
-			setting = (size_t) tmpsize; \
-		} \
-	}
+
 					const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);
 					if (!strcasecmp(key, "type")) {
 						continue;
@@ -4821,12 +5043,6 @@ static int load_config(void)
 					LOAD_NON_NEGATIVE_INT(maxactivity)
 					LOAD_NON_NEGATIVE_INT(mincount)
 					LOAD_NON_NEGATIVE_INT(minlow)
-					/* Article filters */
-					LOAD_SIZE(maxsize)
-					LOAD_NON_NEGATIVE_INT(minlines)
-					LOAD_NON_NEGATIVE_INT(maxlines)
-					LOAD_NON_NEGATIVE_INT(maxgroups)
-					LOAD_NON_NEGATIVE_INT(maxgroupsxref)
 					else {
 						continue; /* Everything else is a kill pattern or group pattern, skip for now */
 					}
@@ -4835,8 +5051,7 @@ static int load_config(void)
 					bbs_error("Must specify server for suck feed %s\n", bbs_config_section_name(section));
 					continue;
 				}
-				sf = nntp_suckfeed_create(bbs_config_section_name(section), server, modereader, starttls, compress, autocreate, xrefslave,
-					maxactivity, mincount, minlow, maxsize, minlines, maxlines, maxgroups, maxgroupsxref);
+				sf = nntp_suckfeed_create(bbs_config_section_name(section), server, modereader, starttls, compress, autocreate, xrefslave, maxactivity, mincount, minlow);
 				if (!sf) {
 					continue;
 				}
@@ -4849,23 +5064,11 @@ static int load_config(void)
 						continue; /* Skip general */
 					} else if (!strcasecmp(key, "maxactivity") || !strcasecmp(key, "mincount") || !strcasecmp(key, "minlow")) {
 						continue; /* Skip group filters */
-					} else if (!strcasecmp(key, "maxsize") || !strcasecmp(key, "minlines") || !strcasecmp(key, "maxlines") || !strcasecmp(key, "maxgroups") || !strcasecmp(key, "maxgroupsxref")) {
-						continue;
 					}
 					/* Technically, we don't have the suck_feeds list locked at this point,
 					 * but since we're still loading, there's no real harm yet
 					 * with adding to the suck_feed without locking. Later, this would be illegal. */
-					if (!strcasecmp(key, "kill")) {
-						/* Kill pattern */
-						char pattern[NNTP_BUFSIZ], *hdr, *killpat;
-						safe_strncpy(pattern, val, sizeof(pattern));
-						killpat = pattern;
-						hdr = strsep(&killpat, ":");
-						nntp_suckfeed_add_killpat(sf, hdr, killpat);
-					} else {
-						/* Group pattern */
-						nntp_suckfeed_add_suckpat(sf, key, val);
-					}
+					nntp_suckfeed_add_suckpat(sf, key, val); /* Group pattern */
 				}
 			} else {
 				bbs_error("Unrecognized section type '%s'\n", type);
@@ -4881,6 +5084,7 @@ static int load_config(void)
 	RWLIST_UNLOCK(&distributions);
 	RWLIST_UNLOCK(&distrib_pats);
 	RWLIST_UNLOCK(&moderators);
+	RWLIST_UNLOCK(&kill_patterns);
 	RWLIST_UNLOCK(&subscriptions);
 
 	bbs_config_unlock(cfg);
@@ -4901,6 +5105,7 @@ static void cleanup_lists(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&distributions, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&distrib_pats, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&moderators, entry, free);
+	RWLIST_WRLOCK_REMOVE_ALL(&kill_patterns, entry, free);
 	stringlist_empty_destroy(&subscriptions);
 }
 
@@ -4916,6 +5121,7 @@ static int load_module(void)
 	RWLIST_HEAD_INIT(&distributions);
 	RWLIST_HEAD_INIT(&distrib_pats);
 	RWLIST_HEAD_INIT(&moderators);
+	RWLIST_HEAD_INIT(&kill_patterns);
 	stringlist_init(&subscriptions);
 
 	if (load_config()) {

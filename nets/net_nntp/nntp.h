@@ -143,6 +143,7 @@ struct article_info {
 	char *distribution;
 	char *injectioninfo;
 	char *injectiondate;
+	char *organization;
 	char *approved;
 	char *control;
 	char *expires;
@@ -153,7 +154,6 @@ struct article_info {
 	const char *append; /* Headers to append after all other headers, except Xref */
 	char *filepath;
 	unsigned int nntp_posting_host_set:1;
-	unsigned int organization_set:1;
 	unsigned int needinjectiondate:1;
 };
 
@@ -197,12 +197,21 @@ void artinfo_reset(struct article_info *artinfo);
  * \param fp Temporary file handle
  * \param[out] artlen Article size, in bytes
  * \param[in] Article/Message ID, if expected (IHAVE/TAKETHIS)
+ * \param[out] errbuf Buffer in which an error message will be stored on failure
+ * \param[in] errbuflen Size of errbuf
  * \retval 0 on success, process article
  * \retval -1 Connection closed, abort
  * \retval 1 Temporary error, reject article for now.
  * \retval 2 Permanent error (e.g. too big, malformed, etc.) Reject article.
  */
-int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct bbs_node *node, struct readline_data *rldata, struct bbs_tcp_client *tcpclient, FILE *fp, size_t *artlen, const char *articleid);
+int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct bbs_node *node, struct readline_data *rldata, struct bbs_tcp_client *tcpclient, FILE *fp, size_t *artlen, const char *articleid, char *errbuf, size_t errbuflen);
+
+/*!
+ * \brief Check article info that is available through overview
+ * \retval 0 metadata okay, proceed
+ * \retval -1 Article rejected/disqualified, error set in errbuf
+ */
+int check_article_overview(const char *subject, const char *from, const char *date, const char *messageid, const char *references, size_t bytes, int lines, const char *xref, char *errbuf, size_t errbuflen);
 
 /*! \retval 0 on success, or 1 on duplicate or -1 for the default error code depending on mode */
 int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen);
