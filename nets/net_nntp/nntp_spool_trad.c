@@ -26,6 +26,9 @@
 #include "nntp.h"
 #include "nntp_spool_trad.h"
 
+/* Use a large enough buffer to ensure even long lines in the overview file will fit, or weird things will happen */
+#define OVERVIEW_BUFSIZ 4096
+
 /* Each thread opens a group's overview file for reading/writing, so multiple readers can operate simultaneously */
 static bbs_mutex_t histlock;
 
@@ -412,7 +415,7 @@ static int overview_rebuild(const char *group, int article_to_remove)
 	char grouppath[NNTP_MAX_PATH_LENGTH];
 	char template[TMPNAME_BUFSIZ];
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
-	char buf[NNTP_BUFSIZ];
+	char buf[OVERVIEW_BUFSIZ];
 	/* for scandir: */
 	struct dirent **entries;
 	int dirfiles = 0, fileindex = 0;
@@ -514,7 +517,7 @@ static int overview_line_extract_messageid(char *s, char *buf, size_t len)
 static int overview_find_messageid(const char *group, int article_num, char *msgidbuf, size_t msgidlen)
 {
 	FILE *fp;
-	char buf[NNTP_BUFSIZ];
+	char buf[OVERVIEW_BUFSIZ];
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
 
 	if (build_overview_path(group, overviewfile, sizeof(overviewfile))) {
@@ -550,7 +553,7 @@ int tradspool_group_seek(const char *groupname, int cur_artnum, int *new_artnum,
 {
 	FILE *fp;
 	long int lastoffset = 0, bestoffset = -1;
-	char buf[NNTP_BUFSIZ];
+	char buf[OVERVIEW_BUFSIZ];
 	char artpath[NNTP_MAX_PATH_LENGTH];
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
 
@@ -642,7 +645,7 @@ int tradspool_group_seek(const char *groupname, int cur_artnum, int *new_artnum,
 int tradspool_group_list_articles(struct nntp_session *nntp, const char *groupname, int min, int max)
 {
 	FILE *fp;
-	char buf[NNTP_BUFSIZ];
+	char buf[OVERVIEW_BUFSIZ];
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
 	int matches = 0;
 
@@ -716,7 +719,7 @@ static enum overview_field parse_overview_item(const char *s)
 static int tradspool_group_overview_full(struct nntp_session *nntp, enum overview_field field, enum nntp_hdr_cmd cmd, const char *pattern, const char *messageid, const char *groupname, int min, int max)
 {
 	FILE *fp;
-	char buf[NNTP_BUFSIZ];
+	char buf[OVERVIEW_BUFSIZ];
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
 	char eff_group[NNTP_BUFSIZ];
 	int eff_artnum = 0;
