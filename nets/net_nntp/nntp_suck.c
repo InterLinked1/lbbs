@@ -138,10 +138,10 @@ static int list_groups(struct nntp_client *nc, struct upstream_groups *grps, int
 	return 0;
 }
 
-static struct upstream_group *find_group(struct upstream_groups *grps, const char *group)
+static struct upstream_group *find_group_after(struct upstream_group *head, const char *group)
 {
 	struct upstream_group *grp;
-	BBS_LIST_TRAVERSE(grps, grp, entry) {
+	for (grp = head; grp; grp = BBS_LIST_NEXT(grp, entry)) {
 		int res = strcmp(grp->name, group);
 		/* Since the list is sorted, if the element is in the list,
 		 * all the items we encounter will SORT before the group we want,
@@ -157,8 +157,23 @@ static struct upstream_group *find_group(struct upstream_groups *grps, const cha
 	return NULL;
 }
 
+static struct upstream_group *find_group(struct upstream_groups *grps, const char *group, struct upstream_group *last)
+{
+	/* A common case is that the LIST response is sorted alphabetically, and thus we can start searching from the last group,
+	 * rather than the beginning of the list. This order is not guaranteed, but is common enough it makes sense to optimize for it.
+	 *
+	 * In a test with 1,020 groups, this simple optimization results in only ~50-100k traversals of loop in find_group_after,
+	 * versus ~12m traversals if we always use the list head (BBS_LIST_FIRST case).
+	 * Overall performance may still be impacted by the relevant server response (e.g. LIST COUNTS). */
+	if (last && strcmp(group, last->name) > 0) {
+		return find_group_after(BBS_LIST_NEXT(last, entry), group);
+	}
+	return find_group_after(BBS_LIST_FIRST(grps), group);
+}
+
 static int get_descriptions(struct nntp_client *nc, struct upstream_groups *grps)
 {
+	struct upstream_group *lastgroup = NULL;
 	nntp_client_send(nc, "LIST NEWSGROUPS\r\n");
 	if (nntp_client_expect_code(nc, SEC_MS(30), NNTP_OK_LIST)) {
 		return -1;
@@ -188,13 +203,13 @@ static int get_descriptions(struct nntp_client *nc, struct upstream_groups *grps
 			bbs_notice("Malformed LIST NEWSGROUPS response line\n");
 			return -1;
 		}
-		/* We only care about counts */
-		g = find_group(grps, name);
+		g = find_group(grps, name, lastgroup);
 		if (!g) {
 			/* It's legal for most LIST commands to return groups that LIST ACTIVE didn't, just ignore it */
 			bbs_debug(8, "LIST NEWSGROUPS included inactive group '%s'\n", name);
 			continue;
 		}
+		lastgroup = g;
 		ltrim(description); /* Trim trailing spaces */
 		if (!strcmp(description, "No description.")) {
 			continue; /* Well, this is a useless description, don't keep it */
@@ -209,13 +224,13 @@ static int get_descriptions(struct nntp_client *nc, struct upstream_groups *grps
 
 static int get_counts(struct nntp_client *nc, struct upstream_groups *grps, int ignore_missing)
 {
+	struct upstream_group *lastgroup = NULL;
 	nntp_client_send(nc, "LIST COUNTS\r\n");
 	/* XXX LIST COUNTS isn't mandatory in NNTP, but most servers should support it,
 	 * if the upstream doesn't, there's no way we can efficiently do the filtering required. */
 	if (nntp_client_expect_code(nc, SEC_MS(30), NNTP_OK_LIST)) {
 		return -1;
 	}
-	bbs_debug(8, "Starting LIST COUNTS processing\n");
 	for (;;) {
 		struct upstream_group *g;
 		char *name, *high, *low, *count, *status, *tmp;
@@ -238,8 +253,7 @@ static int get_counts(struct nntp_client *nc, struct upstream_groups *grps, int 
 			bbs_notice("Malformed LIST COUNTS response line\n");
 			return -1;
 		}
-		/*! \todo find_group is expensive (linear time), we should speed this up especially since get_counts is called every time for sucking news */
-		g = find_group(grps, name);
+		g = find_group(grps, name, lastgroup);
 		if (!g) {
 			if (!ignore_missing) {
 				/* It's legal for most LIST commands to return groups that LIST ACTIVE didn't, just ignore it */
@@ -247,6 +261,7 @@ static int get_counts(struct nntp_client *nc, struct upstream_groups *grps, int 
 			}
 			continue;
 		}
+		lastgroup = g;
 		g->count = atoi(count);
 		if (ignore_missing) {
 			g->high = atoi(high);
@@ -257,7 +272,6 @@ static int get_counts(struct nntp_client *nc, struct upstream_groups *grps, int 
 			return -1;
 		}
 	}
-	bbs_debug(8, "Finished LIST COUNTS processing\n");
 	return 0;
 }
 
