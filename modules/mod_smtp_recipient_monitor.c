@@ -204,7 +204,7 @@ static int processor(struct smtp_msg_process *mproc)
 		size_t line_strlen = (size_t) (linebuf - line);
 		/* Append to end of file so it will match in the future, and accept */
 		fseek(fp, 0, SEEK_END);
-		fwrite(line, 1, line_strlen, fp);
+		fwrite(line, 1, line_strlen, fp); /*! \todo FIXME There is no locking around this, could lead to lost updates if the same account were (re)sending multiple emails at once */
 		fclose(fp);
 		bbs_debug(4, "Added deferred From/Recipient set, accepting\n");
 		return 0;
@@ -230,7 +230,7 @@ static int processor(struct smtp_msg_process *mproc)
 	}
 
 	bbs_debug(4, "From/Recipient set not seen before, deferring\n");
-	bbs_smtp_log(4, mproc->smtp, "Submission deferred: From/Recipient set not seen before: %s\n", line);
+	bbs_smtp_log(4, mproc->smtp, "Submission deferred: From/Recipient set not seen before: %s", line); /* line already includes LF */
 	/* Instead of setting mproc->bounce and mproc->drop to 1, we reply directly and return -1.
 	 * The effectiveness of this depends heavily on the user's mail user agent presenting
 	 * the entire SMTP failure code/message directly to the user.
