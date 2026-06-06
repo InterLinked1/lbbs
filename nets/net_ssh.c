@@ -109,7 +109,7 @@ static int bind_key(enum ssh_bind_options_e opt, const char *filename)
 		bbs_warning("Can't access key %s - missing or not readable?\n", filename);
 		return 0;
 	}
-	return ssh_bind_options_set(sshbind, opt, KEYS_FOLDER "ssh_host_rsa_key") ? 0 : 1;
+	return ssh_bind_options_set(sshbind, opt, filename) ? 0 : 1;
 }
 
 static int start_ssh(void)
