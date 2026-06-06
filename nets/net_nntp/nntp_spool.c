@@ -45,11 +45,6 @@ int spool_group_exists(const char *groupname)
 	return tradspool_group_exists(groupname);
 }
 
-int spool_newnews(struct nntp_session *nntp, const char *wildmat, time_t newerthan)
-{
-	return tradspool_newnews(nntp, wildmat, newerthan);
-}
-
 int spool_group_seek(const char *groupname, int cur_artnum, int *new_artnum, int direction, char *msgidbuf, size_t msgidlen)
 {
 	return tradspool_group_seek(groupname, cur_artnum, new_artnum, direction, msgidbuf, msgidlen);
@@ -83,11 +78,6 @@ int spool_article_create(struct article_groups *groups, struct article_info *art
 int spool_article_delete_by_number(const char *groupname, int article_num)
 {
 	return tradspool_article_delete_by_number(groupname, article_num);
-}
-
-int spool_article_exists(const char *messageid)
-{
-	return tradspool_article_exists(messageid);
 }
 
 int spool_article_stat(struct nntp_session *nntp, const char *messageid, const char *groupname, int article_num)

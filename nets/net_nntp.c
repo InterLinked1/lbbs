@@ -57,6 +57,7 @@
 
 #define MAIN_NNTP_FILE
 #include "net_nntp/nntp.h"
+#include "net_nntp/nntp_history.h"
 #include "net_nntp/nntp_feed.h"
 #include "net_nntp/nntp_suck.h"
 
@@ -106,6 +107,7 @@ static unsigned int max_article_size = 100000; /* ~100 KB should be plenty */
 unsigned int max_groups = 100; /* used extern in nntp_suck.c */
 static unsigned int max_crossposts = 10;
 static unsigned int max_accept_age = 10;
+unsigned int min_history = 11; /* used extern in nntp_history.c */
 static unsigned int min_lines = 0;
 static unsigned int max_lines = 0;
 static char poisongroups[NNTP_MAX_LINE_LENGTH];
@@ -2151,6 +2153,20 @@ static int cli_delarticle(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int cli_expire(struct bbs_cli_args *a)
+{
+	const char *group = a->argv[2];
+	int res;
+
+	res = history_expire(group); /* OK if group is NULL */
+	if (res < 0) {
+		bbs_dprintf(a->fdout, "Failed to expire articles\n");
+		return -1;
+	}
+	bbs_dprintf(a->fdout, "Expired %d article%s\n", res, ESS(res));
+	return 0;
+}
+
 static int identity_allowed_for_posting(struct nntp_session *nntp, const char *fromaddr)
 {
 	char dup_addr[256];
@@ -2855,7 +2871,7 @@ int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article
 
 	/* Could be a race condition, maybe we didn't have the article when the client said CHECK/IHAVE,
 	 * but now we do (possibly from some other server). Check one last time before we attempt to store it in the spool. */
-	if (spool_article_exists(artinfo->messageid)) {
+	if (history_messageid_exists(artinfo->messageid)) {
 		snprintf(errbuf, errbuflen, "%s is a duplicate", artinfo->messageid);
 		return 1; /* Use specific response to refuse articles with IHAVE, otherwise use default */
 	}
@@ -4000,7 +4016,7 @@ static int handle_check(struct nntp_session *nntp, const char *articleid)
 	/* Just because it doesn't exist, doesn't necessarily mean we want it right now.
 	 * If another peer is currently sending us the same article, then we should defer
 	 * it from this peer until we've received it successfully. */
-	if (spool_article_exists(articleid)) {
+	if (history_messageid_exists(articleid)) {
 		nntp_send(nntp, NNTP_FAIL_CHECK_REFUSE, "%s", articleid);
 	} else if (is_wip_article(articleid)) {
 		nntp_rx_reply2_streaming(nntp, 1, 0, articleid, LOG_DEFER, NNTP_FAIL_CHECK_DEFER, ""); /* Defer due to in-progress delivery */
@@ -4463,7 +4479,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		}
 		nntp_send(nntp, NNTP_OK_NEWNEWS, "List of new articles by message-ID follows");
 		ACL_RDLOCK(nntp);
-		spool_newnews(nntp, wildmat, epoch);
+		history_newnews(nntp, wildmat, epoch);
 		ACL_UNLOCK(nntp);
 	} else if (!strcasecmp(command, "XOVER")) {
 		/* RFC 2980 XOVER */
@@ -4689,7 +4705,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 	} else if (!strcasecmp(command, "IHAVE")) {
 		REQUIRE_TRANSIT();
 		REQUIRE_ARGS(s); /* Do not strip <> around Message-ID, as that is part of the Message-ID */
-		if (spool_article_exists(s)) {
+		if (history_messageid_exists(s)) {
 			nntp_rx_reply2_streaming(nntp, 0, 0, s, LOG_DUPLICATE, NNTP_FAIL_IHAVE_REFUSE, "Duplicate");
 			return 0;
 		}
@@ -4798,6 +4814,7 @@ static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_rmgroup, "news rmgroup", 3, "Remove a newsgroup", "news rmgroup <group> [confirm]"),
 	BBS_CLI_COMMAND(cli_setstatus, "news setstatus", 4, "Edit posting status for a newsgroup", "news setstatus <group> <y/n/m>"),
 	BBS_CLI_COMMAND(cli_delarticle, "news delarticle", 4, "Delete an article", "news delarticle <group> <article number>"),
+	BBS_CLI_COMMAND(cli_expire, "news expire", 2, "Remove expired articles from the spool (optionally just for one group)", "news expire <group>"),
 	BBS_CLI_COMMAND(cli_feedflush, "news feedflush", 2, "Flush queued articles for feed(s)", "news feedflush [<site>]"),
 	BBS_CLI_COMMAND(cli_feedstats, "news feedstats", 2, "Show outgoing feed stats", "news feedstats [<site>]"),
 };
@@ -4820,7 +4837,7 @@ static int load_config(void)
 
 	/* Note: nntp_suckfeed_init needs to be initialized before the bulk of load_config() so the list is ready to receive items when processing the config
 	 * However, it also needs to be after loading newsdir */
-	if (active_init() || spool_init() || nntp_suckfeed_init()) {
+	if (active_init() || spool_init() || history_init() || nntp_suckfeed_init()) {
 		bbs_config_unlock(cfg);
 		return -1;
 	}
@@ -4863,6 +4880,7 @@ static int load_config(void)
 			max_accept_age = 3;
 		}
 	}
+	bbs_config_val_set_uint(cfg, "articles", "minhistory", &min_history);
 	bbs_config_val_set_uint(cfg, "articles", "minlines", &min_lines);
 	bbs_config_val_set_uint(cfg, "articles", "maxlines", &max_lines);
 
@@ -4956,6 +4974,10 @@ static int load_config(void)
 		} else if (!strcasecmp(bbs_config_section_name(section), "kill")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				add_killpat(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "retention")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				history_add_retention_pattern(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}
 		} else {
 			/* The only config section type that isn't defined by the section name is user ACLs */
@@ -5109,6 +5131,13 @@ static void cleanup_lists(void)
 	stringlist_empty_destroy(&subscriptions);
 }
 
+static void cleanup_subsystems(void)
+{
+	active_cleanup();
+	spool_cleanup();
+	history_cleanup();
+}
+
 static int load_module(void)
 {
 	char newslogpath[512];
@@ -5186,8 +5215,7 @@ static int load_module(void)
 
 cleanup:
 	cleanup_lists();
-	active_cleanup();
-	spool_cleanup();
+	cleanup_subsystems();
 	return -1;
 }
 
@@ -5207,8 +5235,7 @@ static int unload_module(void)
 	}
 	cleanup_lists();
 	bbs_rwlock_destroy(&nntp_lock);
-	active_cleanup();
-	spool_cleanup();
+	cleanup_subsystems();
 	fclose(newslog);
 	fclose(postlog);
 	return 0;

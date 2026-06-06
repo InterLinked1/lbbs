@@ -12,7 +12,7 @@
 
 /*! \file
  *
- * \brief Traditional file-based spool implementation (and history and overview)
+ * \brief Traditional file-based spool implementation (and overview)
  */
 
 #include "include/bbs.h"
@@ -24,48 +24,26 @@
 #include "include/stringlist.h"
 
 #include "nntp.h"
+#include "nntp_history.h"
 #include "nntp_spool_trad.h"
 
 /* Use a large enough buffer to ensure even long lines in the overview file will fit, or weird things will happen */
 #define OVERVIEW_BUFSIZ 4096
 
-/* Each thread opens a group's overview file for reading/writing, so multiple readers can operate simultaneously */
-static bbs_mutex_t histlock;
-
 /* Each thread opens a group's overview file for reading/writing, so multiple readers can operate simultaneously.
  * Right now, we don't have any per-group data structures, so for simplicity, we have one rwlock_t globally,
  * even though overview file operations are PER GROUP; so if one group's overview file is being modified,
  * no other reads/writes can occur; but otherwise, all reading operations are unconstrained. */
-static bbs_rwlock_t overviewlock;
-
-static char history_file[sizeof(newsdir) + STRLEN("/history")] = "";
-static FILE *histfp;
+static bbs_rwlock_t overviewlock = BBS_RWLOCK_INITIALIZER;
 
 int tradspool_init(void)
 {
-	bbs_mutex_init(&histlock, NULL);
-	bbs_rwlock_init(&overviewlock, NULL);
-
-	snprintf(history_file, sizeof(history_file), "%s/%s", newsdir, "history");
-	/* Keep the history file open for writing at runtime.
-	 * We don't even need to lock for writes to it, since fprintf will ensure writes get interleaved properly. */
-	histfp = fopen(history_file, "a+");
-	if (!histfp) {
-		bbs_error("Failed to open %s: %s\n", history_file, strerror(errno));
-		return -1;
-	}
 	return 0;
 }
 
 void tradspool_cleanup(void)
 {
-	/* If startup failed, we never initialized the mutexes so don't destroy them now */
-	if (histfp) {
-		fclose(histfp);
-		histfp = NULL;
-		bbs_mutex_destroy(&histlock);
-		bbs_rwlock_destroy(&overviewlock);
-	}
+	return;
 }
 
 static int build_newsgroup_path(const char *name, char *buf, size_t len)
@@ -187,140 +165,6 @@ int tradspool_group_exists(const char *groupname)
 	char grouppath[NNTP_MAX_PATH_LENGTH];
 	int res = build_newsgroup_path(groupname, grouppath, sizeof(grouppath));
 	return res == 0;
-}
-
-/* Note: Technically, these few functions for history aren't part of the spool implementation,
- * but they are mostly only used here (static functions), so all the history stuff is here for now. */
-static int history_add(const char *messageid, time_t arrival_time, const char *expires, size_t len, const char *links)
-{
-	bbs_mutex_lock(&histlock); /* The write will be atomic, but other threads may want to read the hist file */
-	fprintf(histfp, "%s\t%ld~%s~%lu\t%s\n", messageid, arrival_time, expires, len, links);
-	fflush(histfp);
-	bbs_mutex_unlock(&histlock);
-	return 0;
-}
-
-int tradspool_newnews(struct nntp_session *nntp, const char *wildmat, time_t newerthan)
-{
-	char buf[NNTP_BUFSIZ];
-	int line = 0;
-
-	bbs_mutex_lock(&histlock);
-	/* Seek to the beginning of the file */
-	if (fseek(histfp, 0, SEEK_SET)) {
-		bbs_error("fseek failed: %s\n", strerror(errno));
-		bbs_mutex_unlock(&histlock);
-		return -1;
-	}
-	while ((fgets(buf, sizeof(buf), histfp))) {
-		int sendmsg = 0;
-		time_t epoch;
-		char *grp, *middle, *artnumstr, *restofline = buf;
-		char *msgid = strsep(&restofline, "\t");
-		line++;
-		if (!msgid) {
-			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
-			continue;
-		}
-		middle = strsep(&restofline, "\t"); /* This is the complex middle, restofline now is just the links */
-		epoch = atol(middle); /* Will stop at ~ */
-		/* We check the time first since that will be faster than matching the wildmat, and most of the time, we'll only want the most recent articles */
-		if (epoch <= newerthan) {
-			continue;
-		}
-		if (strlen_zero(restofline)) {
-			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
-			continue;
-		}
-
-		/* Check if the wildmat matches any of the groups containing this article */
-		while ((artnumstr = strsep(&restofline, " "))) {
-			grp = strsep(&artnumstr, "/"); /* Parse out the group name */
-			if (!grp) {
-				bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
-				break;
-			}
-			if (!uwildmat(grp, wildmat)) {
-				continue;
-			}
-			if (!ACL_ALLOWED_LOCKED(nntp, grp, NNTP_ACL_READ)) {
-				continue;
-			}
-			sendmsg = 1;
-			break; /* No need to check the other groups, one group is enough */
-		}
-		if (sendmsg) {
-			_nntp_send(nntp, "%s\r\n", msgid);
-		}
-	}
-	/* When we're done, seek back to the end of the file for appends */
-	if (fseek(histfp, 0, SEEK_END)) {
-		bbs_error("fseek failed: %s\n", strerror(errno));
-	}
-	bbs_mutex_unlock(&histlock);
-	_nntp_send(nntp, ".\r\n");
-	return 0;
-}
-
-static int history_find_article_by_messageid(const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum)
-{
-	int found = 0;
-	char buf[NNTP_BUFSIZ];
-	int line = 0;
-
-	bbs_mutex_lock(&histlock);
-	/* Seek to the beginning of the file */
-	if (fseek(histfp, 0, SEEK_SET)) {
-		bbs_error("fseek failed: %s\n", strerror(errno));
-		bbs_mutex_unlock(&histlock);
-		return -1;
-	}
-	while ((fgets(buf, sizeof(buf), histfp))) {
-		char *grp, *artnumstr, *restofline = buf;
-		char *msgid = strsep(&restofline, "\t");
-		line++;
-		if (!msgid) {
-			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
-			continue;
-		}
-		if (strcmp(msgid, messageid)) {
-			continue;
-		}
-		/* Found the article */
-		strsep(&restofline, "\t"); /* This is the complex middle, restofline now is just the links */
-		if (strlen_zero(restofline)) {
-			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
-			continue;
-		}
-
-		/* If prefgroup was provided, then return that group/article number if it's present in the list of links.
-		 * If we don't care (no preference), just use the first one. If we do but don't find it, we'll end up using the last one.
-		 * Note we do this as a courtesy; the RFC allows 0 to be returned for the article number in any case;
-		 * however, we aim to provide the article number in the current group if it actually exists there, to be as helpful as we can. */
-		while ((artnumstr = strsep(&restofline, " "))) {
-			grp = strsep(&artnumstr, "/"); /* Parse out the group name */
-			if (!grp) {
-				bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
-				continue;
-			}
-			/* If !prefgroup, we don't care, just pick the first one.
-			 * If we do, we'll prefer the group if it exists in the list.
-			 * If we get to the end and there weren't any matches, use the last one. */
-			if (!prefgroup || !strcmp(grp, prefgroup) || strlen_zero(restofline)) {
-				safe_strncpy(group, grp, len);
-				*artnum = atoi(artnumstr);
-				break;
-			}
-		}
-		found = 1;
-		break;
-	}
-	/* When we're done, seek back to the end of the file for appends */
-	if (fseek(histfp, 0, SEEK_END)) {
-		bbs_error("fseek failed: %s\n", strerror(errno));
-	}
-	bbs_mutex_unlock(&histlock);
-	return found ? 0 : 1;
 }
 
 /* Note: Technically, history is not coupled to the spool implementation, so that could be moved elsewhere.
@@ -946,7 +790,7 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 	char links[4 * NNTP_MAX_PATH_LENGTH];
 	char xref[10 * NNTP_MAX_LINE_LENGTH]; /* If there are a lot of groups, it could be more than we'll fit in a single line */
 	size_t xrefbytes;
-	char expiresbuf[32] = "-"; /* - indicates no expiration */
+	time_t expires = 0;
 	char *linkspos = links;
 	size_t linksleft = sizeof(links);
 	struct article_group *g;
@@ -1063,9 +907,14 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 
 		/* Add the article to history, so we can keep track of message-IDs of articles we've already seen */
 		if (artinfo->expires) {
-			/*! \todo If article has an Expires header, we would include that in expiresbuf instead - need to convert string to epoch time */
+			/* If article has Expires header, we store its UNIX timestamp in history so we know when to expire it */
+			struct tm tm;
+			memset(&tm, 0, sizeof(tm));
+			if (!bbs_parse_rfc822_date(artinfo->expires, &tm)) {
+				expires = mktime(&tm);
+			}
 		}
-		history_add(artinfo->messageid, arrival_time, expiresbuf, artinfo->bytes, links);
+		history_add(artinfo->messageid, arrival_time, expires, artinfo->bytes, links);
 		/* Save the file path (or a file path) for use when feeding the article.
 		 * Note that here, we simply pick the first path (corresponding to the first newsgroup).
 		 * However, we could be smarter about this. This is kept by the NNTP feeder in the backlog
@@ -1146,7 +995,7 @@ int tradspool_article_delete_by_number(const char *groupname, int article_num)
 
 	/* This is also our existence check, so it's okay if it fails: */
 	if (unlink(articlefile)) {
-		bbs_debug(1, "Attempt to delete nonexistent article %d\n", article_num);
+		bbs_debug(1, "Attempt to delete nonexistent article %s:%d\n", groupname, article_num);
 		return 1;
 	}
 
@@ -1189,17 +1038,6 @@ int tradspool_article_delete_by_number(const char *groupname, int article_num)
 	 * It'll stay in history for a sufficient amount of time (at least until IHAVE would reject the same article for being too old). */
 	overview_rebuild(groupname, article_num);
 	return 0;
-}
-
-int tradspool_article_exists(const char *messageid)
-{
-	char eff_group[NNTP_BUFSIZ];
-	int eff_artnum;
-	/* Scan the history file for any messages matching this Message-ID */
-	if (history_find_article_by_messageid(messageid, NULL, eff_group, sizeof(eff_group), &eff_artnum)) {
-		return 0;
-	}
-	return 1;
 }
 
 int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, const char *groupname, int article_num)

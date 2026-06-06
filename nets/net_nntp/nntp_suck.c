@@ -25,6 +25,7 @@
 #include "include/cli.h"
 
 #include "nntp.h"
+#include "nntp_history.h"
 #include "nntp_client.h"
 #include "nntp_suck.h"
 
@@ -880,7 +881,7 @@ static int process_over(struct nntp_client *nc, struct upstream_group *g, int ar
 		}
 
 		/* As long as we have the Message-ID, we may as well check if it exists, so we don't request the article if we already have it. */
-		if (spool_article_exists(msgid)) {
+		if (history_messageid_exists(msgid)) {
 			/* Sadly, if it already existed in another group, we can't just "add it" to another group now
 			 * (we could link it, but the Xref header would need to get modified, and articles are immutable). */
 			bbs_debug(6, "Article %s:%d disqualified: %s already exists\n", g->name, artnum, msgid);

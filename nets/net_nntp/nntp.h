@@ -516,14 +516,6 @@ int spool_article_delete_by_number(const char *groupname, int article_num);
 /*!
  * \brief Whether any message with this Message-ID exists in any group
  * \param messageid Message-ID of article, if searching by message-ID
- * \retval 0 if no message exists
- * \retval 1 if article exists in some group
- */
-int spool_article_exists(const char *messageid);
-
-/*!
- * \brief Whether any message with this Message-ID exists in any group
- * \param messageid Message-ID of article, if searching by message-ID
  * \param groupname Group name, required if searching by article number.
  * \param article_num Article number, if searching by article number
  * \retval 0 on success (article exists), -1 on error, 1 if article does not exist

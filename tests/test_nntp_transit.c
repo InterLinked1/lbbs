@@ -59,6 +59,8 @@ static int create_groups(void)
 	NEW_NEWSGROUP(sockfd, "test.nolocal", "A nolocal group", "Sysop", "n");
 	NEW_NEWSGROUP(sockfd, "test.aliased", "An aliased group", "Sysop", "=misc.test");
 	NEW_NEWSGROUP(sockfd, "feed.test", "An group fed to peers", "Sysop", "y");
+	NEW_NEWSGROUP(sockfd, "test.expires", "A group with short retention", "Sysop", "y");
+	NEW_NEWSGROUP(sockfd, "test.expires2", "A group with short retention that honors Expires", "Sysop", "y");
 
 	close(sockfd);
 	return 0;
@@ -256,6 +258,38 @@ static int run(void)
 	TAKETHIS_ADDITIONAL_RESPONSE(peer1, "<feedmessage.kill2@" TEST_HOSTNAME ">", TEST_EMAIL, "misc.test", NNTP_FAIL_TAKETHIS_REJECT,
 		"Organization: My Blocked Org\r\n"
 	);
+
+	/* Test expiration */
+	TAKETHIS(peer1, "<expires.1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.expires");
+	TAKETHIS(peer1, "<expires.2@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.expires");
+	TAKETHIS_ADDITIONAL(peer1, "<expires.3@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.expires",
+		"Expires: Thu, 31 Dec 2099 23:59:59 +00:00\r\n"
+	);
+	GROUP_EXPECT(client1, "test.expires", 1, 3, 3);
+	TEST_CLI_COMMAND("news expire");
+	GROUP_EXPECT(client1, "test.expires", EMPTY_LOW_WATERMARK(4), EMPTY_HIGH_WATERMARK(3), 0); /* All articles should have been removed */
+
+	/* Should refuse article that was deleted since it was recent enough */
+	TAKETHIS_RESPONSE(peer1, "<expires.1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.expires", NNTP_FAIL_TAKETHIS_REJECT);
+
+	TAKETHIS(peer1, "<expires2.1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.expires2");
+	TAKETHIS(peer1, "<expires2.2@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.expires2");
+	TAKETHIS_ADDITIONAL(peer1, "<expires2.3@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.expires2",
+		"Expires: Thu, 31 Dec 2099 23:59:59 +00:00\r\n"
+	);
+	GROUP_EXPECT(client1, "test.expires2", 1, 3, 3);
+	TEST_CLI_COMMAND("news expire");
+	GROUP_EXPECT(client1, "test.expires2", 1, 3, 3); /* No articles should have expired */
+
+	TAKETHIS_ADDITIONAL(peer1, "<expires2.4@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.expires2",
+		"Expires: Fri, 31 Dec 1999 23:59:59 +00:00\r\n"
+	);
+	GROUP_EXPECT(client1, "test.expires2", 1, 4, 4);
+	TEST_CLI_COMMAND("news expire");
+	GROUP_EXPECT(client1, "test.expires2", 1, 3, 3); /* Article 4 was deleted due to its Expires header being in the past */
+
+	SWRITE(client1, "ARTICLE <expires2.2@" TEST_HOSTNAME ">\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, " 2 <"); /* Ensure that an article's groups are retained when the history file is rewritten */
 
 	/* Now, test sending received articles to other peers (which are actually ourself, so these articles will all be refused) */
 	TAKETHIS(peer1, "<feedmessage.1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "feed.test");
