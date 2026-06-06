@@ -306,6 +306,15 @@ FILE *bbs_fdopen_duped(int fd, const char *mode);
  */
 int bbs_copy_file(int srcfd, int destfd, int start, int bytes); /* gcc has fd_arg attributes, but not widely supported yet */
 
+/*!
+ * \brief Efficiently copy the remainder of a source file to another file
+ * \param srcfp The source file handle, which is at the offset at which to begin copying the remainder of the file
+ * \param destfp The destination file handle, to which the remainder of the source file will be appended
+ * \retval -1 on failure, 0 on success
+ * \note It is assumed that srcfp is already at the correct offset. destfp will also be flushed before calling bbs_copy_file
+ */
+int bbs_copy_rest_of_file(FILE *srcfp, FILE *destfp);
+
 enum bbs_copy_flags {
 	COPY_RECURSIVE = (1 << 0), /* Whether to copy recursively (e.g. cp -r) */
 	COPY_CLOBBER = (1 << 1), /* Whether to allow clobbering of existing files (inverse of cp -n) */

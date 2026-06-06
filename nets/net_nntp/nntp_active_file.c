@@ -278,6 +278,7 @@ cleanup:
 /*!
  * \brief Update an existing group in the active file, modifying the active file in place
  * \param[in] g Group information
+ * \param[in/out] incrlast The newly assigned article number (or 0 on failure). Input is the requested article number (for xrefslave) or 0 to auto-assign.
  * \retval -1 system error occured
  * \retval 1 program/environment error occured
  * \retval 0 on success
@@ -313,21 +314,53 @@ static int update_active_file(struct group_info *g, int *incrlast)
 				found_group = 1;
 				update_and_set_group(g, &oldgroup);
 				if (incrlast) {
-					if (g->last >= NNTP_MAX_ARTICLE_NUMBER) {
-						/* Uh oh, we're out of room */
-						*incrlast = 0; /* Indicate we can't allocate any more article numbers in this group */
-						bbs_warning("Newsgroup %s is full\n", g->name);
-						break; /* Abort without making any changes */
-					}
-					*incrlast = ++g->last; /* Increment LAST and return it in the variable */
-					/* If we're assigning a new article number, also increment count and high water mark while we're at it.
-					 * There's always a slight chance that the article creation in the spool might fail afterwards,
-					 * but in the common case where all goes well, we won't need to make another update here. */
-					g->count++;
-					g->high = g->last;
-					if (g->count == 1) {
-						/* If we are adding an article to a directory that was previously empty, this is our new low water mark as well */
-						g->low = g->last;
+					if (*incrlast) {
+						/* We are being told what article number is being assigned.
+						 * Increase the high water mark if we need to, increase the count, leave everything else alone.
+						 * In particular, we don't increase the low water mark beyond 1, because newer articles could get assigned later with lower article numbers. */
+						int artnum = *incrlast;
+						if (artnum > NNTP_MAX_ARTICLE_NUMBER) {
+							*incrlast = 0;
+							bbs_warning("Rejecting attempt to assign article number %d\n", artnum);
+							break;
+						}
+						if (artnum < g->low) {
+							/* Can't assign articles below the current low water mark */
+							*incrlast = 0;
+							bbs_warning("Can't slave article %s:%d (< low water mark %d)\n", g->name, artnum, g->low);
+							break;
+						}
+						if (artnum > g->last) {
+							g->last = artnum;
+						}
+						if (artnum > g->high) {
+							g->high = artnum;
+						}
+						g->count++;
+						if (!g->low && g->count == 1) {
+							/* Even if the lowest article number is > 1, we still initialize low to 1, because a lower article number could be assigned later (with xrefslave)
+							 * If the low water mark is already set to a value, we leave it alone here.
+							 * When expiration operations occur, the low water mark could increase at that time, and lower article numbers in the future will then be rejected. */
+							g->low = 1;
+						}
+						*incrlast = artnum;
+					} else {
+						if (g->last >= NNTP_MAX_ARTICLE_NUMBER) {
+							/* Uh oh, we're out of room */
+							*incrlast = 0; /* Indicate we can't allocate any more article numbers in this group */
+							bbs_warning("Newsgroup %s is full\n", g->name);
+							break; /* Abort without making any changes */
+						}
+						*incrlast = ++g->last; /* Increment LAST and return it in the variable */
+						/* If we're assigning a new article number, also increment count and high water mark while we're at it.
+						 * There's always a slight chance that the article creation in the spool might fail afterwards,
+						 * but in the common case where all goes well, we won't need to make another update here. */
+						g->count++;
+						g->high = g->last;
+						if (g->count == 1) {
+							/* If we are adding an article to a directory that was previously empty, this is our new low water mark as well */
+							g->low = g->last;
+						}
 					}
 				}
 				bbs_assert(g->low >= oldgroup.low); /* The low water mark can never decrease */
@@ -363,34 +396,24 @@ int active_file_group_delete(const char *groupname)
 	return regenerate_active_file(GROUP_DELETE, &g);
 }
 
-int active_file_group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, const char *status, const char *description)
+int active_file_group_update(struct group_info *g, int *incrlast)
 {
-	struct group_info g;
 	/* Assume if the description changes, we'll need to rewrite out the file again.
 	 * This may not be true if the length of the description is unchanged,
 	 * but we won't know that without checking, which would require a pass over the file first. */
-	int need_rewrite = description != NULL;
+	int need_rewrite = g->description != NULL;
 
-	if (!need_rewrite && status) {
+	if (!need_rewrite && g->status) {
 		/* If the status has changed, we technically only need to rewrite the active file if the length of the status has changed,
 		 * i.e. we go from a single letter status to =other.group or vice versa.
 		 * At the moment, we just assume we always need to rewrite, but per the above note on description, this is not always true. */
 		need_rewrite = 1;
 	}
 
-	g.name = groupname;
-	g.last = last;
-	g.high = high;
-	g.low = low;
-	g.count = count;
-	g.status = status;
-	g.description = description;
-	/* Don't need to set created and creator, as those can't change and are just copied from the old on updates */
-
 	if (need_rewrite) {
-		return regenerate_active_file(GROUP_MODIFY, &g);
+		return regenerate_active_file(GROUP_MODIFY, g);
 	} else {
-		return update_active_file(&g, incrlast);
+		return update_active_file(g, incrlast);
 	}
 }
 

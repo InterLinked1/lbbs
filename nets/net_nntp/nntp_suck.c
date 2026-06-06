@@ -568,7 +568,7 @@ static void generate_report(struct upstream_groups *grps, time_t start, int allg
 	int overall_count = 0;
 	char tmpfilepath[TMPNAME_BUFSIZ];
 
-	bbs_renamable_tempname("nntpsuckgroups", tmpfilepath, sizeof(tmpfilepath));
+	bbs_tempname("nntpsuckgroups", tmpfilepath, sizeof(tmpfilepath));
 	fp = bbs_mkftemp(tmpfilepath, 0600);
 	if (!fp) {
 		return;
@@ -623,6 +623,13 @@ static int suck_client_start(struct nntp_client *nc, struct suck_feed *sf)
 	if (sf->serveruri.user && nntp_client_authenticate(nc, sf->serveruri.user, sf->serveruri.pass)) {
 		goto done;
 	}
+
+	/* NEWNEWS may only be advertised after authenticating */
+	res = nntp_client_capabilities(nc);
+	if (res) {
+		goto done;
+	}
+
 	return 0;
 
 done:
@@ -719,7 +726,7 @@ static int load_suckfile(struct suck_feed *sf, struct upstream_groups *grps, tim
 		fclose(fp);
 		return -1;
 	}
-	*lasttimestamp = (time_t) buf;
+	*lasttimestamp = (time_t) atol(buf);
 	for (; (fgets(buf, sizeof(buf), fp)); lineno++) {
 		struct upstream_group *g;
 		int high;
@@ -996,7 +1003,7 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 	}
 
 	/* Receive the full article */
-	res = nntp_read_article(&artinfo, NNTP_MODE_TRANSIT, NULL, NULL, &nc->tcpclient, fp, &artlen, NULL, errbuf, sizeof(errbuf));
+	res = nntp_read_article(&artinfo, NNTP_MODE_TRANSIT, NULL, NULL, &nc->tcpclient, fp, &artlen, NULL, sf->xrefslave, errbuf, sizeof(errbuf));
 	if (res) {
 		fclose(fp);
 		unlink(template);
@@ -1049,9 +1056,7 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 	delivered = article_create(&groups, &artinfo, fileno(fp), artlen);
 	if (delivered <= 0) {
 		bbs_notice("Failed to create article %s:%d\n", g->name, artnum);
-	} else {
-		bbs_debug(8, "Saved article %s:%d %s\n", g->name, artnum, artinfo.messageid);
-	}
+	} /* nntp_spool_trad.c already logs a debug message on success, no need to log it again here */
 	res = delivered > 0 ? 0 : -1;
 
 skip:
@@ -1160,7 +1165,10 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct upstr
 	}
 
 	/* If we want N most recent articles, figure out which article numbers are actually wanted (of what is available)
-	 * We can't just subtract # recent from current high water mark, because there could be gaps in the articles available. */
+	 * We can't necessarily just subtract # recent from current high water mark, because there could be gaps in the articles available.
+	 * That said, that is probably common enough we could try that first if the watermarks/count suggest there are no gaps,
+	 * and only do LISTGROUP if there are actually gaps. However, this operation is only done once as part of "news suckgroups",
+	 * so it's not really a big deal if it's not as efficient as possible. */
 	if (artrecent) {
 		int idx;
 		nntp_client_send(nc, "LISTGROUP %s %d-\r\n", g->name, artlow);
@@ -1275,14 +1283,30 @@ static void suck_news(struct suck_feed *sf)
 	 * might be newer than other articles we pull later for other groups,
 	 * yet due to saving the article from A first, it would have a lower article number.
 	 *
+	 * (This can be a problem with NEWNEWS since the order of returned articles is not significant,
+	 *  so even doing something like NEWNEWS * 19700101 000000 GMT is not guaranteed to feed
+	 *  articles to us in order. INN, for example, goes group by group, rather than using history.)
+	 *
 	 * Additionally, on the first traversal, NEWNEWS isn't really possible since
 	 * we would be asking for every article on the server; at this point,
 	 * it makes more sense to do the traversal.
 	 * However, on future traversals, we will TRY to use NEWNEWS if available. */
 
-	if (lasttimestamp && nc->caps.newnews && 0) { /* We have never sucked for this feed before */
+	if (lasttimestamp && nc->caps.newnews && 0) {
 		/*! \todo Possibly implement NEWNEWS support in the future */
-	} else {
+#if 0
+		char datestr[16];
+		struct tm tm;
+		if (likely(lasttimestamp > 90)) {
+			lasttimestamp -= 90; /* Subtract > 1 minute, to ensure we don't miss articles right on the edge due to clock skew, etc. */
+		}
+		gmtime_r(&lasttimestamp, &tm);
+		strftime(datestr, sizeof(datestr), "%Y%m%d %H%M%S", &tm); /* yyyymmdd hhmmss */
+		/* Would be nice to optimize pattern based on the groups actually wanted, but this could be very long/difficult if there are a lot of entries in the file */
+		nntp_client_send(nc, "NEWNEWS * %s GMT\r\n", datestr);
+		/*! \todo Then do something with the response */
+#endif
+	} else { /* We have never sucked for this feed before */
 		/* Go group by group */
 		int total_processed = 0, total_skipped = 0, total_saved = 0;
 		struct upstream_group *g;
@@ -1459,6 +1483,10 @@ static int suck_load_groups(struct suck_feed *sf, FILE *fp)
 		/* This operation is idempotent, so if we need to abort, there's no need to clean up, running a second time will only finish what's left */
 #define SUCK_CREATOR "SuckFeed"
 		description = S_OR(description, "No description.");
+
+		/* Technically, serving agents MUST NOT create new newsgroups simply because an unrecognized newsgroup appears (RFC 5537 3.7)
+		 * However, in this case, we are explicitly configured to create such groups (so long as they match patterns specified in configuration). */
+		
 		if (group_create(grp, status, SUCK_CREATOR, description)) {
 			bbs_error("Failed to create group %d '%s' '%s' (%s)\n", c, grp, status, S_IF(description));
 		} else {
@@ -1573,7 +1601,7 @@ struct suck_feed *nntp_suckfeed_create(const char *name, const char *server, int
 
 	/* General */
 	SET_BITFIELD(sf->autocreate, autocreate);
-	SET_BITFIELD(sf->xrefslave, xrefslave); /*! \todo Not yet implemented */
+	SET_BITFIELD(sf->xrefslave, xrefslave);
 
 	/* Group filters */
 	sf->maxactivity = maxactivity;

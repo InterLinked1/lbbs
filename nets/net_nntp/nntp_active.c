@@ -42,9 +42,9 @@ int active_group_delete(const char *groupname)
 	return active_file_group_delete(groupname);
 }
 
-int active_group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, const char *status, const char *description)
+int active_group_update(struct group_info *g, int *incrlast)
 {
-	return active_file_group_update(groupname, incrlast, last, high, low, count, status, description);
+	return active_file_group_update(g, incrlast);
 }
 
 int active_group_info(const char *groupname, int *last, int *high, int *low, int *count, char *status, size_t statuslen, time_t *created, char *creator, size_t creatorlen, char *description, size_t descriplen)

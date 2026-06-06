@@ -1023,6 +1023,26 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 	return copied;
 }
 
+int bbs_copy_rest_of_file(FILE *srcfp, FILE *destfp)
+{
+	long startoffset, bytes, filesize;
+
+	startoffset = ftell(srcfp);
+	fseek(srcfp, 0, SEEK_END);
+	filesize = ftell(srcfp);
+	fflush(destfp);
+
+	bytes = filesize - startoffset;
+	if (!bytes) {
+		return 0;
+	}
+
+	if (bbs_copy_file(fileno(srcfp), fileno(destfp), (int) startoffset, (int) bytes) < 0) { /* Copy original headers, not including empty line */
+		return 1;
+	}
+	return 0;
+}
+
 int bbs_copy_files(const char *source, const char *dest, enum bbs_copy_flags flags)
 {
 	struct bbs_exec_params x;
@@ -1275,13 +1295,15 @@ int bbs_parse_rfc822_date(const char *s, struct tm *tm)
 
 	/* Be liberal in what we receive. Other formats observed in netnews:
 	 * 28 May 2026 01:21:20 GMT (GMT instead of +0000)
-	 * Tue, 10 Mar 2026 23:38 -0400 (missing seconds) */
+	 * Tue, 10 Mar 2026 23:38 -0400 (missing seconds)
+	 * Fri, 13 Mar 2026 (not parsed here, since it's missing the time)
+	 */
 	if ((t = strptime(s, "%d %b %Y %H:%M:%S %Z", tm)) || (t = strptime(s, "%a, %d %b %Y %H:%M %z", tm))) {
 		bbs_debug(1, "Non-RFC2822 compliant date: %s\n", s);
 		return 0;
 	}
 
-	bbs_warning("Failed to parse as date: %s\n", s);
+	bbs_client_err("Failed to parse as date: %s\n", s);
 	return -1;
 }
 

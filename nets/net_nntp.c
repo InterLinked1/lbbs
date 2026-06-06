@@ -116,6 +116,7 @@ static char poisonsites[NNTP_MAX_LINE_LENGTH];
 /* Global settings for incoming articles from peers */
 static int requirerelaytls = 1;
 static int keepjunk = 0;
+static int xref_slave = 0;
 
 /* Reader settings */
 enum injection_posting_account {
@@ -1842,8 +1843,19 @@ int group_exists(const char *groupname)
  * but since we're already locked there, we have variants here that are already locked */
 static int __group_update_locked(const char *groupname, int *incrlast, int last, int high, int low, int count, const char *status, const char *description)
 {
+	struct group_info g;
+
+	g.name = groupname;
+	g.last = last;
+	g.high = high;
+	g.low = low;
+	g.count = count;
+	g.status = status;
+	g.description = description;
+	/* Don't need to set created and creator, as those can't change and are just copied from the old on updates */
+
+	return active_group_update(&g, incrlast);
 	/*! \todo If status/description change, need to send control message to other servers with new status and description? */
-	return active_group_update(groupname, incrlast, last, high, low, count, status, description);
 }
 
 static int __group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, const char *status, const char *description)
@@ -1862,20 +1874,33 @@ static int group_update_status_description(const char *groupname, const char *st
 
 int group_update_counts_locked(const char *groupname, int high, int low, int count)
 {
-	return __group_update_locked(groupname, NULL, -1, high, low, count, 0, NULL);
+	return __group_update_locked(groupname, NULL, -1, high, low, count, NULL, NULL);
 }
 
 /*!
  * \brief Assign an article number for the next article in this group
  * \param groupname
- * \param[out] article_num Will be set to the next article number, or 0 if the group is full
+ * \param[in/out] article_num Will be set to the next article number, or 0 if the group is full. Pass in 0 to auto-assign article number or requested article number otherwise (for xrefslave)
  * \retval 0 on success, nonzero on error
  * \note Must be called locked
  */
-int group_assign_article_number_locked(const char *groupname, int *restrict article_num)
+int group_assign_article_number_locked(const char *groupname, int *restrict article_num, int *restrict last)
 {
+	struct group_info g;
+	int res;
+
+	g.name = groupname;
+	g.last = -1;
+	g.high = -1;
+	g.low = -1;
+	g.count = -1;
+	g.status = NULL;
+	g.description = NULL;
+
 	/* The active file will also increment the count for us (and low/high water marks as appropriate) when it assigns the article number */
-	return __group_update_locked(groupname, article_num, -1, -1, -1, -1, 0, NULL);
+	res = active_group_update(&g, article_num); /* Call active_group_update directly instead of using __group_update_locked so that we can get last */
+	*last = g.last;
+	return res;
 }
 
 /*!
@@ -3221,7 +3246,7 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 		bbs_error("Failed to open %s: %s\n", srcfilename, strerror(errno));
 		goto cleanup;
 	}
-	delivered = article_create(&groups, artinfo, srcfd, filesize); /* Assign article numbers, add Xref header, and deliver to spool */
+	delivered = article_create(&groups, artinfo, srcfd, filesize); /* Assign article numbers, add/update Xref header, and deliver to spool */
 	close(srcfd);
 	if (delivered <= 0) {
 		temp_fail = 1; /* If we got this far and failed, for peers, this is a temporary failure, we want them to retry deliver later */
@@ -3691,11 +3716,12 @@ static inline int article_too_large(enum nntp_mode mode, size_t bytes)
 	return bytes >= max_article_size || (mode == NNTP_MODE_READER && bytes >= max_post_size);
 }
 
-int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct bbs_node *node, struct readline_data *rldata, struct bbs_tcp_client *tcpclient, FILE *fp, size_t *artlen, const char *articleid, char *errbuf, size_t errbuflen)
+int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct bbs_node *node, struct readline_data *rldata, struct bbs_tcp_client *tcpclient, FILE *fp, size_t *artlen, const char *articleid, int xrefslave, char *errbuf, size_t errbuflen)
 {
 	int inheaders = 1;
 	int permerror = 0, postfail = 0;
 	int lines = 0;
+	int isxref = 0;
 	char headerbuf[4096]; /* Max header size for multi-line headers, this should be plenty - this isn't email! The main culprit is probably References... */
 	size_t headerleft = sizeof(headerbuf);
 	char *headerpos = headerbuf;
@@ -3766,14 +3792,14 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 					headerbuf[0] = '\0'; /* Reset */
 					headerpos = headerbuf; /* Reset */
 					headerleft = sizeof(headerbuf); /* Reset */
+					isxref = 0;
 					if (STARTS_WITH(s, "Xref:")) {
-						/* If from a peer, ignore any incoming Xref article, since we create our own rather than reuse.
-						 * The only exception to this would be when using a suck feed where we want to slave our article numbers off the feeder's.
-						 *
+						/* If from a peer, ignore any incoming Xref article, since we create our own rather than reuse, unless xrefslave is enabled.
 						 * Readers MUST NOT send an Xref header. Therefore, we DO also process it here for readers so later we can reject proto-articles with Xref headers. */
-						if (mode == NNTP_MODE_TRANSIT) {
+						if (mode == NNTP_MODE_TRANSIT && !xrefslave) {
 							continue;
 						}
+						isxref = 1;
 					} else if (STARTS_WITH(s, "Path:")) {
 						/* Hardly elegant, but it's easier to just prepend to this header right here and now */
 						size_t pbytes;
@@ -3829,6 +3855,9 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 						continue;
 					}
 					SAFE_FAST_APPEND(headerbuf, sizeof(headerbuf), headerpos, headerleft, "%s", s);
+				}
+				if (isxref) {
+					continue; /* We'll save to artinfo->xref, but not to the file itself */
 				}
 			}
 		} else {
@@ -3887,6 +3916,12 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 		*artlen += (size_t) res;
 	}
 
+	/* If we are slaving off Xref but don't have one, then we can't proceed */
+	if (!postfail && mode == NNTP_MODE_TRANSIT && xrefslave && !artinfo->xref) {
+		postfail = 1;
+		snprintf(errbuf, errbuflen, "Missing Xref header");
+	}
+
 	if (postfail) {
 		return permerror ? 2 : 1;
 	}
@@ -3936,7 +3971,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 		}
 	}
 
-	res = nntp_read_article(artinfo, nntp->mode, nntp->node, rldata, NULL, fp, &artlen, articleid, errbuf, sizeof(errbuf));
+	res = nntp_read_article(artinfo, nntp->mode, nntp->node, rldata, NULL, fp, &artlen, articleid, xref_slave, errbuf, sizeof(errbuf));
 	fclose(fp);
 
 	if (res < 0) {
@@ -4931,6 +4966,7 @@ static int load_config(void)
 
 	bbs_config_val_set_true(cfg, "peers", "requiretls", &requirerelaytls);
 	bbs_config_val_set_true(cfg, "peers", "keepjunk", &keepjunk);
+	bbs_config_val_set_true(cfg, "peers", "xrefslave", &xref_slave);
 
 #define SKIP_SECTION(sectname) if (!strcasecmp(bbs_config_section_name(section), sectname)) { continue; }
 

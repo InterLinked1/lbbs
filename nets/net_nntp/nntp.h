@@ -119,6 +119,7 @@ struct group_info {
 struct article_group {
 	const char *name; /*!< The newsgroup name */
 	int article_num; /*!< To be assigned when assigning the article number */
+	int last; /*!< The highest numbered article previously assigned in the group */
 	BBS_LIST_ENTRY(article_group) entry;
 	char data[];
 };
@@ -197,6 +198,7 @@ void artinfo_reset(struct article_info *artinfo);
  * \param fp Temporary file handle
  * \param[out] artlen Article size, in bytes
  * \param[in] Article/Message ID, if expected (IHAVE/TAKETHIS)
+ * \param[in] xrefslave Whether to slave article numbers off the received article's Xref header.
  * \param[out] errbuf Buffer in which an error message will be stored on failure
  * \param[in] errbuflen Size of errbuf
  * \retval 0 on success, process article
@@ -204,7 +206,7 @@ void artinfo_reset(struct article_info *artinfo);
  * \retval 1 Temporary error, reject article for now.
  * \retval 2 Permanent error (e.g. too big, malformed, etc.) Reject article.
  */
-int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct bbs_node *node, struct readline_data *rldata, struct bbs_tcp_client *tcpclient, FILE *fp, size_t *artlen, const char *articleid, char *errbuf, size_t errbuflen);
+int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct bbs_node *node, struct readline_data *rldata, struct bbs_tcp_client *tcpclient, FILE *fp, size_t *artlen, const char *articleid, int xrefslave, char *errbuf, size_t errbuflen);
 
 /*!
  * \brief Check article info that is available through overview
@@ -230,6 +232,7 @@ int group_is_poison(const char *grp);
  * \param[in] artlen
  * \retval -1 on failure (not delivered to any groups)
  * \returns Number of groups that received the article
+ * \note If artinfo->xref is already set, then its article numbers will be used instead of assigning them ourselves. The Xref header itself will be rewritten to reflect only groups carried locally.
  */
 int article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t artlen);
 
@@ -360,7 +363,7 @@ int authorized_inpeer_for_group_locked(struct nntp_session *nntp, const char *gr
 int group_create(const char *groupname, const char *status, const char *creator, const char *description);
 int group_exists(const char *groupname);
 int group_update_counts_locked(const char *groupname, int high, int low, int count);
-int group_assign_article_number_locked(const char *groupname, int *restrict article_num);
+int group_assign_article_number_locked(const char *groupname, int *restrict article_num, int *restrict last);
 int group_get_stats_locked(const char *groupname, int *last, int *high, int *low, int *count);
 
 /* Abstract spool and active file interfaces
@@ -372,7 +375,7 @@ int active_init(void);
 void active_cleanup(void);
 int active_group_create(struct group_info *g);
 int active_group_delete(const char *groupname);
-int active_group_update(const char *groupname, int *incrlast, int last, int high, int low, int count, const char *status, const char *description);
+int active_group_update(struct group_info *g, int *incrlast);
 int active_group_info(const char *groupname, int *last, int *high, int *low, int *count, char *status, size_t statuslen, time_t *created, char *creator, size_t creatorlen, char *description, size_t descriplen);
 
 enum list_category {

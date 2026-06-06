@@ -412,20 +412,13 @@ dokeep:
 		/* If we are unloading, skip all further expiration checks and just copy the remainder of the original history file to the new one.
 		 * This way we can stop ~immediately if finishing expiration would take a long time. */
 		if (nntp_unloading) {
-			long startoffset, histsize;
-
 			bbs_debug(4, "Aborting remaining expiration checks\n");
 
 			if (!total_removed) {
 				/* No changes have been made yet, we can just keep the original file */
 				break;
 			}
-
-			startoffset = ftell(histfp);
-			fseek(histfp, 0, SEEK_END);
-			histsize = ftell(histfp);
-			fflush(newfp);
-			if (bbs_copy_file(fileno(histfp), fileno(newfp), (int) startoffset, (int) (histsize - startoffset)) < 0) { /* Copy original headers, not including empty line */
+			if (bbs_copy_rest_of_file(histfp, newfp)) {
 				error = 1; /* If we failed to append the remainder of the file, don't discard the original history file */
 			}
 			break;

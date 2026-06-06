@@ -167,15 +167,22 @@ int tradspool_group_exists(const char *groupname)
 	return res == 0;
 }
 
-/* Note: Technically, history is not coupled to the spool implementation, so that could be moved elsewhere.
- * In theory, overview isn't coupled to the spool implementation either.
+static void overview_insert(FILE *fp, struct article_info *artinfo, int article_num)
+{
+	/* References is optional (not every article has one), the rest should be present: */
+	fprintf(fp, "%d\t%s\t%s\t%s\t%s\t%s\t%lu\t%d\t%s\n",
+		article_num, artinfo->subject, artinfo->from, artinfo->date, artinfo->messageid, S_IF(artinfo->references), artinfo->bytes, artinfo->lines,
+		artinfo->xref);
+}
+
+/* Note: In theory, overview isn't coupled to the spool implementation.
  * However, the current overview uses a file inside each group's directory,
  * and some spool implementations (e.g. CNFS) may not entail a directory per each group,
  * so to that extent, the overview implementation is included here at the moment too
  * as it's not easily separable at the moment. */
-static int overview_add(struct article_info *artinfo, const char *group, int article_num)
+static int overview_add(struct article_info *artinfo, const char *group, int article_num, int last, int xrefslave)
 {
-	FILE *fp;
+	int res;
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
 
 	if (build_overview_path(group, overviewfile, sizeof(overviewfile))) {
@@ -183,19 +190,75 @@ static int overview_add(struct article_info *artinfo, const char *group, int art
 	}
 
 	bbs_rwlock_wrlock(&overviewlock);
-	fp = fopen(overviewfile, "a");
-	if (!fp) {
-		bbs_error("Failed to open %s: %s\n", overviewfile, strerror(errno));
-		bbs_rwlock_unlock(&overviewlock);
-		return -1;
+	/* Even if we slaved the article number, if it was higher than any previously assigned article number, we can simply append.
+	 * Only rewrite the overview file if we need to insert in the middle. */
+	if (xrefslave && article_num != last) { /* if article_num == last, the latest article is the one we just assigned */
+		char template[NNTP_MAX_PATH_LENGTH];
+		char buf[OVERVIEW_BUFSIZ];
+		FILE *oldfp, *newfp;
+		/* With xref slave, the article number could be lower than the highest article number assigned thus far,
+		 * so to keep the overview file ordered, we need to insert in the right place. */
+		oldfp = fopen(overviewfile, "r");
+		if (!oldfp) {
+			bbs_error("Failed to open %s: %s\n", overviewfile, strerror(errno));
+			res = -1;
+			goto done;
+		}
+		bbs_renamable_tempname("nntp_overview", template, sizeof(template));
+		newfp = bbs_mkftemp(template, 0644);
+		if (!newfp) {
+			fclose(oldfp);
+			res = -1;
+			goto done;
+		}
+
+		/* Copy the old overview to the new, inserting in the appropriate place */
+		while ((fgets(buf, sizeof(buf), oldfp))) {
+			int artnum = atoi(buf);
+			if (artnum >= article_num) {
+				if (unlikely(artnum == article_num)) {
+					/* In tradspool_article_create, we already check for existence, so this should never happen */
+					bbs_error("Can't insert duplicate overview entry %s:%d\n", group, article_num);
+					res = -1;
+					goto done;
+				}
+				overview_insert(newfp, artinfo, article_num);
+				fwrite(buf, 1, strlen(buf), newfp); /* Already includes LF */
+				break;
+			}
+			fwrite(buf, 1, strlen(buf), newfp); /* Already includes LF */
+		}
+		if (bbs_copy_rest_of_file(oldfp, newfp)) {
+			fclose(oldfp);
+			fclose(newfp);
+			res = -1;
+			goto done;
+		}
+
+		fclose(oldfp);
+		fclose(newfp);
+		if (rename(template, overviewfile)) {
+			bbs_error("Failed to rename %s -> %s: %s\n", template, overviewfile, strerror(errno));
+			res = -1;
+			goto done;
+		}
+	} else {
+		/* If not slaved off xref, then we assigned the next unused article number, so we can just append to the end,
+		 * since we know the article number should be higher than any currently assigned. */
+		FILE *fp = fopen(overviewfile, "a");
+		if (!fp) {
+			bbs_error("Failed to open %s: %s\n", overviewfile, strerror(errno));
+			res = -1;
+			goto done;
+		}
+		overview_insert(fp, artinfo, article_num);
+		fclose(fp);
+		res = 0;
 	}
-	/* References is optional (not every article has one), the rest should be present: */
-	fprintf(fp, "%d\t%s\t%s\t%s\t%s\t%s\t%lu\t%d\t%s\n",
-		article_num, artinfo->subject, artinfo->from, artinfo->date, artinfo->messageid, S_IF(artinfo->references), artinfo->bytes, artinfo->lines,
-		artinfo->xref);
-	fclose(fp);
+
+done:
 	bbs_rwlock_unlock(&overviewlock);
-	return 0;
+	return res;
 }
 
 static inline int parse_overview_line(struct article_info *artinfo, char *s)
@@ -784,11 +847,42 @@ static void xref_reformat(char *restrict xref)
 	}
 }
 
+/*! \returns Article number in Xref header if group is contained in it, 0 otherwise */
+static int get_xref_article_number(const char *xref, const char *groupname)
+{
+	const char *p = xref;
+	size_t grouplen = strlen(groupname);
+
+	for (;;) {
+		if (!*p) {
+			return 0; /* End of header */
+		}
+		p = strstr(p, groupname);
+		if (!p) {
+			return 0; /* No matches for substring */
+		}
+		if (p > xref && !(p[-1] == ' ' || p[-1] == ',')) {
+			/* Found the substring, but it was a suffix of another group name */
+			p += grouplen;
+			continue;
+		}
+		p += grouplen;
+		if (*p != ':') {
+			/* Found the substring, but it was a prefix of another group name */
+			p += grouplen;
+			continue;
+		}
+		p++;
+		return atoi(p);
+	}
+}
+
 int tradspool_article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t len)
 {
 	char hardpath[NNTP_MAX_PATH_LENGTH];
 	char links[4 * NNTP_MAX_PATH_LENGTH];
 	char xref[10 * NNTP_MAX_LINE_LENGTH]; /* If there are a lot of groups, it could be more than we'll fit in a single line */
+	int xrefslave = 0;
 	size_t xrefbytes;
 	time_t expires = 0;
 	char *linkspos = links;
@@ -802,19 +896,46 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 	/* At this point, we've already verified the groups exist.
 	 * First, assign the article numbers for all the groups. This way we can add the Xref header before actually adding the article to the spool. */
 	BBS_LIST_TRAVERSE(groups, g, entry) {
-		if (group_assign_article_number_locked(g->name, &g->article_num) || !g->article_num) {
-			bbs_notice("Couldn't assign article number for group %s\n", g->name);
-			continue; /* Group is full! */
+		int artnum = 0;
+		if (artinfo->xref) {
+			xrefslave = 1;
+			/* We are slaving article numbers off the received Xref header (from peer server or suck feed).
+			 * If the group existed on that server, try to use its article number directly.
+			 * If that article number is already assigned (which shouldn't happen normally), reject the article for this group.
+			 * If a group is not present in the Xref header, then we assign our own header as usual. */
+			artnum = get_xref_article_number(artinfo->xref, g->name);
+			if (artnum) {
+				/* Make sure the requested article number is available */
+				if (tradspool_article_exists(g->name, artnum)) {
+					/* This shouldn't happen unless 'xrefslave' is being used inappropriately (e.g. with multiple servers) */
+					bbs_warning("Article %s:%d already exists, not assigning it for %s\n", g->name, artnum, artinfo->messageid);
+					continue;
+				}
+				g->article_num = artnum;
+			}
+		}
+		if (group_assign_article_number_locked(g->name, &g->article_num, &g->last) || !g->article_num) {
+			if (artnum) {
+				bbs_notice("Couldn't assign article number %d for group %s\n", artnum, g->name);
+			} else {
+				bbs_notice("Couldn't assign article number for group %s\n", g->name);
+			}
+			continue; /* Group is full, or requested article number cannot be assigned */
 		}
 		/* Since we assigned the article number in this group for this article,
 		 * we sure hope that everything succeeds past this point for the article,
 		 * there's no "undoing" the assignment... */
 		attempting++;
 	}
+
 	if (!attempting) {
 		errno = ERANGE; /* All groups are full (that is the only reason we would have failed at this point) */
 		return 0;
 	}
+
+	/* If we retained the received Xref header so that we could use it for slaving article numbers, we're all done with that now.
+	 * Free the received header so we can construct our own based on the actual article numbers. */
+	free_if(artinfo->xref);
 
 	/* Construct the Xref header. While not technically mandatory, this is standard practice. */
 	xrefbytes = construct_xref(groups, xref, sizeof(xref));
@@ -892,10 +1013,10 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 		/* Add article to overview */
 		xref_reformat(xref + STRLEN("Xref: ")); /* xref has been written to the file so we can now mutate it; replace CR LF with spaces and rtrim */
 		artinfo->xref = xref; /* We include the header name itself (Xref:), this is why LIST OVERVIEW.FMT returns Xref:full (includes header name itself) */
-		overview_add(artinfo, g->name, g->article_num);
+		overview_add(artinfo, g->name, g->article_num, g->last, xrefslave);
 		artinfo->xref = NULL; /* We didn't allocate memory, so set to NULL for now */
 		delivered++;
-		bbs_debug(6, "Successfully delivered article to %s (article %d)\n", g->name, g->article_num);
+		bbs_debug(6, "Saved article as %s:%d\n", g->name, g->article_num);
 		free_if(artinfo->xref);
 	}
 
