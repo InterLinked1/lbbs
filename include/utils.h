@@ -262,6 +262,16 @@ int bbs_delete_directory(const char *path);
 
 int __bbs_delete_file(const char *path, const char *file, int line, const char *func);
 
+/*!
+ * \brief Rename a file
+ * \param oldpath Original filename
+ * \param newpath New filename. If this file already exists, it will be replaced.
+ * \retval 0 on success, -1 on failure
+ */
+#define bbs_rename(oldpath, newpath) __bbs_rename(oldpath, newpath, __FILE__, __LINE__, __func__)
+
+int __bbs_rename(const char *oldpath, const char *newpath, const char *file, int line, const char *func);
+
 #define TMPNAME_BUFSIZ 128
 
 /*!

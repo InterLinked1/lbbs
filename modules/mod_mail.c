@@ -1667,8 +1667,7 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, struct bbs_node *node, co
 	 * but I'm not sure why the number of bytes in the file
 	 * would not be st_size? So just use S= for now and skip W=. */
 	snprintf(newname, sizeof(newname), "%s/%s,S=%d,U=%u,M=%lu:2,%s", curdir, base_filename, bytes, uid, maildir_max_modseq(mbox, curdir), markseen ? "S" : ""); /* Add no flags now, but anticipate them being added */
-	if (rename(oldname, newname)) {
-		bbs_error("rename %s -> %s failed: %s\n", oldname, newname, strerror(errno));
+	if (bbs_rename(oldname, newname)) {
 		return -1;
 	}
 	if (newpath) {
@@ -1769,8 +1768,7 @@ int maildir_move_msg_filename(struct mailbox *mbox, struct bbs_node *node, const
 	if (uid <= 0) {
 		return -1;
 	}
-	if (rename(curfile, newpath)) {
-		bbs_error("rename %s -> %s failed: %s\n", curfile, newpath, strerror(errno));
+	if (bbs_rename(curfile, newpath)) {
 		return -1;
 	}
 	bbs_debug(6, "Renamed %s -> %s\n", curfile, newpath);

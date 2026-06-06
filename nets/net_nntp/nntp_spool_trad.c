@@ -237,8 +237,7 @@ static int overview_add(struct article_info *artinfo, const char *group, int art
 
 		fclose(oldfp);
 		fclose(newfp);
-		if (rename(template, overviewfile)) {
-			bbs_error("Failed to rename %s -> %s: %s\n", template, overviewfile, strerror(errno));
+		if (bbs_rename(template, overviewfile)) {
 			res = -1;
 			goto done;
 		}
@@ -397,8 +396,7 @@ static int overview_rebuild(const char *group, int article_to_remove)
 	fclose(newfp);
 
 	/* Replace the old overview file with the new one */
-	if (rename(template, overviewfile)) {
-		bbs_error("Failed to rename new overview file %s -> %s: %s\n", template, overviewfile, strerror(errno));
+	if (bbs_rename(template, overviewfile)) {
 		res = -1;
 	}
 

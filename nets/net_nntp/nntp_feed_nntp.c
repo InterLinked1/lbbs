@@ -549,8 +549,7 @@ static int merge_backlog(struct site *site, struct site_articles *articles, int 
 	if (remaining) {
 		bbs_warning("%d article%s processed no longer in backlog for %s?\n", remaining, ESS(remaining), site->name);
 	}
-	if (rename(tmpfilepath, backlogpath)) {
-		bbs_error("rename %s -> %s failed: %s\n", tmpfilepath, backlogpath, strerror(errno));
+	if (bbs_rename(tmpfilepath, backlogpath)) {
 		bbs_delete_file(tmpfilepath);
 		site->feed.nntp.fp = open_backlog(site, "a+"); /* Reopen for appending at end regardless */
 		return -1;

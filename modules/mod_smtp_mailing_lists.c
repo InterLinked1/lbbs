@@ -675,8 +675,7 @@ static int archive_list_msg(const char *listname, int srcfd, size_t msglen)
 	}
 
 	close(fd);
-	if (rename(tmpfile, newfile)) {
-		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
+	if (bbs_rename(tmpfile, newfile)) {
 		return -1;
 	}
 

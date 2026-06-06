@@ -262,8 +262,7 @@ static int regenerate_active_file(enum group_mod_type modtype, struct group_info
 	fclose(newfp);
 
 	/* Now, rename the new file to the old one (replacing or creating the target) */
-	if (rename(template, active_file)) {
-		bbs_error("Failed to rename new active file %s -> %s: %s\n", template, active_file, strerror(errno));
+	if (bbs_rename(template, active_file)) {
 		error = -1;
 	}
 

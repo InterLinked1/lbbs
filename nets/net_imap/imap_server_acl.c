@@ -370,8 +370,7 @@ int setacl(struct imap_session *imap, const char *directory, const char *mailbox
 		fclose(fp);
 		fclose(fp2);
 		/* Replace the old file with the new one */
-		if (rename(fullname2, fullname)) {
-			bbs_error("rename %s -> %s failed: %s\n", fullname2, fullname, strerror(errno));
+		if (bbs_rename(fullname2, fullname)) {
 			unlink(fullname2);
 			bbs_mutex_unlock(&acl_lock);
 			return -1;

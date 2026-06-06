@@ -189,8 +189,7 @@ static int sieve_process(struct sieve_session *sieve, char *s, char *buf2, size_
 		} else {
 			/* If we're good to go, rename the file if we have a target. */
 			if (sieve->scriptname) { /* PUTSCRIPT (but not CHECKSCRIPT) */
-				if (rename(sieve->template, sieve->scriptname)) {
-					bbs_error("rename %s -> %s failed\n", sieve->template, sieve->scriptname);
+				if (bbs_rename(sieve->template, sieve->scriptname)) {
 					sieve_send(sieve, "NO \"Server error\"");
 					goto doneupload;
 				}
@@ -409,8 +408,7 @@ doneupload:
 			/* If this is the active script, we need to also recreate the symlink,
 			 * since the symlink references the name, not the inode. */
 			snprintf(activescript, sizeof(activescript), "%s/.sieve", sieve->symlinkdir);
-			if (rename(oldscript, newscript)) {
-				bbs_error("rename %s -> %s failed: %s\n", oldscript, newscript, strerror(errno));
+			if (bbs_rename(oldscript, newscript)) {
 				sieve_send(sieve, "NO \"Server error\"");
 			} else if (!strcmp(activescript, oldscript)) {
 				bbs_debug(5, "Rename target is currently the active script, adjusting symlink\n");

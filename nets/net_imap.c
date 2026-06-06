@@ -2493,8 +2493,7 @@ static int process_append(struct imap_session *imap, const char *appenddir, cons
 		return -1;
 	}
 	filename++; /* Just the base name now */
-	if (rename(appendtmp, appendnew)) {
-		bbs_error("rename %s -> %s failed: %s\n", appendtmp, appendnew, strerror(errno));
+	if (bbs_rename(appendtmp, appendnew)) {
 		unlink(appendtmp);
 		return -1;
 	}
@@ -3917,9 +3916,8 @@ static int sub_rename(const char *path, const char *prefix, const char *newprefi
 				/* XXX Does this work correctly for multilevel subfolders? */
 				snprintf(newpath, sizeof(newpath), "%s/%s%s", path, newprefix, entry->d_name + prefixlen); /* Copy everything after the original prefix back for the new filename. */
 				/* Renames at this point should always succeed, since if the parent folder didn't exist, then any subfolders of it shouldn't either. */
-				res = rename(oldpath, newpath);
+				res = bbs_rename(oldpath, newpath);
 				if (res) {
-					bbs_error("rename %s -> %s failed: %s\n", oldpath, newpath, strerror(errno));
 					/* This could leave things in an inconsistent state.
 					 * but if this is the first failure (we didn't successfully rename anything yet)
 					 * then we shouldn't have changed anything.
@@ -3982,8 +3980,7 @@ static int handle_rename(struct imap_session *imap, char *s)
 	MAILBOX_TRYRDLOCK(imap);
 	res = sub_rename(mailbox_maildir(imap->mbox), old, new); /* We're doing multiple renames, so to make them all atomic, surround with a RDLOCK. */
 	if (!res) {
-		if (rename(oldpath, newpath)) {
-			bbs_error("rename %s -> %s failed: %s\n", oldpath, newpath, strerror(errno));
+		if (bbs_rename(oldpath, newpath)) {
 			imap_reply(imap, "NO [SERVERBUG] System error");
 		} else {
 			struct mailbox_event e;

@@ -189,7 +189,7 @@ static int appendmsg(struct smtp_session *smtp, struct smtp_response *resp, stru
 		return -1;
 	}
 
-	if (rename(tmpfile, newfile)) {
+	if (rename(tmpfile, newfile)) { /* we don't use bbs_rename, so we can check errno after and log appropriately */
 		if (errno == ENOENT && !bbs_file_exists(tmpfile) && bbs_file_exists(newfile)) {
 			bbs_error("%s already renamed to %s?\n", tmpfile, newfile);
 		} else {

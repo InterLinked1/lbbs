@@ -898,6 +898,17 @@ int __bbs_delete_file(const char *path, const char *file, int line, const char *
 	return 0;
 }
 
+int __bbs_rename(const char *oldpath, const char *newpath, const char *file, int line, const char *func)
+{
+	if (rename(oldpath, newpath)) {
+		/* XXX If rename fails with EXDEV, we could copy + delete or shell out to mv,
+		 * but we generally use bbs_renamable_tempname where needed, so this hasn't been necessary as far as I know... */
+		__bbs_log(LOG_ERROR, 0, file, line, func, "Failed to rename %s -> %s: %s\n", oldpath, newpath, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
 static int _bbs_renamable_tempname(const char *template, char *buf, size_t len, int support_rename)
 {
 	static int have_checked_tmp = 0;

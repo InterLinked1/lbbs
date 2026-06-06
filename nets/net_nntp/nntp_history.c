@@ -432,8 +432,7 @@ dokeep:
 	if (total_removed > 0 && !error) {
 		bbs_verb(5, "Swapping in new history file (removed %d link%s, completely removed %d article%s)\n", links_removed, ESS(links_removed), total_removed, ESS(total_removed));
 		fclose(histfp);
-		if (rename(template, history_file)) {
-			bbs_error("Failed to rename %s -> %s: %s\n", template, history_file, strerror(errno));
+		if (bbs_rename(template, history_file)) {
 			total_removed = -1;
 		}
 		/* Whether it's the new one or not, open the history file */

@@ -489,8 +489,7 @@ int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, const char
 	/*! \todo BUGBUG Since this calls rename, callers to maildir_msg_setflags should probably try to WRLOCK the mailbox first, in case of a race condition. Otherwise this may fail. */
 
 	bbs_debug(4, "Renaming %s -> %s\n", origname, fullfilename);
-	if (rename(origname, fullfilename)) {
-		bbs_error("rename %s -> %s failed: %s\n", origname, fullfilename, strerror(errno));
+	if (bbs_rename(origname, fullfilename)) {
 		return -1;
 	}
 

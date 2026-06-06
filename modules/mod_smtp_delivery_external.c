@@ -2303,8 +2303,7 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 		bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", datalen, tmpfile, res);
 		close(fd);
 		return -1;
-	} else if (rename(tmpfile, newfile)) {
-		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
+	} else if (bbs_rename(tmpfile, newfile)) {
 		close(fd);
 		return -1;
 	}

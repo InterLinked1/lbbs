@@ -700,8 +700,7 @@ int bbs_config_set_keyval(const char *filename, const char *section, const char 
 	}
 
 	/* Okay, now do the atomic rename, since we are confident file truncation did not occur. */
-	if (rename(tmpfile, filename)) {
-		bbs_error("Failed to rename %s -> %s: %s\n", tmpfile, filename, strerror(errno));
+	if (bbs_rename(tmpfile, filename)) {
 		bbs_delete_file(tmpfile);
 		return -1;
 	}
