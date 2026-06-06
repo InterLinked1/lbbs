@@ -80,6 +80,11 @@ int spool_article_delete_by_number(const char *groupname, int article_num)
 	return tradspool_article_delete_by_number(groupname, article_num);
 }
 
+int spool_article_exists(const char *groupname, int article_num)
+{
+	return tradspool_article_exists(groupname, article_num);
+}
+
 int spool_article_stat(struct nntp_session *nntp, const char *messageid, const char *groupname, int article_num)
 {
 	return tradspool_article_stat(nntp, messageid, groupname, article_num);

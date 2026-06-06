@@ -29,5 +29,6 @@ int tradspool_group_overview_header(struct nntp_session *nntp, const char *field
 int tradspool_overview_header_list(struct nntp_session *nntp, enum list_category listcat, const char *argument);
 int tradspool_article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t len);
 int tradspool_article_delete_by_number(const char *groupname, int article_num);
+int tradspool_article_exists(const char *groupname, int article_num);
 int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, const char *groupname, int article_num);
 int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter filter, const char *messageid, const char *groupname, int article_num);

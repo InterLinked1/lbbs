@@ -90,7 +90,7 @@ static int nntps_port = DEFAULT_NNTPS_PORT;
 static int nnsp_port = DEFAULT_NNSP_PORT;
 
 static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
-int nntp_unloading = 0; /* Used extern by nntp_feed_nntp.c */
+int nntp_unloading = 0; /* Used extern by nntp_feed_nntp.c and nntp_history.c */
 void *thismodule; /* Used extern by nntp_suck.c */
 
 static bbs_rwlock_t nntp_lock;
@@ -2153,17 +2153,52 @@ static int cli_delarticle(struct bbs_cli_args *a)
 	return 0;
 }
 
+static pthread_t expire_thread;
+static int expire_done = 0;
+
+static void *do_expiration(void *varg)
+{
+	char *group = varg;
+	int res = history_expire(group); /* OK if group is NULL */
+	free_if(group);
+	if (res < 0) {
+		bbs_warning("Failed to expire articles\n");
+	} else {
+		bbs_verb(5, "Expired %d news article%s\n", res, ESS(res));
+	}
+	expire_done = 1;
+	return NULL;
+}
+
 static int cli_expire(struct bbs_cli_args *a)
 {
 	const char *group = a->argv[2];
-	int res;
+	char *varg = group ? strdup(group) : NULL;
+	if (expire_thread) {
+		if (!expire_done) {
+			bbs_dprintf(a->fdout, "Expiration already in progress\n");
+			return -1;
+		}
+		bbs_pthread_join(expire_thread, NULL);
+	}
+	if (bbs_pthread_create(&expire_thread, NULL, do_expiration, varg)) {
+		free_if(varg);
+		bbs_dprintf(a->fdout, "Failed to expire articles\n");
+		return -1;
+	}
+	bbs_dprintf(a->fdout, "Started expiration task\n");
+	return 0;
+}
 
-	res = history_expire(group); /* OK if group is NULL */
+static int cli_fgexpire(struct bbs_cli_args *a)
+{
+	const char *group = a->argv[2];
+	int res = history_expire(group); /* OK if group is NULL */
 	if (res < 0) {
 		bbs_dprintf(a->fdout, "Failed to expire articles\n");
 		return -1;
 	}
-	bbs_dprintf(a->fdout, "Expired %d article%s\n", res, ESS(res));
+	bbs_dprintf(a->fdout, "Expired %d news article%s\n", res, ESS(res));
 	return 0;
 }
 
@@ -4815,6 +4850,7 @@ static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_setstatus, "news setstatus", 4, "Edit posting status for a newsgroup", "news setstatus <group> <y/n/m>"),
 	BBS_CLI_COMMAND(cli_delarticle, "news delarticle", 4, "Delete an article", "news delarticle <group> <article number>"),
 	BBS_CLI_COMMAND(cli_expire, "news expire", 2, "Remove expired articles from the spool (optionally just for one group)", "news expire <group>"),
+	BBS_CLI_COMMAND(cli_fgexpire, "news fgexpire", 2, "Remove expired articles from the spool (optionally just for one group), in foreground", "news expire <group>"),
 	BBS_CLI_COMMAND(cli_feedflush, "news feedflush", 2, "Flush queued articles for feed(s)", "news feedflush [<site>]"),
 	BBS_CLI_COMMAND(cli_feedstats, "news feedstats", 2, "Show outgoing feed stats", "news feedstats [<site>]"),
 };
@@ -5135,6 +5171,9 @@ static void cleanup_subsystems(void)
 {
 	active_cleanup();
 	spool_cleanup();
+	if (expire_thread) {
+		bbs_pthread_join(expire_thread, NULL);
+	}
 	history_cleanup();
 }
 

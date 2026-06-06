@@ -28,6 +28,7 @@
 /* #define DEBUG_EXPIRE */
 
 extern int min_history;
+extern int nntp_unloading;
 
 /* Each thread opens a group's overview file for reading/writing, so multiple readers can operate simultaneously */
 static bbs_mutex_t histlock;
@@ -150,6 +151,11 @@ void history_cleanup(void)
 		fclose(histfp);
 		histfp = NULL;
 	}
+
+	/* Lock and unlock to ensure that all expire operations have finished */
+	bbs_mutex_lock(&histlock);
+	bbs_mutex_unlock(&histlock);
+
 	bbs_mutex_destroy(&histlock);
 	RWLIST_WRLOCK_REMOVE_ALL(&retention_patterns, entry, free);
 }
@@ -261,12 +267,16 @@ static inline int should_expire_article(const char *group, time_t now, time_t ar
 
 int history_expire(const char *pattern)
 {
-	FILE *newfp;
+	FILE *newfp, *expirefp;
 	char buf[NNTP_BUFSIZ];
 	int total_removed = 0, links_removed = 0;
 	int line = 0;
+	int error = 0;
 	time_t history_cutoff, now;
 	char template[TMPNAME_BUFSIZ];
+	char expirelogfile[NNTP_MAX_PATH_LENGTH];
+
+	snprintf(expirelogfile, sizeof(expirelogfile), "%s/%s", bbs_log_dir(), "nntp_expire.log");
 
 	RWLIST_RDLOCK(&retention_patterns);
 	if (!any_retention_patterns_remove_articles()) {
@@ -277,7 +287,12 @@ int history_expire(const char *pattern)
 	RWLIST_UNLOCK(&retention_patterns); /* REQUIRE_HISTORY_FP returns, so we make sure we're unlocked there */
 
 	if (bbs_mutex_trylock(&histlock)) {
-		bbs_warning("An expiration operation is already in-progress, rejecting concurrent expiration attempt\n");
+		bbs_notice("An expiration operation is already in-progress, rejecting concurrent expiration attempt\n");
+		return -1;
+	}
+
+	if (nntp_unloading) {
+		bbs_notice("Module unload is pending, not starting article expiration\n");
 		return -1;
 	}
 
@@ -292,6 +307,16 @@ int history_expire(const char *pattern)
 	history_cutoff = now - (86400 * min_history);
 
 	REQUIRE_HISTORY_FP(histfp);
+
+	expirefp = fopen(expirelogfile, "a");
+	if (!expirefp) {
+		bbs_error("Failed to append to %s: %s\n", expirelogfile, strerror(errno));
+		fclose(newfp);
+		unlink(template);
+		bbs_mutex_unlock(&histlock);
+		return -1;
+	}
+
 	REWIND_HISTORY(histfp);
 
 	RWLIST_RDLOCK(&retention_patterns);
@@ -304,8 +329,11 @@ int history_expire(const char *pattern)
 		char links[4 * NNTP_MAX_PATH_LENGTH] = "";
 		char *linkspos = links;
 		size_t linksleft = sizeof(links);
-		char *msgid = strsep(&restofline, "\t");
+		char *msgid;
+
 		line++;
+
+		msgid = strsep(&restofline, "\t");
 		if (unlikely(!msgid)) {
 			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
 			continue;
@@ -350,7 +378,8 @@ int history_expire(const char *pattern)
 
 				if (should_expire_article(grp, now, arrival_time, expires)) {
 					int res = expire_article(grp, artnum);
-					if (!res) {
+					/* If we successfully expired it, or the article is no longer present in the spool, treat as expired */
+					if (!res || !spool_article_exists(grp, artnum)) {
 						keep = 0;
 						links_removed++;
 					}
@@ -372,16 +401,42 @@ dokeep:
 		/* Keep in history if article still exists in any groups, or if its age is less than min_history days (even if article may no longer be in any groups) */
 		if (groups_kept || (min_history && (arrival_time > history_cutoff))) {
 			fprintf(newfp, "%s\t%ld~%s~%s\t%s\n", msgid, arrival_time, expires_str, bytes_str, links);
+		} else {
+			/* If article is now being completely removed from history, add it to the expire log, the final vestige of this article's transient existence! */
+			fprintf(expirefp, "%s\t%ld~%s~%s~%ld\n", msgid, arrival_time, expires_str, bytes_str, now); /* Also include time of expiration at end */
 		}
 		if (!groups_kept || groups_removed) {
 			EXPIRE_DEBUG(4, "%s %s (kept: %d, removed: %d)\n", !groups_kept && groups_removed > 0 ? "Permanently deleted" : groups_removed ? "Partially deleted" : "Keeping", msgid, groups_kept, groups_removed);
+		}
+
+		/* If we are unloading, skip all further expiration checks and just copy the remainder of the original history file to the new one.
+		 * This way we can stop ~immediately if finishing expiration would take a long time. */
+		if (nntp_unloading) {
+			long startoffset, histsize;
+
+			bbs_debug(4, "Aborting remaining expiration checks\n");
+
+			if (!total_removed) {
+				/* No changes have been made yet, we can just keep the original file */
+				break;
+			}
+
+			startoffset = ftell(histfp);
+			fseek(histfp, 0, SEEK_END);
+			histsize = ftell(histfp);
+			fflush(newfp);
+			if (bbs_copy_file(fileno(histfp), fileno(newfp), (int) startoffset, (int) (histsize - startoffset)) < 0) { /* Copy original headers, not including empty line */
+				error = 1; /* If we failed to append the remainder of the file, don't discard the original history file */
+			}
+			break;
 		}
 	}
 	RWLIST_UNLOCK(&retention_patterns);
 
 	/* If needed, swap in the new history file and update pointers */
+	fclose(expirefp);
 	fclose(newfp);
-	if (total_removed > 0) {
+	if (total_removed > 0 && !error) {
 		bbs_verb(5, "Swapping in new history file (removed %d link%s, completely removed %d article%s)\n", links_removed, ESS(links_removed), total_removed, ESS(total_removed));
 		fclose(histfp);
 		if (rename(template, history_file)) {

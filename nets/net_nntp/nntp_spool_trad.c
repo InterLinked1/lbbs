@@ -1040,6 +1040,15 @@ int tradspool_article_delete_by_number(const char *groupname, int article_num)
 	return 0;
 }
 
+int tradspool_article_exists(const char *groupname, int article_num)
+{
+	char artpath[NNTP_MAX_PATH_LENGTH];
+	if (!build_group_article_path(groupname, article_num, artpath, sizeof(artpath))) {
+		return 1;
+	}
+	return 0;
+}
+
 int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, const char *groupname, int article_num)
 {
 	if (messageid) {

@@ -514,6 +514,15 @@ int spool_article_create(struct article_groups *groups, struct article_info *art
 int spool_article_delete_by_number(const char *groupname, int article_num);
 
 /*!
+ * \brief Whether a given article exists in a group
+ * \param groupname
+ * \param article_num
+ * \retval 1 if article exists in the spool
+ * \retval 0 if article doesn't exist in the spool
+ */
+int spool_article_exists(const char *groupname, int article_num);
+
+/*!
  * \brief Whether any message with this Message-ID exists in any group
  * \param messageid Message-ID of article, if searching by message-ID
  * \param groupname Group name, required if searching by article number.
