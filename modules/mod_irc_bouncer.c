@@ -1207,8 +1207,8 @@ static int load_config(const char *filename, unsigned int userid)
 			}
 		}
 	}
-cleanup2:
 	bbs_mutex_unlock(&bu->lock);
+cleanup2:
 	RWLIST_UNLOCK(&bouncer_users);
 
 cleanup:

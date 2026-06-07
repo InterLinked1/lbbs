@@ -717,7 +717,7 @@ static int update_member_stats(struct agent *agent)
 		}
 		member->agent = agent;
 		member->queue = queue;
-		if (calls_taken && name && agent->id == atoi(name)) {
+		if (name && agent->id == atoi(name)) {
 			member->calls_taken = atoi(calls_taken);
 		}
 		RWLIST_WRLOCK(&queue->members);

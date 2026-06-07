@@ -454,9 +454,7 @@ static int snpp_process(struct snpp_session *snpp, struct readline_data *rldata,
 			return 0;
 		}
 		res = bbs_authenticate(snpp->node, user, pass);
-		if (pass) {
-			bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
-		}
+		bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
 		if (res) {
 			snpp_reply(snpp, 550, "Invalid LoginID or Password");
 		} else {
