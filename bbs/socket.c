@@ -68,6 +68,7 @@
 #include "include/net.h"
 #include "include/linkedlists.h"
 #include "include/startup.h"
+#include "include/event.h"
 
 int listen_backlog = 64; /* set extern in bbs.c */
 
@@ -741,6 +742,21 @@ static struct tcp_listener *list_add_listener(int port, int sfd, const char *nam
 	return l;
 }
 
+static void log_rejected_connection(const char *protname, const char *ip)
+{
+	struct bbs_event event;
+
+	memset(&event, 0, sizeof(event));
+
+	/* This is all the data that bbs_event_dispatch_custom would normally associate with the event for us,
+	 * (except for the node number, which we don't have since we didn't allocate a node, but that's not necessary). */
+	event.type = EVENT_NODE_BAD_REQUEST;
+	safe_strncpy(event.protname, protname, sizeof(event.protname));
+	safe_strncpy(event.ipaddr, ip, sizeof(event.ipaddr));
+
+	bbs_event_broadcast(&event);
+}
+
 /*! \brief Single thread to poll all registered TCP listeners, to avoid creating lots of listener threads (similar to ssl_io_thread in tls.c) */
 static void *tcp_multilistener(void *unused)
 {
@@ -846,6 +862,11 @@ static void *tcp_multilistener(void *unused)
 			if (bbs_node_ip_count(&sinaddr) >= bbs_maxnodes_per_ip()) {
 				bbs_notice("Rejecting new %s connection from %s (exceeds maximum connections from this IP address)\n", l->name, new_ip);
 				close(sfd);
+
+				/* Rejecting a connection attempt now precludes the normal bad request triggers from firing,
+				 * so manually dispatch our own bad request event to block the IP if needed. */
+				log_rejected_connection(l->name, new_ip);
+
 				continue;
 			}
 
