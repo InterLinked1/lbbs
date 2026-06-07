@@ -44,6 +44,9 @@ static char suckdir[512];
  * Additionally, this is used for pipelining downloads, and we probably want to chunk those up anyways. */
 #define SUCK_CHUNKSIZE 1024
 
+/* common creator values are an email address, "usenet", "actsync", "checkgroups-update" */
+#define DEFAULT_SUCK_CREATOR "sucksync"
+
 struct upstream_group {
 	const char *name;
 	const char *status;
@@ -1427,6 +1430,7 @@ static int suck_load_groups(struct suck_feed *sf, FILE *fp)
 	char suckfile[sizeof(suckdir) + 32];
 	char buf[NNTP_MAX_LINE_LENGTH];
 	int lineno = 1;
+	const char *creator;
 	int c = 0;
 
 	/* Initialize the file that will be used to keep track of sucking for this suck feed,
@@ -1446,6 +1450,8 @@ static int suck_load_groups(struct suck_feed *sf, FILE *fp)
 
 	/* Timestamp, for NEWNEWS. This will be exactly 10 digits wide (no 0-padded needed) until 2286, when we'll need 11 bytes, which would get us to 5138 */
 	fprintf(outfp, "%010d\n", 0);
+
+	creator = S_OR(sf->creator, DEFAULT_SUCK_CREATOR);
 
 	for (; (fgets(buf, sizeof(buf), fp)); lineno++) {
 		char *grp, *status, *tmp;
@@ -1481,13 +1487,12 @@ static int suck_load_groups(struct suck_feed *sf, FILE *fp)
 			continue;
 		}
 		/* This operation is idempotent, so if we need to abort, there's no need to clean up, running a second time will only finish what's left */
-#define SUCK_CREATOR "SuckFeed"
 		description = S_OR(description, "No description.");
 
 		/* Technically, serving agents MUST NOT create new newsgroups simply because an unrecognized newsgroup appears (RFC 5537 3.7)
 		 * However, in this case, we are explicitly configured to create such groups (so long as they match patterns specified in configuration). */
 		
-		if (group_create(grp, status, SUCK_CREATOR, description)) {
+		if (group_create(grp, status, creator, description)) {
 			bbs_error("Failed to create group %d '%s' '%s' (%s)\n", c, grp, status, S_IF(description));
 		} else {
 			bbs_verb(5, "Locally created newsgroup %d '%s' '%s' (%s)\n", c, grp, status, S_IF(description));
@@ -1548,14 +1553,14 @@ static void free_suckfeed(struct suck_feed *sf)
 	free(sf);
 }
 
-struct suck_feed *nntp_suckfeed_create(const char *name, const char *server, int modereader, int starttls, int compress, int autocreate, int xrefslave,
+struct suck_feed *nntp_suckfeed_create(const char *name, const char *creator, const char *server, int modereader, int starttls, int compress, int autocreate, int xrefslave,
 	int maxactivity, int mincount, int minlow)
 {
 	char serverbuf[1024];
 	struct bbs_url url;
 	struct suck_feed *sf;
 	char *data;
-	size_t namelen, hostlen, userlen, passlen;
+	size_t namelen, creatorlen, hostlen, userlen, passlen;
 
 	safe_strncpy(serverbuf, server, sizeof(serverbuf));
 
@@ -1576,11 +1581,12 @@ struct suck_feed *nntp_suckfeed_create(const char *name, const char *server, int
 	}
 
 	namelen = STRING_ALLOC_SIZE(name);
+	creatorlen = STRING_ALLOC_SIZE(creator);
 	hostlen = STRING_ALLOC_SIZE(url.host);
 	userlen = STRING_ALLOC_SIZE(url.user);
 	passlen = STRING_ALLOC_SIZE(url.pass);
 
-	sf = calloc(1, sizeof(*sf) + namelen + hostlen + userlen + passlen);
+	sf = calloc(1, sizeof(*sf) + namelen + creatorlen + hostlen + userlen + passlen);
 	if (ALLOC_FAILURE(sf)) {
 		RWLIST_UNLOCK(&suck_feeds);
 		return NULL;
@@ -1588,6 +1594,7 @@ struct suck_feed *nntp_suckfeed_create(const char *name, const char *server, int
 
 	data = sf->data;
 	SET_FSM_STRING_VAR(sf, data, name, name, namelen);
+	SET_FSM_STRING_VAR(sf, data, creator, creator, creatorlen);
 	SET_FSM_STRING_VAR(sf, data, serveruri.host, url.host, hostlen);
 	SET_FSM_STRING_VAR(sf, data, serveruri.user, url.user, userlen);
 	SET_FSM_STRING_VAR(sf, data, serveruri.pass, url.pass, passlen);

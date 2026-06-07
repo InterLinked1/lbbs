@@ -5102,6 +5102,7 @@ static int load_config(void)
 				load_acl(guests, userswm, readwm, postwm, minreadpriv, minpostpriv, minapprovepriv);
 			} else if (!strcasecmp(type, "suckfeed")) {
 				const char *server = NULL;
+				const char *creator = NULL;
 				int modereader = 0, starttls = 0, compress = 0;
 				int autocreate = 0, xrefslave = 0;
 				int maxactivity = 0, mincount = 0, minlow = 0;
@@ -5120,6 +5121,8 @@ static int load_config(void)
 					if (!strcasecmp(key, "type")) {
 						continue;
 					/* Suckfeed general settings */
+					} else if (!strcasecmp(key, "creator")) {
+						creator = val;
 					} else if (!strcasecmp(key, "server")) {
 						server = val;
 					} else if (!strcasecmp(key, "modereader")) {
@@ -5145,7 +5148,7 @@ static int load_config(void)
 					bbs_error("Must specify server for suck feed %s\n", bbs_config_section_name(section));
 					continue;
 				}
-				sf = nntp_suckfeed_create(bbs_config_section_name(section), server, modereader, starttls, compress, autocreate, xrefslave, maxactivity, mincount, minlow);
+				sf = nntp_suckfeed_create(bbs_config_section_name(section), creator, server, modereader, starttls, compress, autocreate, xrefslave, maxactivity, mincount, minlow);
 				if (!sf) {
 					continue;
 				}

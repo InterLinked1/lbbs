@@ -30,6 +30,7 @@ BBS_LIST_HEAD_NOLOCK(suck_patterns, suck_pattern);
 
 struct suck_feed {
 	const char *name;
+	const char *creator;
 	pthread_t thread;
 	struct suck_patterns patterns;
 	struct bbs_url serveruri;
@@ -51,7 +52,7 @@ struct suck_feed {
 	char data[];
 };
 
-struct suck_feed *nntp_suckfeed_create(const char *name, const char *server, int modereader, int starttls, int compress, int autocreate, int xrefslave,
+struct suck_feed *nntp_suckfeed_create(const char *name, const char *creator, const char *server, int modereader, int starttls, int compress, int autocreate, int xrefslave,
 	int maxactivity, int mincount, int minlow);
 int nntp_suckfeed_add_suckpat(struct suck_feed *sf, const char *pattern, const char *args);
 int nntp_suckfeed_init(void);
