@@ -4804,7 +4804,7 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 	} else if (!strcasecmp(command, "NAMESPACE")) {
 		/* Good article for understanding namespaces: https://utcc.utoronto.ca/~cks/space/blog/sysadmin/IMAPPrefixesClientAndServer */
 		imap_send(imap, "NAMESPACE %s %s %s", PRIVATE_NAMESPACE, OTHER_NAMESPACE, SHARED_NAMESPACE);
-		imap_reply(imap, "NAMESPACE command completed");
+		imap_reply(imap, "OK NAMESPACE command completed");
 	} else if (!strcasecmp(command, "LIST")) {
 		res = handle_list(imap, s, CMD_LIST);
 	} else if (!strcasecmp(command, "LSUB")) { /* Deprecated in RFC 9051 (IMAP4rev2), but clients still use it */
