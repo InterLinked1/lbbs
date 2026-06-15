@@ -819,7 +819,7 @@ static void fetch_channels(struct discord *client, u64snowflake guild_id, u64sno
 		}
 	}
 	RWLIST_UNLOCK(&mappings);
-	discord_channels_cleanup(&channels);
+	discord_data_cleanup(client, &channels);
 }
 
 static void load_channels(struct discord *client, struct discord_guilds *guilds)
@@ -1060,7 +1060,7 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 		}
 
 		dm_channel_id = ret_channel.id;
-		discord_channel_cleanup(&ret_channel);
+		discord_data_cleanup(discord_client, &ret_channel);
 
 		snprintf(fullmsg, sizeof(fullmsg), "**<%s>** %s", sender, msg);
 		discord_create_message(discord_client, dm_channel_id, &params, &msgret);
