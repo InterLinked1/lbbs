@@ -552,6 +552,8 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	len = vsnprintf(logminibuf, sizeof(logminibuf), fmt, ap);
 	va_end(ap);
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
 	if (len >= (int) sizeof(logminibuf)) {
 		/* Too large for stack allocated buffer. Dynamically allocate it. */
 		dynamic = 1;
@@ -576,6 +578,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 		vsprintf(buf, fmt, ap); /* vsprintf is safe, vsnprintf is unnecessary here */
 		va_end(ap);
 	}
+#pragma GCC diagnostic pop
 
 	need_reset = strchr(buf, 27) ? 1 : 0; /* If contains ESC, this could contain a color escape sequence. Reset afterwards. */
 
