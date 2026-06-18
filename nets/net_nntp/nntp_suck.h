@@ -34,6 +34,7 @@ struct suck_feed {
 	pthread_t thread;
 	struct suck_patterns patterns;
 	struct bbs_url serveruri;
+	unsigned int global_ordering:1;
 	unsigned int secure:1;
 	unsigned int modereader:1;
 	unsigned int starttls:1;
@@ -46,6 +47,8 @@ struct suck_feed {
 	int maxactivity;
 	int mincount;
 	int minlow;
+
+	void *varg; /* Internal */
 
 	struct suck_patterns groups;
 	RWLIST_ENTRY(suck_feed) entry;

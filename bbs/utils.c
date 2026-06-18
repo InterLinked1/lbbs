@@ -1300,7 +1300,9 @@ int bbs_parse_rfc822_date(const char *s, struct tm *tm)
 	 * Note that instead of an offset, you just have a TZ abbreviation.
 	 * Valid according to RFC 822 5.1, but not according to RFC 2822 3.3, and not very common. */
 	if ((t = strptime(s, "%a, %d %b %Y %H:%M:%S %Z", tm))) {
-		bbs_debug(1, "Non-RFC2822 compliant date: %s\n", s);
+#ifdef DEBUG_PARSING
+		bbs_debug(8, "Non-RFC2822 compliant date: %s\n", s);
+#endif
 		return 0;
 	}
 
@@ -1310,7 +1312,9 @@ int bbs_parse_rfc822_date(const char *s, struct tm *tm)
 	 * Fri, 13 Mar 2026 (not parsed here, since it's missing the time)
 	 */
 	if ((t = strptime(s, "%d %b %Y %H:%M:%S %Z", tm)) || (t = strptime(s, "%a, %d %b %Y %H:%M %z", tm))) {
+#ifdef DEBUG_PARSING
 		bbs_debug(1, "Non-RFC2822 compliant date: %s\n", s);
+#endif
 		return 0;
 	}
 

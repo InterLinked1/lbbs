@@ -837,13 +837,204 @@ static int get_recent_article_numbers(struct nntp_client *nc, int artnums[SUCK_C
 	}
 }
 
-static int process_over(struct nntp_client *nc, struct upstream_group *g, int artnums[SUCK_CHUNKSIZE], int *restrict count, int *restrict skipped, int *restrict lowerbound, int *restrict upperbound)
+struct artgroup {
+	const char *group;
+	int artnum;
+};
+
+struct queued_article {
+	const char *msgid;
+	time_t date;
+	BBS_LIST_ENTRY(queued_article) entry;
+	int num_xrefs;
+	struct artgroup newsgroup;
+	struct artgroup *xrefs;
+	char data[];
+};
+
+BBS_LIST_HEAD_NOLOCK(article_queue, queued_article);
+
+static void free_queued_article(struct queued_article *q)
+{
+	if (q->xrefs) {
+		free(q->xrefs);
+	}
+	free(q);
+}
+
+static void free_queued_articles(struct article_queue *q)
+{
+	BBS_LIST_REMOVE_ALL(q, entry, free_queued_article);
+}
+
+static inline int xrefcmp(const struct artgroup *a_xref, int num_a, const struct artgroup *b_xref, int num_b)
+{
+	int i, j;
+	for (i = 0; i < num_a; i++) {
+		for (j = 0; j < num_b; j++) {
+			if (!strcmp(a_xref[i].group, b_xref[j].group)) {
+				/* They share a group in common; use the article number,
+				 * e.g. if a has a lower artnum, answer is negative */
+				return a_xref[i].artnum - b_xref[j].artnum;
+			}
+		}
+	}
+	return 0;
+}
+
+/*! \retval -1 if a comes before b, 1 if b comes before a, and 0 if they are equal (according to sort criteria) */
+static int sort_compare(const void *aptr, const void *bptr)
+{
+	const struct queued_article *a = *(const struct queued_article *const *) aptr;
+	const struct queued_article *b = *(const struct queued_article *const *) bptr;
+
+	/* Preserve Xref order if possible. This ensures our order reflects the order that articles arrived to the groups upstream, irrespective of the Date header */
+	if (a->num_xrefs) { /* If a->num_xrefs is > 0, then b->num_xrefs is almost guaranteed to be (since Xref is server-wide), so no need to bother checking here */
+		int res = xrefcmp(a->xrefs, a->num_xrefs, b->xrefs, b->num_xrefs);
+		if (res) {
+			return res;
+		}
+	}
+
+	/* For articles that can't be compared using Xref, use the Date header */
+	if (a->date < b->date) {
+		return -1;
+	} else if (a->date > b->date) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+static int save_queued_articles(struct article_queue *q)
+{
+	struct queued_article *a, **artarray;
+	char template[TMPNAME_BUFSIZ];
+	FILE *fp;
+	int count, i;
+
+	count = BBS_LIST_SIZE(q, a, entry);
+	bbs_debug(4, "Saving %d queued article%s\n", count, ESS(count));
+
+	/* Build an array for sorting */
+	artarray = malloc((long unsigned) count * sizeof(struct queued_article *));
+	if (ALLOC_FAILURE(artarray)) {
+		return -1;
+	}
+	i = 0;
+	BBS_LIST_TRAVERSE(q, a, entry) {
+		artarray[i++] = a;
+	}
+
+	/* Sort the messages using qsort */
+	qsort(artarray, (size_t) count, sizeof(struct queued_article *), sort_compare);
+
+	/* Write the ordered queue out to a list */
+	bbs_tempname("nntpartsort", template, sizeof(template));
+	fp = bbs_mkftemp(template, 0600);
+	if (!fp) {
+		free(artarray);
+		return -1;
+	}
+	for (i = 0; i < count; i++) {
+		a = artarray[i];
+		fprintf(fp, "%s %s:%d\n", a->msgid, a->newsgroup.group, a->newsgroup.artnum);
+	}
+
+	fclose(fp);
+	free(artarray);
+	bbs_verb(5, "Sorted %d article%s to %s, to suck articles, run 'news sucksorted <suckfeed> %s' to suck articles\n", count, ESS(count), template, template);
+	return 0;
+}
+
+static int queue_article(struct article_queue *q, const char *msgid, const char *group, int artnum, struct tm *tm, const char *xref)
+{
+	struct queued_article *a;
+	char *ptr;
+	int n_xref;
+
+	/* First, check if it exists already... yes, this is very inefficient since it's a linear search */
+	BBS_LIST_TRAVERSE(q, a, entry) {
+		if (!strcmp(a->msgid, msgid)) {
+			return 1; /* Article already exists, e.g. from another newsgroup */
+		}
+	}
+
+	/* Calculate number of Xref groups */
+	if (xref) {
+		xref = bbs_strcnext(xref, ' '); /* Skip upstream server hostname */
+	}
+	n_xref = xref ? bbs_str_count(xref, ' ') + 1 : 0;
+
+	/* Single allocation for almost everything.
+	 * Technically we don't need memory for the numeric portions of the Xref header, but we do it this way to simplify the operation. */
+	a = calloc(1, sizeof(*a) + strlen(msgid) + strlen(group) + 2 + strlen(S_IF(xref)) + (xref ? 1 : 0));
+	if (ALLOC_FAILURE(a)) {
+		return -1;
+	}
+	a->num_xrefs = n_xref;
+
+	ptr = a->data;
+	strcpy(ptr, msgid); /* Safe */
+	a->msgid = ptr;
+
+	ptr += strlen(msgid) + 1;
+
+	strcpy(ptr, group); /* Safe */
+	a->newsgroup.group = ptr;
+	a->newsgroup.artnum = artnum;
+
+	if (xref) {
+		int xrefc = 0;
+		char *xrefgrp, *xrefgrps;
+
+		ptr += strlen(group) + 1;
+		bbs_assert_exists(ptr);
+		strcpy(ptr, xref); /* Safe */
+		xrefgrps = ptr;
+
+		a->xrefs = calloc(1, (sizeof(struct artgroup) * (long unsigned) n_xref));
+		if (ALLOC_FAILURE(a->xrefs)) {
+			free(a);
+			return -1;
+		}
+
+		/* Parse Xref groups into the child struct */
+		while ((xrefgrp = strsep(&xrefgrps, " "))) {
+			char *colon;
+			if (strlen_zero(xrefgrp)) {
+				continue;
+			}
+			colon = strchr(xrefgrp, ':');
+			if (!colon) {
+				bbs_client_err("Malformed Xref header '%s' (%s)\n", xref, xrefgrp);
+				free(a->xrefs);
+				free(a);
+				return -1;
+			}
+			*colon++ = '\0';
+			a->xrefs[xrefc].group = xrefgrp;
+			a->xrefs[xrefc].artnum = atoi(colon);
+			xrefc++;
+		}
+	}
+
+	a->date = timegm(tm); /* We know tm was parsed successfully at this point, so this should not fail */
+
+	/* Insert into list */
+	BBS_LIST_INSERT_HEAD(q, a, entry);
+
+	return 0;
+}
+
+static int process_over(struct nntp_client *nc, struct suck_feed *sf, struct article_queue *q, struct upstream_group *g, int artnums[SUCK_CHUNKSIZE], int *restrict count, int *restrict skipped, int *restrict lowerbound, int *restrict upperbound)
 {
 	int i = 0, full = 0;
 
 	for (;;) {
 		char errbuf[128];
 		long size;
+		struct tm tm;
 		int artnum, numlines;
 		char *art, *subj, *from, *date, *msgid, *references, *bytes, *lines, *xref, *tmp;
 		ssize_t res = bbs_readline(nc->tcpclient.rfd, &nc->tcpclient.rldata, "\r\n", SEC_MS(30));
@@ -898,6 +1089,11 @@ static int process_over(struct nntp_client *nc, struct upstream_group *g, int ar
 			goto skip;
 		}
 
+		if (bbs_parse_rfc822_date(date, &tm)) {
+			bbs_debug(6, "Article %s:%d disqualified: invalid date %s\n", g->name, artnum, date);
+			goto skip;
+		}
+
 		/* If we're good so far, save the article number for now */
 		if (i == 0) {
 			*lowerbound = artnum;
@@ -905,6 +1101,14 @@ static int process_over(struct nntp_client *nc, struct upstream_group *g, int ar
 		artnums[i++] = artnum;
 		if (i == SUCK_CHUNKSIZE) {
 			full = 1;
+		}
+		if (sf->global_ordering) {
+			res = queue_article(q, msgid, g->name, artnum, &tm, xref);
+			if (res < 0) {
+				return -1;
+			} else if (res > 0) {
+				goto skip;
+			}
 		}
 		continue;
 skip:
@@ -984,7 +1188,7 @@ static int process_hdr(struct nntp_client *nc, struct upstream_group *g, int art
  * \retval -1 on failure (abort)
  * \retval 1 if article rejected
  */
-static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct upstream_group *g, int artnum)
+static int save_article(struct nntp_client *nc, struct suck_feed *sf, const char *groupname, int artnum)
 {
 	char template[TMPNAME_BUFSIZ];
 	size_t artlen = 0;
@@ -1012,10 +1216,10 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 		unlink(template);
 		artinfo_reset(&artinfo);
 		if (res < 0) {
-			bbs_notice("Failed to read article %s:%d\n", g->name, artnum);
+			bbs_notice("Failed to read article %s:%d\n", groupname, artnum);
 			return -1;
 		} else {
-			bbs_notice("Article %s:%d rejected: %s\n", g->name, artnum, errbuf); /* e.g. line length too long */
+			bbs_notice("Article %s:%d rejected: %s\n", groupname, artnum, errbuf); /* e.g. line length too long */
 			return 1; /* Continue */
 		}
 	}
@@ -1023,7 +1227,7 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 
 	/* Reject invalid or unwanted articles, e.g. missing headers, too many crossposts, etc. */
 	if (check_article(NNTP_MODE_TRANSIT, NULL, &artinfo, errbuf, sizeof(errbuf))) {
-		bbs_notice("Article %s:%d rejected: %s\n", g->name, artnum, errbuf);
+		bbs_notice("Article %s:%d rejected: %s\n", groupname, artnum, errbuf);
 		goto skip;
 	}
 
@@ -1036,7 +1240,7 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 		}
 		/* In theory, this should only happen if the HDR command was not supported, as we already checked for poison groups using HDR: */
 		if (group_is_poison(newsgroup)) {
-			bbs_notice("Article %s:%d rejected: contains poison group %s\n", g->name, artnum, newsgroup);
+			bbs_notice("Article %s:%d rejected: contains poison group %s\n", groupname, artnum, newsgroup);
 			goto skip;
 		}
 		if (want_group_name(sf, newsgroup) && group_exists(newsgroup) && !article_groups_contains(&groups, newsgroup)) {
@@ -1048,17 +1252,17 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, struct ups
 	if (!grpcount) {
 		/* Shouldn't happen if we requested an article directly from a group (because we clearly want that group?),
 		 * but maybe could happen with NEWNEWS. */
-		bbs_notice("Article %s:%d rejected: contains only unwanted groups\n", g->name, artnum);
+		bbs_notice("Article %s:%d rejected: contains only unwanted groups\n", groupname, artnum);
 		goto skip;
 	} else if (grpcount > max_groups) {
-		bbs_notice("Article %s:%d rejected: contains too many groups (%u > %u)\n", g->name, artnum, grpcount, max_groups);
+		bbs_notice("Article %s:%d rejected: contains too many groups (%u > %u)\n", groupname, artnum, grpcount, max_groups);
 		goto skip;
 	}
 
 	/* If all is still well, try to save the article */
 	delivered = article_create(&groups, &artinfo, fileno(fp), artlen);
 	if (delivered <= 0) {
-		bbs_notice("Failed to create article %s:%d\n", g->name, artnum);
+		bbs_notice("Failed to create article %s:%d\n", groupname, artnum);
 	} /* nntp_spool_trad.c already logs a debug message on success, no need to log it again here */
 	res = delivered > 0 ? 0 : -1;
 
@@ -1108,7 +1312,7 @@ static int suck_articles(struct nntp_client *nc, struct suck_feed *sf, struct up
 			bbs_warning("Article mismatch, got %d, expected %d\n", recv_artnum, artnum);
 			return -1;
 		}
-		res = save_article(nc, sf, g, artnum);
+		res = save_article(nc, sf, g->name, artnum);
 		if (res < 0) {
 			return -1;
 		} else if (!res) {
@@ -1122,7 +1326,7 @@ static int suck_articles(struct nntp_client *nc, struct suck_feed *sf, struct up
 }
 
 /*! \brief Suck the latest articles for a specific group */
-static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct upstream_group *g, int *restrict total, int *restrict skipped, int *restrict saved)
+static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct article_queue *q, struct upstream_group *g, int *restrict total, int *restrict skipped, int *restrict saved)
 {
 	struct suck_pattern *sp;
 	int artlow, arthigh, artrecent;
@@ -1218,13 +1422,13 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct upstr
 		}
 		/* We could use XPAT for the kill patterns in a second pass, but since the headers we care about are in the OVER response anyways,
 		 * it's more efficient to just do it ourselves. */
-		if (process_over(nc, g, artnums, &count, skipped, &lowerbound, &upperbound) || stop_sucking) {
+		if (process_over(nc, sf, q, g, artnums, &count, skipped, &lowerbound, &upperbound) || stop_sucking) {
 			*total += count;
 			return -1;
 		}
 		*total += count;
 
-		if (lowerbound && upperbound) {
+		if (lowerbound && upperbound && !sf->global_ordering) { /* Note: We could filter out queued articles if sf->global_ordering, that just isn't implemented right now */
 			/* An optimization: use HDR To ask for the Newsgroups header, since it's the only remaining header
 			 * that could allow us to easily filter articles, outside of the ones already processed as part of overview headers.
 			 * We know the exact bounds of the range, so use the most constrictive range possible if we filtered out articles on both sides. */
@@ -1237,11 +1441,13 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct upstr
 				bbs_debug(3, "HDR not supported? Got: %s\n", nc->buf);
 			}
 		}
-		if (suck_articles(nc, sf, g, artnums, count, saved) || stop_sucking) {
-			return -1;
+		if (!sf->global_ordering) {
+			if (suck_articles(nc, sf, g, artnums, count, saved) || stop_sucking) {
+				return -1;
+			}
 		}
-		artlow = upperbound + 1;
 		g->lasthigh = upperbound; /* We successfully processed up to this article (even if it wasn't saved) */
+		artlow = upperbound + 1;
 	} while (count == SUCK_CHUNKSIZE && artlow <= g->high);
 
 	bbs_verb(7, "Sucked newsgroup %s: saved %d/%d article%s\n", g->name, *saved, *total, ESS(*total));
@@ -1252,10 +1458,12 @@ static void suck_news(struct suck_feed *sf)
 {
 	time_t start, lasttimestamp;
 	struct upstream_groups grps;
+	struct article_queue q;
 	struct nntp_client nc_stack, *nc = &nc_stack;
 
 	start = time(NULL);
 	BBS_LIST_HEAD_INIT(&grps);
+	BBS_LIST_HEAD_INIT(&q);
 	memset(&nc->tcpclient, 0, sizeof(struct bbs_tcp_client));
 
 	/* First, load all the groups we want to suck into memory */
@@ -1314,9 +1522,14 @@ static void suck_news(struct suck_feed *sf)
 		int total_processed = 0, total_skipped = 0, total_saved = 0;
 		struct upstream_group *g;
 		int c = 0;
+
 		BBS_LIST_TRAVERSE(&grps, g, entry) {
 			int grp_total = 0, grp_skipped = 0, grp_saved = 0;
-			if (suck_group(nc, sf, g, &grp_total, &grp_skipped, &grp_saved)) {
+			if (suck_group(nc, sf, &q, g, &grp_total, &grp_skipped, &grp_saved)) {
+				if (sf->global_ordering) {
+					/* If global ordering, don't persist processed high water mark since we didn't actually save queued articles */
+					goto done;
+				}
 				break;
 			}
 			total_processed += grp_total;
@@ -1324,7 +1537,17 @@ static void suck_news(struct suck_feed *sf)
 			total_saved += grp_saved;
 			c++;
 			if (stop_sucking) {
+				if (sf->global_ordering) {
+					goto done;
+				}
 				break;
+			}
+		}
+		if (sf->global_ordering) {
+			if (!stop_sucking) {
+				if (save_queued_articles(&q)) {
+					goto done;
+				}
 			}
 		}
 		/* Note that saved + skipped != total
@@ -1341,6 +1564,7 @@ static void suck_news(struct suck_feed *sf)
 
 done:
 	bbs_tcp_client_cleanup(&nc->tcpclient);
+	free_queued_articles(&q);
 	BBS_LIST_REMOVE_ALL(&grps, entry, free_grp);
 }
 
@@ -1393,7 +1617,7 @@ static int cli_suckgroups(struct bbs_cli_args *a)
 	return 0;
 }
 
-static int cli_sucknews(struct bbs_cli_args *a)
+static int _cli_sucknews(struct bbs_cli_args *a, int ordered)
 {
 	struct suck_feed *sf;
 	const char *name = a->argv[2];
@@ -1408,10 +1632,231 @@ static int cli_sucknews(struct bbs_cli_args *a)
 			}
 			if (sf->thread) {
 				bbs_dprintf(a->fdout, "Suck operation already in progress for %s\n", sf->name);
-			} else if (bbs_pthread_create(&sf->thread, NULL, __suck_news, sf)) {
+				break;
+			}
+			SET_BITFIELD(sf->global_ordering, ordered);
+			if (bbs_pthread_create(&sf->thread, NULL, __suck_news, sf)) {
 				bbs_dprintf(a->fdout, "Failed to start sucking news for %s\n", sf->name);
 			} else {
 				bbs_dprintf(a->fdout, "Started sucking news for %s\n", sf->name);
+			}
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&suck_feeds);
+	if (!sf) {
+		bbs_dprintf(a->fdout, "No such suck feed '%s'\n", name);
+		return -1;
+	}
+	return 0;
+}
+
+static int cli_sucknews(struct bbs_cli_args *a)
+{
+	return _cli_sucknews(a, 0);
+}
+
+static int cli_suckorder(struct bbs_cli_args *a)
+{
+	return _cli_sucknews(a, 1);
+}
+
+/* Similar to struct artgroup, but as part of a linked list, since it's already sorted, and its contents need to be self-contained */
+struct sorted_article {
+	const char *msgid;
+	const char *group;
+	int artnum;
+	BBS_LIST_ENTRY(sorted_article) entry;
+	char data[];
+};
+
+BBS_LIST_HEAD_NOLOCK(sorted_articles, sorted_article);
+
+static int save_ordered_articles(struct nntp_client *nc, struct suck_feed *sf, const char *groupname, int count, int *restrict saved)
+{
+	int i;
+	for (i = 0; i < count; i++) {
+		const char *artnumstr;
+		int res, code, artnum;
+		code = nntp_client_read_code(nc, MIN_MS(5));
+		if (code <= 0) {
+			return -1;
+		}
+		if (code != NNTP_OK_ARTICLE) {
+			bbs_notice("Failed to download article from %s: %s\n", groupname, nc->buf);
+			continue;
+		}
+		artnumstr = bbs_strcnext(nc->buf, ' ');
+		if (!artnumstr) {
+			bbs_client_err("Invalid response: %s\n", nc->buf);
+			return -1;
+		}
+		artnum = atoi(artnumstr);
+		res = save_article(nc, sf, groupname, artnum);
+		if (res < 0) {
+			return -1;
+		} else if (!res) {
+			*saved += 1;
+		}
+	}
+	return 0;
+}
+
+/*! \brief Download a list of articles that are already sorted */
+static int suck_ordered(struct suck_feed *sf, FILE *fp)
+{
+	char buf[NNTP_MAX_LINE_LENGTH];
+	struct sorted_articles articles;
+	struct sorted_article *head, *lasthead;
+	struct nntp_client nc_stack, *nc = &nc_stack;
+	time_t start, end;
+	int saved = 0, pipelined = 0, lineno = 0;
+
+	BBS_LIST_HEAD_INIT(&articles);
+
+	/* First, build an list of the articles we want to download. */
+	for (; (fgets(buf, sizeof(buf), fp)); lineno++) {
+		struct sorted_article *a;
+		size_t msgidlen;
+		char *colon, *msgid, *rest = buf;
+		msgid = strsep(&rest, " ");
+		if (strlen_zero(msgid) || strlen_zero(rest)) {
+			bbs_warning("Malformed line in article list, line %d\n", lineno);
+			continue;
+		}
+		colon = strchr(rest, ':');
+		if (!colon) {
+			continue;
+		}
+		*colon++ = '\0';
+		if (strlen_zero(colon)) {
+			bbs_warning("Malformed line in article list, line %d\n", lineno);
+			continue;
+		}
+		/* This command is idempotent, we'll skip any articles we already have */
+		if (history_messageid_exists(msgid)) {
+			bbs_debug(9, "Message %s already exists, skipping\n", msgid);
+			continue;
+		}
+		msgidlen = strlen(msgid);
+		a = calloc(1, sizeof(*a) + msgidlen + strlen(rest) + 2);
+		if (ALLOC_FAILURE(a)) {
+			bbs_warning("Malformed line in article list, line %d\n", lineno);
+			fclose(fp);
+			goto cleanup2;
+		}
+		strcpy(a->data, msgid);
+		a->msgid = a->data;
+		strcpy(a->data + msgidlen + 1, rest);
+		a->group = a->data + msgidlen + 1;
+		a->artnum = atoi(colon);
+		BBS_LIST_INSERT_TAIL(&articles, a, entry); /* Preserve order */
+		if (stop_sucking) {
+			fclose(fp);
+			goto cleanup2;
+		}
+	}
+	fclose(fp);
+
+	if (BBS_LIST_EMPTY(&articles)) {
+		bbs_notice("No new articles present in sorted file for %s\n", sf->name);
+		return -1;
+	}
+
+	start = time(NULL);
+	if (suck_client_start(nc, sf)) {
+		goto cleanup;
+	}
+
+	/* Now, actually download the articles, with pipelining (to the extent possible).
+	 * We'll download by article number rather than message ID, since that is typically "friendlier" to news servers. */
+	for (lasthead = NULL, head = BBS_LIST_FIRST(&articles); head; head = BBS_LIST_NEXT(head, entry)) {
+		/* Change groups if needed */
+		if (!lasthead || strcmp(lasthead->group, head->group)) {
+			if (pipelined) {
+				if (save_ordered_articles(nc, sf, lasthead->group, pipelined, &saved)) {
+					goto cleanup;
+				}
+			}
+			nntp_client_send(nc, "GROUP %s\r\n", head->group);
+			if (nntp_client_expect_code(nc, SEC_MS(30), NNTP_OK_GROUP)) {
+				goto cleanup;
+			}
+			pipelined = 0;
+		}
+		lasthead = head;
+		/* If there are more consecutive articles in this group than the chunk size, stop eventually.
+		 * It won't impact our memory usage or cause an issue for us, but at some point enough is enough. */
+		if (pipelined >= SUCK_CHUNKSIZE) {
+			if (save_ordered_articles(nc, sf, lasthead->group, pipelined, &saved)) {
+				goto cleanup;
+			}
+		}
+		nntp_client_send(nc, "ARTICLE %d\r\n", head->artnum);
+		pipelined++;
+		if (stop_sucking) {
+			break;
+		}
+	}
+	/* Save any final pipelined articles in the last group */
+	if (pipelined) {
+		if (save_ordered_articles(nc, sf, lasthead->group, pipelined, &saved)) {
+			goto cleanup;
+		}
+	}
+
+	end = time(NULL);
+	bbs_verb(5, "Suck feed %s: sucked %d article%s (%lds elapsed)\n", sf->name, saved, ESS(saved), end - start);
+	BBS_LIST_REMOVE_ALL(&articles, entry, free);
+	return 0;
+
+cleanup:
+	bbs_tcp_client_cleanup(&nc->tcpclient);
+cleanup2:
+	BBS_LIST_REMOVE_ALL(&articles, entry, free);
+	return -1;
+}
+
+static void *__suck_ordered_articles(void *varg)
+{
+	/* suck_feeds isn't locked, but sf can't be removed while sf->thread is set */
+	struct suck_feed *sf = varg;
+	FILE *fp = sf->varg;
+	suck_ordered(sf, fp);
+	sf->done = 1;
+	return NULL;
+}
+
+static int cli_suckordered(struct bbs_cli_args *a)
+{
+	struct suck_feed *sf;
+	const char *name = a->argv[2];
+	const char *filename = a->argv[3];
+
+	RWLIST_WRLOCK(&suck_feeds);
+	RWLIST_TRAVERSE(&suck_feeds, sf, entry) {
+		if (!strcmp(name, sf->name)) {
+			FILE *fp;
+			/* Only one suck operation per suck feed at a time */
+			if (sf->thread && sf->done) {
+				/* Previous suck groups finished already, clean up the thread */
+				bbs_pthread_join(sf->thread, NULL);
+				sf->thread = 0;
+			}
+			if (sf->thread) {
+				bbs_dprintf(a->fdout, "Suck operation already in progress for %s\n", sf->name);
+			}
+			fp = fopen(filename, "r");
+			if (!fp) {
+				bbs_dprintf(a->fdout, "Failed to open %s: %s\n", filename, strerror(errno));
+				break;
+			}
+			sf->varg = fp;
+			if (bbs_pthread_create(&sf->thread, NULL, __suck_ordered_articles, sf)) {
+				bbs_dprintf(a->fdout, "Failed to start sucking groups for %s\n", sf->name);
+				fclose(fp);
+			} else {
+				bbs_dprintf(a->fdout, "Started sucking groups for %s\n", sf->name);
 			}
 			break;
 		}
@@ -1535,8 +1980,10 @@ static int cli_suckload(struct bbs_cli_args *a)
 
 static struct bbs_cli_entry cli_commands_nntp_suck[] = {
 	BBS_CLI_COMMAND(cli_suckgroups, "news suckgroups", 3, "Initialize newsgroups for a suck feed", "news suckgroups <name>"),
-	BBS_CLI_COMMAND(cli_suckload, "news suckload", 4, "Create new newsgroups from the file generated by 'news suckgroups'", "news suckgroups <name> <filepath>"),
+	BBS_CLI_COMMAND(cli_suckload, "news suckload", 4, "Create new newsgroups from the file generated by 'news suckgroups'", "news suckload <name> <filepath>"),
 	BBS_CLI_COMMAND(cli_sucknews, "news sucknews", 3, "Suck news using a configured feed", "news sucknews <name>"),
+	BBS_CLI_COMMAND(cli_suckorder, "news suckorder", 3, "Suck article order using a configured feed", "news suckorder <name>"),
+	BBS_CLI_COMMAND(cli_suckordered, "news suckordered", 4, "Suck an ordered list of articles using a configured feed", "news suckordered <name> <filepath>"),
 };
 
 static void free_suckfeed(struct suck_feed *sf)
