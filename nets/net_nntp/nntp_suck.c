@@ -1137,7 +1137,7 @@ static inline int disqualify_article(int artnums[SUCK_CHUNKSIZE], int count, int
 	return 1;
 }
 
-static int process_hdr(struct nntp_client *nc, struct upstream_group *g, int artnums[SUCK_CHUNKSIZE], int count, int *restrict skipped)
+static int process_hdr(struct nntp_client *nc, struct article_queue *q, struct queued_article *qhead, struct upstream_group *g, int artnums[SUCK_CHUNKSIZE], int count, int *restrict skipped)
 {
 	for (;;) {
 		char groupsbuf[NNTP_MAX_LINE_LENGTH];
@@ -1169,8 +1169,18 @@ static int process_hdr(struct nntp_client *nc, struct upstream_group *g, int art
 				 * It is probably quicker to look for poison groups than find the article in the array each time,
 				 * so that's why we only scan the array if there is a match. */
 				if (group_is_poison(grp)) {
-					if (!disqualify_article(artnums, count, artnum)) {
+					if (qhead) {
+						/* We probably already added it to the list of queued articles that will be sorted, so remove it if present */
+						for (; qhead; qhead = BBS_LIST_NEXT(qhead, entry)) {
+							if (qhead->newsgroup.artnum == artnum) {
+								BBS_LIST_REMOVE(q, qhead, entry);
+								free_queued_article(qhead);
+								goto skip;
+							}
+						}
+					} else if (!disqualify_article(artnums, count, artnum)) {
 						/* It only counts as another article skipped if it wasn't already disqualified */
+skip:
 						bbs_notice("Article %s:%d rejected: contains poison group %s\n", g->name, artnum, grp);
 						*skipped += 1;
 						break;
@@ -1405,6 +1415,7 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct artic
 	}
 
 	do {
+		struct queued_article *lastqueued = NULL;
 		int lowerbound = 0, upperbound = 0; /* can't be used uninitialized, shut gcc up */
 		/* First, interrogate the metadata for articles available and filter out as many articles as we can before downloading them */
 		/* If OVER capability advertised, use OVER, otherwise XOVER (since it's older) */
@@ -1420,6 +1431,11 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct artic
 		if (nntp_client_expect_code(nc, SEC_MS(30), NNTP_OK_OVER)) {
 			return -1;
 		}
+
+		if (sf->global_ordering) {
+			lastqueued = BBS_LIST_LAST(q); /* Items are tail inserted, so any new items will be after this one, no need to search through previous items */
+		}
+
 		/* We could use XPAT for the kill patterns in a second pass, but since the headers we care about are in the OVER response anyways,
 		 * it's more efficient to just do it ourselves. */
 		if (process_over(nc, sf, q, g, artnums, &count, skipped, &lowerbound, &upperbound) || stop_sucking) {
@@ -1428,19 +1444,25 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct artic
 		}
 		*total += count;
 
-		if (lowerbound && upperbound && !sf->global_ordering) { /* Note: We could filter out queued articles if sf->global_ordering, that just isn't implemented right now */
+		if (lowerbound && upperbound) {
 			/* An optimization: use HDR To ask for the Newsgroups header, since it's the only remaining header
 			 * that could allow us to easily filter articles, outside of the ones already processed as part of overview headers.
 			 * We know the exact bounds of the range, so use the most constrictive range possible if we filtered out articles on both sides. */
 			nntp_client_send(nc, "%sHDR Newsgroups %d-%d\r\n", nc->caps.hdr ? "" : "X", lowerbound, upperbound);
 			if (!nntp_client_expect_code(nc, SEC_MS(30), NNTP_OK_HDR)) {
-				if (process_hdr(nc, g, artnums, count, skipped) || stop_sucking) {
+				if (process_hdr(nc, q, lastqueued ? BBS_LIST_NEXT(lastqueued, entry) : BBS_LIST_FIRST(q), g, artnums, count, skipped) || stop_sucking) {
 					return -1;
 				}
 			} else {
 				bbs_debug(3, "HDR not supported? Got: %s\n", nc->buf);
 			}
 		}
+
+		/*! \todo Use further HDR operations to filter out other headers using matches_custom_kill_pattern() prior to requesting full articles later.
+		 * In particular, if we are sorting the articles first, this can improve efficiency.
+		 * But we should only bother doing this if there are actually kill patterns that use the other headers. */
+
+		/* Unless we need to sort the articles first, download any articles that haven't yet been filtered out in this batch */
 		if (!sf->global_ordering) {
 			if (suck_articles(nc, sf, g, artnums, count, saved) || stop_sucking) {
 				return -1;
