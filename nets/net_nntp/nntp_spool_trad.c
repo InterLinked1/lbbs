@@ -18,10 +18,12 @@
 #include "include/bbs.h"
 
 #include <dirent.h>
+#include <sys/statvfs.h> /* use statvfs */
 
 #include "include/node.h"
 #include "include/utils.h"
 #include "include/stringlist.h"
+#include "include/system.h"
 
 #include "nntp.h"
 #include "nntp_history.h"
@@ -30,14 +32,35 @@
 /* Use a large enough buffer to ensure even long lines in the overview file will fit, or weird things will happen */
 #define OVERVIEW_BUFSIZ 4096
 
+extern int spool_compression;
+
 /* Each thread opens a group's overview file for reading/writing, so multiple readers can operate simultaneously.
  * Right now, we don't have any per-group data structures, so for simplicity, we have one rwlock_t globally,
  * even though overview file operations are PER GROUP; so if one group's overview file is being modified,
  * no other reads/writes can occur; but otherwise, all reading operations are unconstrained. */
 static bbs_rwlock_t overviewlock = BBS_RWLOCK_INITIALIZER;
 
+static unsigned long blocksize;
+
+static int get_block_size(void)
+{
+	struct statvfs st;
+
+	if (statvfs(newsdir, &st)) {
+		bbs_error("stat(%s) failed: %s\n", newsdir, strerror(errno));
+		return -1;
+	}
+	blocksize = st.f_bsize;
+
+	bbs_debug(6, "Block size of %s: %lu\n", newsdir, blocksize);
+	return 0;
+}
+
 int tradspool_init(void)
 {
+	if (get_block_size()) {
+		return -1;
+	}
 	return 0;
 }
 
@@ -73,53 +96,159 @@ static int build_newsgroup_path(const char *name, char *buf, size_t len)
 	return 0;
 }
 
-static int build_article_path_grouppath(const char *grouppath, int article_num, char *buf, size_t len)
+#define COMPRESSED_SUFFIX ".zst"
+
+static inline void build_compressed_path(const char *groupname, int article_num, char *buf, size_t len)
 {
-	snprintf(buf, len, "%s/%d", grouppath, article_num);
+	int slen = snprintf(buf, len, "%s/%s/%d" COMPRESSED_SUFFIX, newsdir, groupname, article_num);
+	bbs_strreplace(buf, '.', '/');
+	buf[(size_t) slen - STRLEN(COMPRESSED_SUFFIX)] = '.'; /* Replace /zst with .zst */
+}
+
+static int build_nonexistent_path(const char *groupname, int article_num, char *buf, size_t len, int compressed)
+{
+	if (compressed) {
+		build_compressed_path(groupname, article_num, buf, len);
+	} else {
+		snprintf(buf, len, "%s/%s/%d", newsdir, groupname, article_num);
+		bbs_strreplace(buf, '.', '/');
+	}
+	if (bbs_file_exists(buf)) {
+		bbs_warning("File '%s' already exists\n", buf);
+		return 1;
+	}
 	return 0;
 }
 
-static int build_article_path(const char *groupname, int article_num, char *buf, size_t len)
+static int build_group_article_path(const char *groupname, int article_num, char *buf, size_t len, int *restrict is_compressed)
 {
 	if (strstr(groupname, "..")) { /* Reject dangerous inputs */
+		*is_compressed = 0;
+		errno = 0;
 		return -1;
 	}
+
+	/* In theory, if we knew the article size and it was <= blocksize, we could skip this (or try it second)
+	 * since we wouldn't have compressed this article. */
+	if (spool_compression) {
+		build_compressed_path(groupname, article_num, buf, len);
+		if (bbs_file_exists(buf)) {
+			*is_compressed = 1;
+			return 0;
+		}
+	}
+
+	*is_compressed = 0;
 	snprintf(buf, len, "%s/%s/%d", newsdir, groupname, article_num);
 	bbs_strreplace(buf, '.', '/');
-	return 0; /* Don't check for existence since we'll try to open it now */
-}
-
-static int build_overview_path(const char *groupname, char *buf, size_t len)
-{
-	size_t slen;
-	if (strstr(groupname, "..")) { /* Reject dangerous inputs */
-		return -1;
-	}
-	slen = (size_t) snprintf(buf, len, "%s/%s/%s", newsdir, groupname, ".overview");
-	if (slen > len) {
-		return -1;
-	}
-	buf[slen - STRLEN(".overview")] = '\0'; /* Don't change .overview to /overview */
-	bbs_strreplace(buf, '.', '/');
-	buf[slen - STRLEN(".overview")] = '.'; /* Change it back */
-	return 0; /* Don't check for existence since we'll try to open it now */
-}
-
-static int build_group_article_path(const char *name, int article_num, char *buf, size_t len)
-{
-	errno = 0;
-	if (strstr(name, "..")) { /* Reject dangerous inputs */
-		return -1;
-	}
-	snprintf(buf, len, "%s/%s/%d", newsdir, name, article_num);
-
-	bbs_strreplace(buf, '.', '/');
-
-	if (eaccess(buf, R_OK)) {
+	if (!bbs_file_exists(buf)) {
 		errno = ENOENT;
 		return -1; /* Doesn't exist */
 	}
 	return 0;
+}
+
+static int delete_article(const char *groupname, int article_num)
+{
+	char articlefile[NNTP_MAX_PATH_LENGTH + 32];
+	int is_compressed;
+
+	if (build_group_article_path(groupname, article_num, articlefile, sizeof(articlefile), &is_compressed)) {
+		return -1;
+	}
+	if (unlink(articlefile)) {
+		bbs_debug(1, "Attempt to delete nonexistent article %s:%d\n", groupname, article_num);
+		return 1;
+	}
+	return 0;
+}
+
+/*! \todo Use the zstd library directly instead of the zstd program (for efficiency) */
+
+static int compress_article(const char *path, size_t bytes, char *newpath, size_t newpathlen)
+{
+	struct bbs_exec_params x;
+	struct stat st;
+	size_t newsize, newblocks, oldblocks;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+	char *const argv[] = { "zstd", path, NULL };
+#pragma GCC diagnostic pop
+
+	/* If the article is small enough to fit within a single block, there is no point in compressing it...
+	 * so only attempt to compress if this is larger than 1 block and will shave off at least one block. */
+	if (bytes <= blocksize) {
+		return 1;
+	}
+
+	/* Note: Using a custom dictionary trained on netnews would probably yield even greater compression.
+	 * However, zstd on its own without a custom dictionary is still fairly effective at compressing articles
+	 * (usually by about half), and custom dictionaries also come with the risk of overfitting if not
+	 * trained properly, so at the moment, we do not use a custom dictionary. */
+
+	EXEC_PARAMS_INIT_HEADLESS(x);
+	if (bbs_execvp(NULL, &x, "zstd", argv)) {
+		bbs_error("Failed to compress %s: %s\n", path, strerror(errno));
+		if (eaccess("zstd", X_OK)) {
+			/* If zstd isn't available for some reason then don't try this again */
+			bbs_warning("Disabling spool compression since zstd is not available\n");
+			spool_compression = 0;
+		}
+		return -1;
+	}
+
+	/* Check the size of the compressed file and make sure it's at least one block size less than the original,
+	 * otherwise there's no point as we'll be doing extra work later for no gain in disk space. */
+	snprintf(newpath, newpathlen, "%s" COMPRESSED_SUFFIX, path);
+	if (stat(newpath, &st)) {
+		bbs_error("stat(%s) failed: %s\n", newpath, strerror(errno));
+		return -1;
+	}
+	newsize = (size_t) st.st_size;
+	newblocks = (newsize / blocksize) + 1;
+	oldblocks = (bytes / blocksize) + 1;
+	if (!(newblocks < oldblocks)) {
+		bbs_debug(6, "Not compressing %s, block usage is unchanged (%lu [%lu] -> %lu [%lu])\n", path, bytes, oldblocks, newsize, newblocks);
+		bbs_delete_file(newpath);
+		return 1;
+	}
+
+	/* If compression succeeded, remove the original file */
+	bbs_delete_file(path);
+	return 0;
+}
+
+static int uncompress_article(char *path)
+{
+	char template[TMPNAME_BUFSIZ];
+	struct bbs_exec_params x;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+	char *const argv[] = { "zstd", "-d", path, "-o", template, NULL };
+#pragma GCC diagnostic pop
+
+	/* In theory, there may be efficiency gains of uncompressing a file to the normal uncompressed filename,
+	 * so that multiple readers could reuse the same file.
+	 * However, at some point these need to be pruned (deleted), or that defeats the point of compression,
+	 * and if not careful, this could lead to a file being deleted while it's being used.
+	 * Rather than renaming file.zst to just file, we use a unique tempname,
+	 * so that concurrent article accesses + deletions don't step on each other.
+	 * Since it's unique to use, after we're done using this file, it's then immediately deleted. */
+	bbs_tempname("nntpart_decomp", template, sizeof(template));
+
+	EXEC_PARAMS_INIT_HEADLESS(x);
+	if (bbs_execvp(NULL, &x, "zstd", argv)) {
+		bbs_error("Failed to compress %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	safe_strncpy(path, template, NNTP_MAX_PATH_LENGTH);
+	return 0;
+}
+
+static int remove_uncompressed_article(const char *path)
+{
+	return bbs_delete_file(path);
 }
 
 int tradspool_group_create(const char *groupname)
@@ -165,6 +294,22 @@ int tradspool_group_exists(const char *groupname)
 	char grouppath[NNTP_MAX_PATH_LENGTH];
 	int res = build_newsgroup_path(groupname, grouppath, sizeof(grouppath));
 	return res == 0;
+}
+
+static int build_overview_path(const char *groupname, char *buf, size_t len)
+{
+	size_t slen;
+	if (strstr(groupname, "..")) { /* Reject dangerous inputs */
+		return -1;
+	}
+	slen = (size_t) snprintf(buf, len, "%s/%s/%s", newsdir, groupname, ".overview");
+	if (slen > len) {
+		return -1;
+	}
+	buf[slen - STRLEN(".overview")] = '\0'; /* Don't change .overview to /overview */
+	bbs_strreplace(buf, '.', '/');
+	buf[slen - STRLEN(".overview")] = '.'; /* Change it back */
+	return 0; /* Don't check for existence since we'll try to open it now */
 }
 
 static void overview_insert(FILE *fp, struct article_info *artinfo, int article_num)
@@ -461,6 +606,7 @@ int tradspool_group_seek(const char *groupname, int cur_artnum, int *new_artnum,
 	char buf[OVERVIEW_BUFSIZ];
 	char artpath[NNTP_MAX_PATH_LENGTH];
 	char overviewfile[NNTP_MAX_PATH_LENGTH];
+	int is_compressed;
 
 	/* There are two logical ways to determine the NEXT or LAST articles in a group.
 	 * The simplest way is simply to scan the directory and find the min/max article number as appropriate.
@@ -536,7 +682,7 @@ int tradspool_group_seek(const char *groupname, int cur_artnum, int *new_artnum,
 
 	/* Go ahead and check if this article actually exists.
 	 * It should, so if it doesn't, then the overview file is out of sync with the spool. */
-	if (*new_artnum != cur_artnum && (build_article_path(groupname, *new_artnum, artpath, sizeof(artpath)) || !bbs_file_exists(artpath))) {
+	if (*new_artnum != cur_artnum && (build_group_article_path(groupname, *new_artnum, artpath, sizeof(artpath), &is_compressed))) {
 		bbs_warning("Overview file %s is out of sync with the spool (%s doesn't exist)\n", overviewfile, artpath);
 		/* Don't change our answer. Technically, even if the article doesn't exist,
 		 * pretending it does here isn't quite "illegal", because it's always possible the article
@@ -887,6 +1033,7 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 	size_t linksleft = sizeof(links);
 	struct article_group *g;
 	int attempting = 0, delivered = 0;
+	int actually_compressed = 0;
 	time_t arrival_time;
 
 	arrival_time = time(NULL);
@@ -949,12 +1096,13 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 	 * For the first group, we'll actually create a file in the spool;
 	 * subsequent groups (cross-posts) will just get a link to the file, to save space. */
 	BBS_LIST_TRAVERSE(groups, g, entry) {
-		char articlepath[NNTP_MAX_PATH_LENGTH];
+		char articlepath[NNTP_MAX_PATH_LENGTH - STRLEN(COMPRESSED_SUFFIX)];
 		if (!g->article_num) {
 			continue;
 		}
-		/* Shouldn't fail, as group was already verified to exist, but it will return -1 so we need to check errno */
-		if (!build_group_article_path(g->name, g->article_num, articlepath, sizeof(articlepath)) || errno != ENOENT) {
+		/* Even if the article will be compressed, when it's first created, it's not compressed so this is always 0 for the first group.
+		 * Subsequent links may point to the compressed version and be named appropriately. */
+		if (build_nonexistent_path(g->name, g->article_num, articlepath, sizeof(articlepath), actually_compressed)) {
 			continue;
 		}
 		if (delivered) {
@@ -1004,7 +1152,15 @@ int tradspool_article_create(struct article_groups *groups, struct article_info 
 			}
 
 			close(destfd);
-			safe_strncpy(hardpath, articlepath, sizeof(hardpath)); /* Save the filename so we can create links to this for further groups */
+			if (spool_compression) {
+				if (compress_article(articlepath, artinfo->bytes, hardpath, sizeof(hardpath))) {
+					safe_strncpy(hardpath, articlepath, sizeof(hardpath));
+				} else {
+					actually_compressed = 1;
+				}
+			} else {
+				safe_strncpy(hardpath, articlepath, sizeof(hardpath)); /* Save the filename so we can create links to this for further groups */
+			}
 		}
 		/* links are space-separated and relative to the root newsdir */
 		SAFE_FAST_APPEND(links, sizeof(links), linkspos, linksleft, "%s/%d", g->name, g->article_num);
@@ -1097,31 +1253,27 @@ static int scan_for_marks_and_counts(const char *path, int *min, int *max, int *
  */
 int tradspool_article_delete_by_number(const char *groupname, int article_num)
 {
-	char grouppath[NNTP_MAX_PATH_LENGTH];
-	char articlefile[NNTP_MAX_PATH_LENGTH + 32];
 	int low, high, last, oldcount;
-
-	if (build_newsgroup_path(groupname, grouppath, sizeof(grouppath))) {
-		return -1;
-	} else if (build_article_path_grouppath(grouppath, article_num, articlefile, sizeof(articlefile))) {
-		return -1;
-	}
+	int res;
 
 	/* Low water mark is a lower bound, so we increment it after deleting article(s) */
 	if (group_get_stats_locked(groupname, &last, &high, &low, &oldcount)) {
 		return -1;
 	}
 
-	/* This is also our existence check, so it's okay if it fails: */
-	if (unlink(articlefile)) {
-		bbs_debug(1, "Attempt to delete nonexistent article %s:%d\n", groupname, article_num);
-		return 1;
+	res = delete_article(groupname, article_num);
+	if (res) {
+		return res;
 	}
 
 	/* If we deleted either the low or high water mark article,
 	 * then we need to recalculate at least one of the water marks. */
 	if (article_num == low || article_num == high) {
 		int curlow, curhigh, curcount;
+		char grouppath[NNTP_MAX_PATH_LENGTH];
+		if (build_newsgroup_path(groupname, grouppath, sizeof(grouppath))) {
+			return -1;
+		}
 		/* At least one water mark will need adjusting, maybe both */
 		if (!scan_for_marks_and_counts(grouppath, &curlow, &curhigh, &curcount)) {
 			int newlow, newhigh;
@@ -1162,7 +1314,8 @@ int tradspool_article_delete_by_number(const char *groupname, int article_num)
 int tradspool_article_exists(const char *groupname, int article_num)
 {
 	char artpath[NNTP_MAX_PATH_LENGTH];
-	if (!build_group_article_path(groupname, article_num, artpath, sizeof(artpath))) {
+	int is_compressed;
+	if (!build_group_article_path(groupname, article_num, artpath, sizeof(artpath), &is_compressed)) {
 		return 1;
 	}
 	return 0;
@@ -1187,7 +1340,8 @@ int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, con
 	} else {
 		char artpath[NNTP_MAX_PATH_LENGTH];
 		char found_messageid[NNTP_BUFSIZ];
-		if (!build_group_article_path(groupname, article_num, artpath, sizeof(artpath))) {
+		int is_compressed;
+		if (!build_group_article_path(groupname, article_num, artpath, sizeof(artpath), &is_compressed)) {
 			/* Need to look up Message-ID from overview */
 			if (!overview_find_messageid(groupname, article_num, found_messageid, sizeof(found_messageid))) {
 				nntp_send(nntp, NNTP_OK_STAT, "%d %s", article_num, found_messageid);
@@ -1200,6 +1354,7 @@ int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, con
 
 int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter filter, const char *messageid, const char *groupname, int article_num)
 {
+	int is_compressed;
 	char artpath[NNTP_MAX_PATH_LENGTH];
 	char eff_group[NNTP_BUFSIZ];
 	char buf[NNTP_BUFSIZ];
@@ -1213,7 +1368,7 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 		/* If we just have a Message-ID, we need to scan the history file to find a link to the message */
 		res = history_find_article_by_messageid(messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum);
 		if (!res) {
-			build_group_article_path(eff_group, eff_artnum, artpath, sizeof(artpath));
+			res = build_group_article_path(eff_group, eff_artnum, artpath, sizeof(artpath), &is_compressed);
 			/* If article is not in this group, we MUST send an article number of 0 */
 			resp_artnum = nntp->currentgroup && !strcmp(nntp->currentgroup, eff_group) ? eff_artnum : 0;
 		}
@@ -1221,7 +1376,7 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 			return 1;
 		}
 	} else {
-		res = build_group_article_path(groupname, article_num, artpath, sizeof(artpath));
+		res = build_group_article_path(groupname, article_num, artpath, sizeof(artpath), &is_compressed);
 		resp_artnum = article_num;
 		/* In this case, we weren't provided the Message-ID, so we need to look that up.
 		 * Use the overview file in this case, since we know the group, and it'll be smaller than the history file. */
@@ -1233,6 +1388,10 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 	}
 	if (res) {
 		return res;
+	}
+
+	if (spool_compression && is_compressed && uncompress_article(artpath)) {
+		return -1;
 	}
 
 	/* If we found it, send the parts requested */
@@ -1292,5 +1451,8 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 		fclose(fp);
 	}
 	_nntp_send(nntp, ".\r\n"); /* Termination character. */
+	if (spool_compression && is_compressed && remove_uncompressed_article(artpath)) {
+		return -1;
+	}
 	return 0;
 }

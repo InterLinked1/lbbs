@@ -943,7 +943,7 @@ static int save_queued_articles(struct article_queue *q)
 
 	fclose(fp);
 	free(artarray);
-	bbs_verb(5, "Sorted %d article%s to %s, to suck articles, run 'news sucksorted <suckfeed> %s' to suck articles\n", count, ESS(count), template, template);
+	bbs_verb(5, "Sorted %d article%s to %s, to suck articles, run 'news suckordered <suckfeed> %s' to suck articles\n", count, ESS(count), template, template);
 	return 0;
 }
 

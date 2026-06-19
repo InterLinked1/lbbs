@@ -110,6 +110,7 @@ static unsigned int max_accept_age = 10;
 unsigned int min_history = 11; /* used extern in nntp_history.c */
 static unsigned int min_lines = 0;
 static unsigned int max_lines = 0;
+int spool_compression = 0; /* used extern in nntp_spool_trad.c */
 static char poisongroups[NNTP_MAX_LINE_LENGTH];
 static char poisonsites[NNTP_MAX_LINE_LENGTH];
 
@@ -4954,6 +4955,7 @@ static int load_config(void)
 	bbs_config_val_set_uint(cfg, "articles", "minhistory", &min_history);
 	bbs_config_val_set_uint(cfg, "articles", "minlines", &min_lines);
 	bbs_config_val_set_uint(cfg, "articles", "maxlines", &max_lines);
+	bbs_config_val_set_true(cfg, "articles", "spoolcompression", &spool_compression);
 
 	/* Reader settings */
 	bbs_config_val_set_true(cfg, "readers", "requiresecurelogin", &require_secure_login);
