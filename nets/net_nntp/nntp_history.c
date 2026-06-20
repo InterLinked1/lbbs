@@ -245,7 +245,7 @@ static inline int should_expire_article(const char *group, time_t now, time_t ar
 	/* Check maximum */
 	if (!NEVER_EXPIRE(r->maxexp)) {
 		cutoff = now - (time_t) (r->maxexp * 86400);
-		if (arrival >= cutoff) {
+		if (arrival <= cutoff) {
 			EXPIRE_DEBUG(8, "Article too old to keep for %s, ignoring Expires header, expiring\n", group);
 			return 1; /* Too old to keep now */
 		}
@@ -382,6 +382,7 @@ int history_expire(const char *pattern)
 					if (!res || !spool_article_exists(grp, artnum)) {
 						keep = 0;
 						links_removed++;
+						EXPIRE_DEBUG(6, "Expiring %s:%d\n", grp, artnum);
 					}
 				}
 dokeep:
@@ -406,6 +407,7 @@ dokeep:
 			fprintf(expirefp, "%s\t%ld~%s~%s~%ld\n", msgid, arrival_time, expires_str, bytes_str, now); /* Also include time of expiration at end */
 		}
 		if (!groups_kept || groups_removed) {
+			/* "Keeping" means the article is kept in history for now, now that we're keeping the article (it's already gone) */
 			EXPIRE_DEBUG(4, "%s %s (kept: %d, removed: %d)\n", !groups_kept && groups_removed > 0 ? "Permanently deleted" : groups_removed ? "Partially deleted" : "Keeping", msgid, groups_kept, groups_removed);
 		}
 

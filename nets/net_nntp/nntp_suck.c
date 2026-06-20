@@ -1856,6 +1856,7 @@ static int suck_ordered(struct suck_feed *sf, struct nntp_client *nc, FILE *fp)
 			if (save_ordered_articles(nc, sf, lasthead->group, pipelined, &saved)) {
 				goto cleanup;
 			}
+			pipelined = 0;
 		}
 		nntp_client_send(nc, "ARTICLE %d\r\n", head->artnum);
 		pipelined++;
