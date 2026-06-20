@@ -92,7 +92,7 @@ int bbs_io_session_register(struct bbs_io_transformations *s, enum bbs_io_sessio
 	RWLIST_TRAVERSE(&sessions, i, entry) {
 		if (i->s == s) {
 			/* Session already exists in linked list, already registered */
-			bbs_warning("Session %u is already registered\n", i->id);
+			bbs_error("Session %u is already registered\n", i->id);
 			RWLIST_UNLOCK(&sessions);
 			return -1;
 		}

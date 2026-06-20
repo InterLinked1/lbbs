@@ -1786,6 +1786,7 @@ static int suck_ordered(struct suck_feed *sf, FILE *fp)
 	}
 
 	start = time(NULL);
+	memset(&nc->tcpclient, 0, sizeof(struct bbs_tcp_client));
 	if (suck_client_start(nc, sf)) {
 		goto cleanup;
 	}
