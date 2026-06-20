@@ -906,10 +906,9 @@ static int sort_compare(const void *aptr, const void *bptr)
 	}
 }
 
-static int save_queued_articles(struct article_queue *q)
+static int save_queued_articles(struct article_queue *q, char *template)
 {
 	struct queued_article *a, **artarray;
-	char template[TMPNAME_BUFSIZ];
 	FILE *fp;
 	int count, i;
 
@@ -926,11 +925,21 @@ static int save_queued_articles(struct article_queue *q)
 		artarray[i++] = a;
 	}
 
-	/* Sort the messages using qsort */
+	/* Sort the messages using qsort
+	 * Note that the resulting ordering only preserves relative ordering WITHIN each group.
+	 * The overall ABSOLUTE ordering is not guaranteed to be consistent with the upstream article arrival order.
+	 * This is because date order is not necessarily the same as upstream arrival order (due to delays
+	 * in posting/injection and the lack of guarantee the Date header is accurate).
+	 * There is no way in NNTP to fetch the list of articles in absolute ordering; Xref only gives us ordering within groups.
+	 * Therefore, as long as relative ordering within groups is not violated, articles may still appear "out of ordering"
+	 * due to articles within groups not being monotonically increasing as far as the Date header goes.
+	 *
+	 * There isn't a good way to work around this when doing an initial suck, but this issue can mitigated
+	 * for incremental sucks by sucking frequently to minimize the variances in ordering later. */
 	qsort(artarray, (size_t) count, sizeof(struct queued_article *), sort_compare);
 
 	/* Write the ordered queue out to a list */
-	bbs_tempname("nntpartsort", template, sizeof(template));
+	bbs_tempname("nntpartsort", template, TMPNAME_BUFSIZ);
 	fp = bbs_mkftemp(template, 0600);
 	if (!fp) {
 		free(artarray);
@@ -938,7 +947,8 @@ static int save_queued_articles(struct article_queue *q)
 	}
 	for (i = 0; i < count; i++) {
 		a = artarray[i];
-		fprintf(fp, "%s %s:%d\n", a->msgid, a->newsgroup.group, a->newsgroup.artnum);
+		/* Only the first two fields are really necessary, the time is just for debugging/analysis */
+		fprintf(fp, "%s %s:%d %ld\n", a->msgid, a->newsgroup.group, a->newsgroup.artnum, a->date);
 	}
 
 	fclose(fp);
@@ -1476,11 +1486,15 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct artic
 	return 0;
 }
 
+/* Forward declaration */
+static int suck_ordered(struct suck_feed *sf, struct nntp_client *nc, FILE *fp);
+
 static void suck_news(struct suck_feed *sf)
 {
 	time_t start, lasttimestamp;
 	struct upstream_groups grps;
 	struct article_queue q;
+	char template[TMPNAME_BUFSIZ];
 	struct nntp_client nc_stack, *nc = &nc_stack;
 
 	start = time(NULL);
@@ -1567,7 +1581,11 @@ static void suck_news(struct suck_feed *sf)
 		}
 		if (sf->global_ordering) {
 			if (!stop_sucking) {
-				if (save_queued_articles(&q)) {
+				if (BBS_LIST_EMPTY(&q)) {
+					bbs_debug(1, "No new news articles available\n");
+					goto done;
+				}
+				if (save_queued_articles(&q, template)) {
 					goto done;
 				}
 			}
@@ -1582,6 +1600,20 @@ static void suck_news(struct suck_feed *sf)
 	/* Even if an error occured, at least persist the groups that got sucked successfully so we don't repeat them next time */
 	if (update_suckfile(sf, &grps, start)) {
 		goto done;
+	}
+
+	if (sf->global_ordering && sf->loadaftersort) {
+		FILE *fp = fopen(template, "r");
+		if (!fp) {
+			bbs_error("Failed to open %s: %s\n", template, strerror(errno));
+			goto done;
+		}
+		/* Reuse our existing NNTP client for the suck operation */
+		if (!suck_ordered(sf, nc, fp)) { /* suck_ordered closes fp */
+			bbs_delete_file(template); /* Delete temp file if we processed all articles */
+		}
+		/* In some cases, nc->tcpclient will be cleaned up at this point, but not always,
+		 * so do it either way just in case as calling bbs_tcp_client_cleanup twice does no harm. */
 	}
 
 done:
@@ -1639,7 +1671,7 @@ static int cli_suckgroups(struct bbs_cli_args *a)
 	return 0;
 }
 
-static int _cli_sucknews(struct bbs_cli_args *a, int ordered)
+static int _cli_sucknews(struct bbs_cli_args *a, int ordered, int loadaftersort)
 {
 	struct suck_feed *sf;
 	const char *name = a->argv[2];
@@ -1657,6 +1689,7 @@ static int _cli_sucknews(struct bbs_cli_args *a, int ordered)
 				break;
 			}
 			SET_BITFIELD(sf->global_ordering, ordered);
+			SET_BITFIELD(sf->loadaftersort, loadaftersort);
 			if (bbs_pthread_create(&sf->thread, NULL, __suck_news, sf)) {
 				bbs_dprintf(a->fdout, "Failed to start sucking news for %s\n", sf->name);
 			} else {
@@ -1675,12 +1708,17 @@ static int _cli_sucknews(struct bbs_cli_args *a, int ordered)
 
 static int cli_sucknews(struct bbs_cli_args *a)
 {
-	return _cli_sucknews(a, 0);
+	return _cli_sucknews(a, 0, 0);
 }
 
 static int cli_suckorder(struct bbs_cli_args *a)
 {
-	return _cli_sucknews(a, 1);
+	return _cli_sucknews(a, 1, 0);
+}
+
+static int cli_sucknewsordered(struct bbs_cli_args *a)
+{
+	return _cli_sucknews(a, 1, 1);
 }
 
 /* Similar to struct artgroup, but as part of a linked list, since it's already sorted, and its contents need to be self-contained */
@@ -1725,12 +1763,12 @@ static int save_ordered_articles(struct nntp_client *nc, struct suck_feed *sf, c
 }
 
 /*! \brief Download a list of articles that are already sorted */
-static int suck_ordered(struct suck_feed *sf, FILE *fp)
+static int suck_ordered(struct suck_feed *sf, struct nntp_client *nc, FILE *fp)
 {
 	char buf[NNTP_MAX_LINE_LENGTH];
 	struct sorted_articles articles;
 	struct sorted_article *head, *lasthead;
-	struct nntp_client nc_stack, *nc = &nc_stack;
+	struct nntp_client nc_stack;
 	time_t start, end;
 	int saved = 0, pipelined = 0, lineno = 0;
 
@@ -1740,13 +1778,14 @@ static int suck_ordered(struct suck_feed *sf, FILE *fp)
 	for (; (fgets(buf, sizeof(buf), fp)); lineno++) {
 		struct sorted_article *a;
 		size_t msgidlen;
-		char *colon, *msgid, *rest = buf;
+		char *colon, *msgid, *groupart, *rest = buf;
 		msgid = strsep(&rest, " ");
-		if (strlen_zero(msgid) || strlen_zero(rest)) {
+		groupart = strsep(&rest, " ");
+		if (strlen_zero(msgid) || strlen_zero(groupart)) {
 			bbs_warning("Malformed line in article list, line %d\n", lineno);
 			continue;
 		}
-		colon = strchr(rest, ':');
+		colon = strchr(groupart, ':');
 		if (!colon) {
 			continue;
 		}
@@ -1761,7 +1800,7 @@ static int suck_ordered(struct suck_feed *sf, FILE *fp)
 			continue;
 		}
 		msgidlen = strlen(msgid);
-		a = calloc(1, sizeof(*a) + msgidlen + strlen(rest) + 2);
+		a = calloc(1, sizeof(*a) + msgidlen + strlen(groupart) + 2);
 		if (ALLOC_FAILURE(a)) {
 			bbs_warning("Malformed line in article list, line %d\n", lineno);
 			fclose(fp);
@@ -1769,7 +1808,7 @@ static int suck_ordered(struct suck_feed *sf, FILE *fp)
 		}
 		strcpy(a->data, msgid);
 		a->msgid = a->data;
-		strcpy(a->data + msgidlen + 1, rest);
+		strcpy(a->data + msgidlen + 1, groupart);
 		a->group = a->data + msgidlen + 1;
 		a->artnum = atoi(colon);
 		BBS_LIST_INSERT_TAIL(&articles, a, entry); /* Preserve order */
@@ -1786,9 +1825,12 @@ static int suck_ordered(struct suck_feed *sf, FILE *fp)
 	}
 
 	start = time(NULL);
-	memset(&nc->tcpclient, 0, sizeof(struct bbs_tcp_client));
-	if (suck_client_start(nc, sf)) {
-		goto cleanup;
+	if (!nc) {
+		nc = &nc_stack;
+		memset(&nc->tcpclient, 0, sizeof(struct bbs_tcp_client));
+		if (suck_client_start(nc, sf)) {
+			goto cleanup;
+		}
 	}
 
 	/* Now, actually download the articles, with pipelining (to the extent possible).
@@ -1823,7 +1865,7 @@ static int suck_ordered(struct suck_feed *sf, FILE *fp)
 	}
 	/* Save any final pipelined articles in the last group */
 	if (pipelined) {
-		if (save_ordered_articles(nc, sf, lasthead->group, pipelined, &saved)) {
+		if (save_ordered_articles(nc, sf, lasthead->group, pipelined, &saved) || stop_sucking) {
 			goto cleanup;
 		}
 	}
@@ -1845,7 +1887,7 @@ static void *__suck_ordered_articles(void *varg)
 	/* suck_feeds isn't locked, but sf can't be removed while sf->thread is set */
 	struct suck_feed *sf = varg;
 	FILE *fp = sf->varg;
-	suck_ordered(sf, fp);
+	suck_ordered(sf, NULL, fp);
 	sf->done = 1;
 	return NULL;
 }
@@ -2005,6 +2047,7 @@ static struct bbs_cli_entry cli_commands_nntp_suck[] = {
 	BBS_CLI_COMMAND(cli_suckgroups, "news suckgroups", 3, "Initialize newsgroups for a suck feed", "news suckgroups <name>"),
 	BBS_CLI_COMMAND(cli_suckload, "news suckload", 4, "Create new newsgroups from the file generated by 'news suckgroups'", "news suckload <name> <filepath>"),
 	BBS_CLI_COMMAND(cli_sucknews, "news sucknews", 3, "Suck news using a configured feed", "news sucknews <name>"),
+	BBS_CLI_COMMAND(cli_sucknewsordered, "news sucknewsordered", 3, "Suck news in order using a configured feed", "news sucknewsordered <name>"),
 	BBS_CLI_COMMAND(cli_suckorder, "news suckorder", 3, "Suck article order using a configured feed", "news suckorder <name>"),
 	BBS_CLI_COMMAND(cli_suckordered, "news suckordered", 4, "Suck an ordered list of articles using a configured feed", "news suckordered <name> <filepath>"),
 };

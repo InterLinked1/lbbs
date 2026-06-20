@@ -34,7 +34,8 @@ struct suck_feed {
 	pthread_t thread;
 	struct suck_patterns patterns;
 	struct bbs_url serveruri;
-	unsigned int global_ordering:1;
+	unsigned int global_ordering:1; /* Internal flag for CLI command */
+	unsigned int loadaftersort:1; /* Internal flag for CLI command */
 	unsigned int secure:1;
 	unsigned int modereader:1;
 	unsigned int starttls:1;
