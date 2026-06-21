@@ -1905,7 +1905,7 @@ static int cli_suckordered(struct bbs_cli_args *a)
 			FILE *fp;
 			/* Only one suck operation per suck feed at a time */
 			if (sf->thread && sf->done) {
-				/* Previous suck groups finished already, clean up the thread */
+				/* Previous suck operation finished already, clean up the thread */
 				bbs_pthread_join(sf->thread, NULL);
 				sf->thread = 0;
 			}
@@ -1919,10 +1919,10 @@ static int cli_suckordered(struct bbs_cli_args *a)
 			}
 			sf->varg = fp;
 			if (bbs_pthread_create(&sf->thread, NULL, __suck_ordered_articles, sf)) {
-				bbs_dprintf(a->fdout, "Failed to start sucking groups for %s\n", sf->name);
+				bbs_dprintf(a->fdout, "Failed to start sucking articles for %s\n", sf->name);
 				fclose(fp);
 			} else {
-				bbs_dprintf(a->fdout, "Started sucking groups for %s\n", sf->name);
+				bbs_dprintf(a->fdout, "Started sucking articles for %s\n", sf->name);
 			}
 			break;
 		}

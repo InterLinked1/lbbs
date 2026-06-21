@@ -3984,7 +3984,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 			/* Permanent error */
 			if (!s_strlen_zero(errbuf)) {
 				log_article(nntp, streaming, artlen, articleid, LOG_REJECT, errbuf);
-				nntp_send(nntp, RX_REJECT(nntp, streaming), "%s", errbuf)
+				nntp_send(nntp, RX_REJECT(nntp, streaming), "%s", errbuf);
 			} else {
 				nntp_rx_reply(nntp, artlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected"); /* Catch-all, but I don't think this case is possible */
 			}
@@ -4839,6 +4839,10 @@ static void handle_client(struct nntp_session *nntp)
 		if (nntp_process(nntp, &rldata, buf)) {
 			break;
 		}
+		if (nntp->node->disconnected) {
+			bbs_debug(5, "Node %d has disconnected, aborting\n", nntp->node->id);
+			break;
+		}
 	}
 }
 
@@ -4899,12 +4903,13 @@ static int load_config(void)
 
 	cfg = bbs_config_load("net_nntp.conf", 1);
 	if (!cfg) {
-		return -1;
+		return -2;
 	}
 
 	if (bbs_config_val_set_path(cfg, "general", "newsdir", newsdir, sizeof(newsdir))) {
 		bbs_config_unlock(cfg);
-		return -1;
+		bbs_error("Invalid or missing newsdir in [general], declining to load\n");
+		return -2;
 	}
 
 	/* Note: nntp_suckfeed_init needs to be initialized before the bulk of load_config() so the list is ready to receive items when processing the config
@@ -5222,6 +5227,8 @@ static int load_module(void)
 {
 	char newslogpath[512];
 	char postlogpath[512];
+	int res;
+
 	thismodule = BBS_MODULE_SELF;
 
 	RWLIST_HEAD_INIT(&acls);
@@ -5233,10 +5240,14 @@ static int load_module(void)
 	RWLIST_HEAD_INIT(&kill_patterns);
 	stringlist_init(&subscriptions);
 
-	if (load_config()) {
+	res = load_config();
+	if (res) {
+		if (res == -2) {
+			return -1; /* We didn't get around to init'ing anything so just abort directly */
+		}
 		goto cleanup;
 	}
-	/* Since load_config returns 0 if no config, do this check here instead of in load_config: */
+
 	if (!nntp_enabled && !nntps_enabled && !nnsp_enabled) {
 		bbs_debug(3, "Neither NNTP nor NNTPS nor NNSP is enabled, declining to load\n");
 		goto cleanup; /* Nothing is enabled */

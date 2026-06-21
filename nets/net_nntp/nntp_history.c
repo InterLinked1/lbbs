@@ -562,7 +562,7 @@ int history_messageid_exists(const char *messageid)
 	return found;
 }
 
-int history_find_article_by_messageid(const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum)
+int history_find_article_by_messageid(struct nntp_session *nntp, const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum)
 {
 	int found = 0;
 	char buf[NNTP_BUFSIZ];
@@ -606,16 +606,21 @@ int history_find_article_by_messageid(const char *messageid, const char *prefgro
 				bbs_warning("History file %s corrupted (line %d) '%s' '%s'\n", history_file, line, grp, artnumstr);
 				continue;
 			}
+			/* It's possible the user is authorized for only some (or none) of the groups in which this article was posted,
+			 * so skip ineligible groups. */
+			if (!ACL_ALLOWED_LOCKED(nntp, grp, NNTP_ACL_READ)) {
+				continue;
+			}
 			/* If !prefgroup, we don't care, just pick the first one.
 			 * If we do, we'll prefer the group if it exists in the list.
 			 * If we get to the end and there weren't any matches, use the last one. */
 			if (!prefgroup || !strcmp(grp, prefgroup) || strlen_zero(restofline)) {
 				safe_strncpy(group, grp, len);
 				*artnum = atoi(artnumstr);
+				found = 1;
 				break;
 			}
 		}
-		found = 1;
 		break;
 	}
 	/* When we're done, seek back to the end of the file for appends */

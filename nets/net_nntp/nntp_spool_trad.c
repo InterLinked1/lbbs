@@ -780,7 +780,7 @@ static int tradspool_group_overview_full(struct nntp_session *nntp, enum overvie
 		/* First, we need to find some group that contains this article.
 		 * (Preferably groupname, if it's non NULL and the article exists in that group.) */
 		/* If we just have a Message-ID, we need to scan the history file to find a link to the message */
-		if (history_find_article_by_messageid(messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum)) {
+		if (history_find_article_by_messageid(nntp, messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum)) {
 			return 1; /* No such article */
 		}
 		if (build_overview_path(eff_group, overviewfile, sizeof(overviewfile))) {
@@ -1327,7 +1327,7 @@ int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, con
 		char eff_group[NNTP_BUFSIZ];
 		int eff_artnum;
 		/* Scan the history file for any messages matching this Message-ID */
-		if (!history_find_article_by_messageid(messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum)) {
+		if (!history_find_article_by_messageid(nntp, messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum)) {
 			if (!nntp->currentgroup || strcmp(nntp->currentgroup, eff_group)) {
 				eff_artnum = 0;
 			}
@@ -1366,7 +1366,10 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 	/* First, find the article, if it even exists */
 	if (messageid) {
 		/* If we just have a Message-ID, we need to scan the history file to find a link to the message */
-		res = history_find_article_by_messageid(messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum);
+		res = history_find_article_by_messageid(nntp, messageid, groupname, eff_group, sizeof(eff_group), &eff_artnum);
+		if (res) {
+			return 1;
+		}
 		if (!res) {
 			res = build_group_article_path(eff_group, eff_artnum, artpath, sizeof(artpath), &is_compressed);
 			/* If article is not in this group, we MUST send an article number of 0 */

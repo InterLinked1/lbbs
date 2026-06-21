@@ -53,6 +53,7 @@ int history_messageid_exists(const char *messageid);
 
 /*!
  * \brief Find an article by Message-ID
+ * \param nntp
  * \param[in] messageid Message-ID used for searching
  * \param[in] prefgroup The currently selected group, if one is selected. If the article exists in this group, returned info will be based on this group.
  * \param[out] group Some group which contains this article, if found. If the article exists in prefgroup, this will be prefgroup.
@@ -60,7 +61,7 @@ int history_messageid_exists(const char *messageid);
  * \param[out] artnum The article number in group
  * \retval 0 on success
  * \retval -1 on error
- * \retval 1 no such article found
+ * \retval 1 no such article found (or user not authorized to access it)
  * \note This will return 0 for message IDs present in history if the associated article is no longer present in any groups
  */
-int history_find_article_by_messageid(const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum);
+int history_find_article_by_messageid(struct nntp_session *nntp, const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum);

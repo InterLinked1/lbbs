@@ -2687,6 +2687,9 @@ static ssize_t __node_write_any(struct bbs_node *node, int fd, const char *buf, 
 
 	res = full_write(node, &pfd, fd, buf, len);
 	if (res <= 0) {
+		if (res == -1 && errno == EPIPE && fd == node->wfd) {
+			node->disconnected = 1;
+		}
 		bbs_debug(5, "fd %d: write returned %ld: %s\n", fd, res, res ? strerror(errno) : "");
 	}
 	return res;

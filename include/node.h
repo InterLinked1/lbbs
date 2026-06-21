@@ -73,6 +73,7 @@ struct bbs_node {
 	unsigned int speed;			/*!< Pause time for emulated terminal speed, in us */
 	/* Node flags */
 	unsigned int active:1;		/*!< Active or not */
+	unsigned int disconnected:1;	/*!< I/O disconnected, should exit */
 	unsigned int buffered:1;	/*!< TTY currently buffered */
 	unsigned int echo:1;		/*!< TTY echo enabled */
 	unsigned int interrupt:1;	/*!< Interrupt request active */
