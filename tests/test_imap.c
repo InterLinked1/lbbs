@@ -384,6 +384,25 @@ static int run(void)
 	SWRITE(client1, "a33b UID SEARCH UNDELETED (OR (OR (OR FROM \"John Smith\" OR TO \"John Smith\" HEADER CC \"John Smith\") SUBJECT \"John Smith\") BODY \"John Smith\")" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "a33b OK UID SEARCH");
 
+	SWRITE(client1, "a33c APPEND INBOX (\\Seen) {360}" ENDL); /* includes the length of TEST_EMAIL */
+	CLIENT_EXPECT(client1, "+");
+	SWRITE(client1, "Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)" ENDL);
+	SWRITE(client1, "From: " TEST_EMAIL ENDL); /* Must be from ourself */
+	SWRITE(client1, "Subject: afternoon meeting" ENDL);
+	SWRITE(client1, "To: mooch@owatagu.siam.edu.example" ENDL);
+	SWRITE(client1, "List-Id: \"foo bar\"" ENDL); /* 20 bytes */
+	SWRITE(client1, "\t<foo.bar@lists.example.com>" ENDL); /* 30 bytes */
+	SWRITE(client1, "Message-Id: <B27397-0100000@Blurdybloop.example>" ENDL);
+	SWRITE(client1, "MIME-Version: 1.0" ENDL);
+	SWRITE(client1, "Content-Type: TEXT/PLAIN; CHARSET=US-ASCII" ENDL);
+	SWRITE(client1, ENDL);
+	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
+	SWRITE(client1, ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, " 16] APPEND"); /* The UID of this message should be 1; this is the first test that uses the Sent folder. */
+
+	SWRITE(client1, "a33d UID SEARCH HEADER List-Id foo.bar@lists.example.com" ENDL);
+	CLIENT_EXPECT(client1, "* SEARCH 16");
+
 	/* Keywords (custom flags) */
 	SWRITE(client1, "a34 STORE 1 +FLAGS ($label1)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label1");

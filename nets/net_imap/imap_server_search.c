@@ -447,6 +447,7 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 			 * to use it we would need to remove any intermediate quotes while keeping outer quotes intact.
 			 * "Cc" "Tom" -> "Cc Tom"
 			 * CC "Tom" -> "CC Tom"
+			 * CC Tom -> CC Tom
 			 *
 			 * This last case is more troublesome, since we would need to add a quote.
 			 * As such, we handle HEADER specially without using SEARCH_PARSE_STRING
@@ -472,24 +473,31 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 			/* Strip opening quotes for header value, if present */
 			hdrval = strchr(tmp, '"');
 			/* There should be a "" for empty arg2, but the quotes should still be there */
-			if (!hdrval) {
-				bbs_client_err("Missing opening quote for HEADER arg2\n");
-				return -1;
-			}
-			*hdrval = ' ';
-			next = strchr(hdrval, '"');
-			if (next) {
-				*next = '\0';
-				*s = next + 1;
+			if (hdrval) {
+				*hdrval = ' ';
+				next = strchr(hdrval, '"');
+				if (next) {
+					*next = '\0';
+					*s = next + 1;
+				} else {
+					*s = NULL;
+				}
+				if (*origbegin != '"') {
+					/* This is the case where the header name is not quoted but the header value is,
+					 * e.g. CC "Tom"
+					 * It is now Cc  Tom
+					 * Now that it's null-terminated, we need to remove the duplicate space in the middle separating the header name/value. */
+					memmove(hdrval, hdrval + 1, strlen(hdrval + 1) + 1); /* Shift the remainder of the string, including the NUL, forward one so there's only one space */
+				}
 			} else {
-				*s = NULL;
-			}
-			if (*origbegin != '"') {
-				/* This is the case where the header name is not quoted but the header value is,
-				 * e.g. CC "Tom"
-				 * It is now Cc  Tom
-				 * Now that it's null-terminated, we need to remove the duplicate space in the middle separating the header name/value. */
-				memmove(hdrval, hdrval + 1, strlen(hdrval + 1) + 1); /* Shift the remainder of the string, including the NUL, forward one so there's only one space */
+				/* arg2 not quoted */
+				tmp = strchr(tmp, ' ');
+				if (tmp) {
+					*tmp = '\0';
+					*s = tmp + 1;
+				} else {
+					*s = NULL;
+				}
 			}
 			nk = imap_search_add(skeys, IMAP_SEARCH_HEADER);
 			if (!nk) {
@@ -650,6 +658,7 @@ static int search_header(struct imap_search *search, const char *header, size_t 
 {
 	char linebuf[1001];
 	char *pos;
+	int in_matching_header = 0;
 
 	if (!search->fp) {
 		char buf[512];
@@ -667,15 +676,23 @@ static int search_header(struct imap_search *search, const char *header, size_t 
 	bbs_debug(8, "Searching %s header %.*s for %s\n", search->filename, (int) headerlen, header, S_IF(value));
 #endif
 
+	/* Process multi-line headers.
+	 * XXX Going line by line should work as long as the value we're searching for isn't split across multiple lines */
 	while ((fgets(linebuf, sizeof(linebuf), search->fp))) {
 		/* fgets does store the newline, so line should end in CR LF */
 		if (!strcmp(linebuf, "\r\n")) {
 			break; /* End of headers */
 		}
-		if (strncasecmp(linebuf, header, headerlen)) {
-			continue; /* Not the right header */
+		if (linebuf[0] == '\t' || linebuf[0] == ' ') {
+			/* Continuation of previous header */
+			pos = linebuf + 1;
+		} else {
+			in_matching_header = !strncasecmp(linebuf, header, headerlen);
+			pos = linebuf + headerlen;
 		}
-		pos = linebuf + headerlen;
+		if (!in_matching_header) {
+			continue;
+		}
 		if (strlen_zero(value)) {
 			return 1; /* Header exists (no value to search for), and that's all we care about */
 		}
