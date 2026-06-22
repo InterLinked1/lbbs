@@ -90,7 +90,7 @@ static void process_capabilities(int *restrict caps, size_t *restrict maxsendsiz
 			}
 		}
 	} else if (!strcasecmp(capname, "CHUNKING") || !strcasecmp(capname, "SMTPUTF8") || !strcasecmp(capname, "BINARYMIME")
-		|| !strcasecmp(capname, "VRFY") || !strcasecmp(capname, "ETRN") || !strcasecmp(capname, "DSN") || !strcasecmp(capname, "HELP")) {
+		|| !strcasecmp(capname, "VRFY") || !strcasecmp(capname, "ETRN") || !strcasecmp(capname, "DSN") || !strcasecmp(capname, "DELIVERBY") || !strcasecmp(capname, "HELP")) {
 		/* Don't care about */
 	} else if (!strcmp(capname, "PIPECONNECT")) {
 		/* Don't care about, at the moment, but could be used in the future to optimize:

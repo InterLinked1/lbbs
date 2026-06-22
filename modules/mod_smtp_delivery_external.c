@@ -1988,7 +1988,7 @@ static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, v
 		snprintf(msgsizebuf, sizeof(msgsizebuf), "%lu%s", msgsize, "M");
 	}
 	/* If delivery has never been attempted, mqf->retries is 0. However, 1-index it in the queue (i.e. the queued file is attempt #1). */
-	bbs_dprintf(qrun->clifd, "%-18s %3d %-20s %-20s %-20s %4s %s -> %s\n",
+	bbs_dprintf(qrun->clifd, "%-25s %3d %-20s %-20s %-20s %4s %s -> %s\n",
 		filename, mqf->retries + 1, arrival_date, retry_date, next_retry_date, msgsizebuf,
 		S_OR(mqf->realfrom, "<>"), mqf->realto);
 	mqf_file_cleanup(mqf);
@@ -2015,8 +2015,7 @@ static int cli_mailq(struct bbs_cli_args *a)
 			qrun.host_ends_with = a->argv[1];
 		}
 	}
-
-	bbs_dprintf(a->fdout, "%-18s %3s %-20s %-20s %-20s %4s %s\n", "ControlFile", "Try", "Orig Date", "Last Retry", "Est. Next Retry", "Size", "Sender -> Recipient");
+	bbs_dprintf(a->fdout, "%-25s %3s %-20s %-20s %-20s %4s %s\n", "ControlFile", "Try", "Orig Date", "Last Retry", "Est. Next Retry", "Size", "Sender -> Recipient");
 	run_queue(&qrun, on_queue_file_cli_mailq);
 	bbs_dprintf(a->fdout, "%d message%s currently in mail queue\n", qrun.total, ESS(qrun.total));
 	mailq_run_cleanup(&qrun);

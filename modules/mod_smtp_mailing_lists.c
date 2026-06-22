@@ -491,10 +491,12 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 	fprintf(fp, "\r\n"); /* Finish headers */
 	fflush(fp);
 	body_bytes = (int) origlen - consumed;
-	res = bbs_copy_file(srcfd, fileno(fp), consumed, body_bytes);
-	if (res != body_bytes) {
-		bbs_error("Failed to write %d bytes, only wrote %lu\n", body_bytes, res);
-		return -1;
+	if (body_bytes) { /* If there is no body, there is nothing else to copy */
+		res = bbs_copy_file(srcfd, fileno(fp), consumed, body_bytes);
+		if (res != body_bytes) {
+			bbs_error("Failed to write %d bytes, only wrote %ld\n", body_bytes, res);
+			return -1;
+		}
 	}
 
 	fseek(fp, 0, SEEK_END);
