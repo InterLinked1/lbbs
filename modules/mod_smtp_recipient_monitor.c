@@ -62,8 +62,8 @@ static RWLIST_HEAD_STATIC(deferred_attempts, deferred_attempt);
 static int processor(struct smtp_msg_process *mproc)
 {
 	char fullfile[265];
-	char line[1024] = "";
-	char buf[1024];
+	char line[8192] = "";
+	char buf[8192];
 	char *linebuf = line;
 	const char *s;
 	char *s2;

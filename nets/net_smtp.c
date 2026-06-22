@@ -69,9 +69,10 @@
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
 
-#define MAX_RECIPIENTS 100
-#define MAX_LOCAL_RECIPIENTS 100
-#define MAX_EXTERNAL_RECIPIENTS 10
+#define MAX_RECIPIENTS 750
+#define MAX_LOCAL_RECIPIENTS MAX_RECIPIENTS
+
+static int max_external_recipients = 50;
 
 /* Loop avoidance */
 #define MAX_HOPS 100 /* RFC 5321 6.3 */
@@ -1417,7 +1418,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	 * Therefore these modules cannot unregister until we're done with that. */
 	RWLIST_UNLOCK(&handlers);
 
-	if (smtp->tflags.numlocalrecipients >= MAX_LOCAL_RECIPIENTS || smtp->tflags.numexternalrecipients >= MAX_EXTERNAL_RECIPIENTS || smtp->tflags.numrecipients >= MAX_RECIPIENTS) {
+	if (smtp->tflags.numlocalrecipients >= MAX_LOCAL_RECIPIENTS || smtp->tflags.numexternalrecipients >= max_external_recipients || smtp->tflags.numrecipients >= MAX_RECIPIENTS) {
 		smtp_reply(smtp, 452, 4.5.3, "Your message has too many recipients");
 		return 0;
 	}
@@ -4014,6 +4015,15 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "relayin", &accept_relay_in);
 	bbs_config_val_set_true(cfg, "general", "trust_local_submissions", &trust_local_submissions);
 	bbs_config_val_set_uint(cfg, "general", "maxsize", &max_message_size);
+	if (!bbs_config_val_set_int(cfg, "general", "maxexternalrecipients", &max_external_recipients)) {
+		if (max_external_recipients < 0) {
+			bbs_warning("maxexternalrecipients floored to %d\n", 0);
+			max_external_recipients = 0;
+		} else if (max_external_recipients > MAX_RECIPIENTS) {
+			bbs_warning("maxexternalrecipients capped to %d\n", MAX_RECIPIENTS);
+			max_external_recipients = MAX_RECIPIENTS;
+		}
+	}
 	if (!bbs_config_val_set_uint(cfg, "general", "maxhops", &max_hops)) {
 		if (max_hops > MAX_HOPS) {
 			bbs_warning("Maximum possible value for setting 'maxhops' is %d\n", MAX_HOPS);
