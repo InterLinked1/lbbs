@@ -26,6 +26,7 @@
 #define NNTP_MAX_LINE_LENGTH 512 /* RFC 3977 3.1. Includes CR LF (but not NUL) */
 #define NNTP_MAX_ARG_LENGTH 497 /* RFC 3977 3.1 */
 #define NNTP_BUFSIZ (NNTP_MAX_ARG_LENGTH + 1) /* For things like group names, etc. where we don't have any better official limitation to adhere to */
+#define NNTP_LARGE_WILDMAT_BUFSIZ 4096
 
 /* 2^31-1 */
 #define NNTP_MAX_ARTICLE_NUMBER 2147483647

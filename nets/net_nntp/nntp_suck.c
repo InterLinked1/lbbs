@@ -53,6 +53,7 @@ struct upstream_group {
 	/* Don't care about upstream creator */
 	/* Don't care about upstream creation time */
 	char *description;
+	char disqualreason;
 	int low; /* Low water mark */
 	int high; /* High water mark */
 	int count; /* # of articles in group */
@@ -438,7 +439,21 @@ static int explicitly_want_group(struct suck_feed *sf, const char *name)
 	BBS_LIST_TRAVERSE(&sf->groups, sp, entry) {
 		int res;
 		if (strchr(sp->pattern, '*')) {
-			continue; /* Skip expressions with wildcards */
+			size_t namelen;
+			const char *s = strstr(sp->pattern, name);
+			if (!s) {
+				continue; /* Skip expressions with wildcards */
+			}
+			/* Group might be explicitly mentioned, but another pattern might have a wildcard.
+			 * Check if the group we want is in the pattern. */
+			namelen = strlen(name);
+			if (s > sp->pattern && s[-1] != ',') {
+				continue; /* Was a suffix of another group */
+			}
+			s += namelen;
+			if (s && *s != ',') {
+				continue; /* Was a prefix of another group */
+			}
 		}
 		res = uwildmat_poison(name, sp->pattern);
 		if (res == -1) {
@@ -472,6 +487,7 @@ static void grpfilter_nonlocal(struct suck_feed *sf, int *restrict retained, str
 		/* This is the first exclusion so no technically need to skip groups with excluded bit set, there aren't any */
 		if (!g->excluded && !group_exists(g->name)) {
 			g->excluded = 1;
+			g->disqualreason = 'J';
 			*retained -= 1;
 		}
 	}
@@ -485,6 +501,7 @@ static void grpfilter_pattern_unwanted(struct suck_feed *sf, int *restrict retai
 		 * The first match (poison or otherwise) gets used. */
 		if (!g->excluded && !want_group_name(sf, g->name)) {
 			g->excluded = 1;
+			g->disqualreason = 'P';
 			*retained -= 1;
 		}
 	}
@@ -497,6 +514,7 @@ static void grpfilter_pattern_explicitly_wanted(struct suck_feed *sf, int *restr
 		/* This is sort of the inverse of other filters */
 		if (g->excluded && explicitly_want_group(sf, g->name)) {
 			g->excluded = 0;
+			g->disqualreason = '+'; /* Even though it's being kept, indicate that it was excluded, and we explicitly kept it */
 			*retained += 1;
 		}
 	}
@@ -510,6 +528,7 @@ static void grpfilter_mincount(struct suck_feed *sf, int *restrict retained, str
 		 * Getting the actual article count at this point though would not be very efficient. */
 		if (!g->excluded && g->count < sf->mincount) {
 			g->excluded = 1;
+			g->disqualreason = 'C';
 			*retained -= 1;
 		}
 	}
@@ -521,6 +540,7 @@ static void grpfilter_minlow(struct suck_feed *sf, int *restrict retained, struc
 	BBS_LIST_TRAVERSE(grps, g, entry) {
 		if (!g->excluded && g->low < sf->minlow) {
 			g->excluded = 1;
+			g->disqualreason = 'L';
 			*retained -= 1;
 		}
 	}
@@ -533,6 +553,7 @@ static void grpfilter_maxactivity(struct suck_feed *sf, int *restrict retained, 
 	BBS_LIST_TRAVERSE(grps, g, entry) {
 		if (!g->excluded && g->latestarticledate && g->latestarticledate < cutoff) {
 			g->excluded = 1;
+			g->disqualreason = 'A';
 			*retained -= 1;
 		}
 	}
@@ -545,6 +566,7 @@ static void grpfilter_cancellations(struct suck_feed *sf, int *restrict retained
 	BBS_LIST_TRAVERSE(grps, g, entry) {
 		if (!g->excluded && !g->latestarticledate) {
 			g->excluded = 1;
+			g->disqualreason = 'C';
 			*retained -= 1;
 		}
 	}
@@ -578,7 +600,8 @@ static void generate_report(struct upstream_groups *grps, time_t start, int allg
 	}
 	BBS_LIST_TRAVERSE(grps, g, entry) {
 		/* Not all groups may have a description (LIST NEWSGROUPS may be missing groups in LIST ACTIVE) */
-		fprintf(fp, "%d %s %d %d %d %s%s%s\n", !g->excluded, g->name, g->high, g->low, g->count, g->status, g->description ? " " : "", S_IF(g->description));
+		fprintf(fp, "%d %s %d %d %d %s %c%s%s\n", !g->excluded, g->name, g->high, g->low, g->count, g->status,
+			g->disqualreason ? g->disqualreason : '-', g->description ? " " : "", S_IF(g->description));
 		if (!g->excluded) {
 			overall_count += g->count;
 		}
@@ -1978,6 +2001,7 @@ static int suck_load_groups(struct suck_feed *sf, FILE *fp)
 		strsep(&tmp, " "); /* count */
 		bbs_term_line(tmp);
 		status = strsep(&tmp, " "); /* status */
+		strsep(&tmp, " "); /* reason for disqualification, if disqualified */
 		description = tmp; /* description */
 		if (strlen_zero(grp) || strlen_zero(status)) {
 			bbs_warning("Malformed input file, skipping line %d\n", lineno);

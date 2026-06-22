@@ -1080,7 +1080,7 @@ static int add_site(const char *key, const char *value)
 {
 	struct site *site;
 	char keybuf[NNTP_MAX_LINE_LENGTH];
-	char valbuf[NNTP_MAX_LINE_LENGTH];
+	char valbuf[NNTP_LARGE_WILDMAT_BUFSIZ];
 	char *k, *v, *data;
 	char *name, *exclusions;
 	char *groups, *flags, *args;

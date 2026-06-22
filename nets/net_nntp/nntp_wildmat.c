@@ -150,11 +150,19 @@ static int wildmat_pattern_match(const char *text, const char *p)
 /*! \brief Check for match for a whole wildmat */
 static int match_expr(const char *text, const char *patterns, int allow_poison)
 {
-	char buf[1024];
+	char buf[NNTP_LARGE_WILDMAT_BUFSIZ]; /* Should be long enough for fairly long wildmat expressions */
 	char *p, *s = buf;
+	size_t len;
 	int match = 0, poisoned = 0;
 
-	safe_strncpy(buf, patterns, sizeof(buf));
+	len = (size_t) snprintf(buf, sizeof(buf), "%s", patterns);
+	if (len >= sizeof(buf)) {
+		/*!\ todo We could dynamically allocate memory if this happens, but considering this is a hot path,
+		 * we really, really, really don't want to be doing that.
+		 * INN's version of this function also takes a length so it doesn't need to duplicate the string first,
+		 * and that would be the better modification to make. */
+		bbs_warning("Buffer truncation occured with expression '%s'\n", patterns);
+	}
 
 	/* The grammar described in RFC 3977 4.1 can be somewhat confusing, as it refers to wildmats and wildmat patterns.
 	 *
