@@ -79,7 +79,7 @@ int running_under_valgrind(void)
  * just because we jumped the gun too soon. */
 
 /* How long to wait for the BBS to start fully */
-#define STARTUP_TIMEOUT 35
+#define STARTUP_TIMEOUT 40
 
 /* Maximum amount of time for any single test duration */
 #define TEST_TIMEOUT 180

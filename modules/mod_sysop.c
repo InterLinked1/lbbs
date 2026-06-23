@@ -580,8 +580,10 @@ awaitcmd:
 						} else {
 							cmdbuf[bytes_read] = '\0'; /* Safe, since size - 1 above */
 							bbs_term_line(cmdbuf);
-							/* Save in history */
-							bbs_history_add(cmdbuf);
+							if (console->interactive) {
+								/* Save in history */
+								bbs_history_add(cmdbuf);
+							}
 							res = sysop_command(console, cmdbuf);
 						}
 					}
