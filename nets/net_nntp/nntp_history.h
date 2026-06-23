@@ -65,3 +65,12 @@ int history_messageid_exists(const char *messageid);
  * \note This will return 0 for message IDs present in history if the associated article is no longer present in any groups
  */
 int history_find_article_by_messageid(struct nntp_session *nntp, const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum);
+
+struct bloom_filter;
+
+/*!
+ * \brief Initialize a Bloom filter with all the Message-IDs in the history file
+ * \param[out] bf
+ * \retval 0 on success, -1 on failure
+ */
+int history_bloom_init(struct bloom_filter *bf);

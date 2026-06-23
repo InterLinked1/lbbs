@@ -29,6 +29,14 @@ extern int startup_run_unit_tests;
 static int pre(void)
 {
 	startup_run_unit_tests = 1;
+
+	/* This may needed to allow some mail and netnews related modules to load so their tests can also be run */
+	TEST_ADD_CONFIG("mod_mail.conf");
+	TEST_ADD_CONFIG("net_smtp.conf");
+	TEST_ADD_CONFIG("net_imap.conf");
+	TEST_RESET_MKDIR(TEST_MAIL_DIR);
+	TEST_RESET_MKDIR(TEST_NEWS_DIR);
+
 	test_autoload_all(); /* Load everything since multiple modules contain unit tests */
 	return 0;
 }
@@ -37,7 +45,7 @@ static int run(void)
 {
 	/* Unit tests are typically fast, so shouldn't take very long to execute them all.
 	 * mod_test_backtrace can take a moment under valgrind though, so add some time for that one. */
-	int res = test_bbs_expect(COLOR(COLOR_SUCCESS) "100%" COLOR_RESET, SEC_MS(30));
+	int res = test_bbs_expect(COLOR(COLOR_SUCCESS) "100%" COLOR_RESET, SEC_MS(45));
 	if (res) {
 		bbs_error("Failed to receive expected output\n");
 	}

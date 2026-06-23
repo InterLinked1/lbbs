@@ -20,21 +20,45 @@
 #include "include/node.h"
 #include "include/utils.h"
 #include "include/stringlist.h"
+#include "include/test.h"
 
 #include "nntp.h"
 #include "nntp_history.h"
+#include "nntp_bloom.h"
 
 /* Uncomment for additional debug messages when articles are expired */
 /* #define DEBUG_EXPIRE */
 
 extern int min_history;
 extern int nntp_unloading;
+extern void *thismodule;
 
 /* Each thread opens a group's overview file for reading/writing, so multiple readers can operate simultaneously */
 static bbs_mutex_t histlock;
 
 static char history_file[sizeof(newsdir) + STRLEN("/history")] = "";
 static FILE *histfp;
+
+#define REQUIRE_HISTORY_FP(histfp) \
+	if (unlikely(histfp == NULL)) { \
+		bbs_mutex_unlock(&histlock); \
+		bbs_error("History operation failed (history file not open)\n"); \
+		return -1; \
+	}
+
+/* Seek to the beginning of the file or abort */
+#define REWIND_HISTORY(histfp) \
+	if (fseek(histfp, 0, SEEK_SET)) { \
+		bbs_error("fseek failed: %s\n", strerror(errno)); \
+		bbs_mutex_unlock(&histlock); \
+		return -1; \
+	}
+
+/* Seek to the end of the file */
+#define SEEK_END_HISTORY(histfp) \
+	if (fseek(histfp, 0, SEEK_END)) { \
+		bbs_error("fseek failed: %s\n", strerror(errno)); \
+	}
 
 /*! \brief Group expiration settings */
 struct retention_pattern {
@@ -127,6 +151,126 @@ int history_add_retention_pattern(const char *key, const char *value)
 	return 0;
 }
 
+/* The number of iterations is kept small so that the test completes in a reasonable time when run under valgrind.
+ * NUM_ITERATIONS of 4194304 takes about 5 seconds normally but almost a minute under valgrind. */
+#define NUM_ITERATIONS 1572864
+
+static inline int is_in_set(int x)
+{
+	/* All low number articles exist, all high number articles don't, and most in the middle do */
+	if (x < (3 * (NUM_ITERATIONS / 10))) {
+		return 1;
+	}
+	if (x > (9 * (NUM_ITERATIONS / 10))) {
+		return 0;
+	}
+	return x % 13 ? 1 : 0;
+}
+
+static int test_bloom_filter(void)
+{
+	struct bloom_filter bf;
+	int i;
+	int false_positives = 0, true_positives = 0, true_negatives = 0;
+	char buf[128];
+
+	if (bloom_filter_autoinit(&bf, NUM_ITERATIONS)) {
+		return -1;
+	}
+
+	for (i = 0; i < NUM_ITERATIONS; i++) {
+		int len = snprintf(buf, sizeof(buf), "<bloom-%d@example.com>", i);
+		if (is_in_set(i)) {
+			bloom_filter_add(&bf, buf, len);
+		}
+	}
+
+	for (i = 0; i < NUM_ITERATIONS; i++) {
+		int len = snprintf(buf, sizeof(buf), "<bloom-%d@example.com>", i);
+		int in_set = bloom_filter_contains(&bf, buf, len);
+		if (in_set) {
+			/* If Bloom filter says yes, it's probably in the set */
+			if (is_in_set(i)) {
+				true_positives++;
+			} else {
+				false_positives++;
+			}
+		} else {
+			/* If Bloom filter says no, it must not be in the set */
+			bbs_test_assert_equals(in_set, is_in_set(i));
+			true_negatives++;
+		}
+	}
+	bloom_filter_destroy(&bf);
+	/* Since this is a deterministic test, we know what the results will be (Bloom filter is actually good enough to not have any false positive matches) */
+	if (false_positives) {
+		bbs_warning("%d false positive%s, %d true positives, %d true negatives\n", false_positives, ESS(false_positives), true_positives, true_negatives);
+		goto cleanup;
+	}
+	bbs_debug(3, "%d false positive%s, %d true positives, %d true negatives\n", false_positives, ESS(false_positives), true_positives, true_negatives);
+	return 0;
+
+cleanup:
+	bloom_filter_destroy(&bf);
+	return -1;
+}
+
+static struct bbs_unit_test tests[] =
+{
+	{ "Bloom Filter", test_bloom_filter },
+};
+
+static int _history_bloom_init(struct bloom_filter *bf, size_t maxsize, unsigned long fp_inv)
+{
+	char buf[NNTP_BUFSIZ];
+	int res, line = 0;
+	size_t hist_entries = 0;
+
+	bbs_mutex_lock(&histlock);
+	REQUIRE_HISTORY_FP(histfp);
+	REWIND_HISTORY(histfp);
+	while ((fgets(buf, sizeof(buf), histfp))) {
+		hist_entries++;
+	}
+	if (maxsize && fp_inv) {
+		size_t bytes = bloom_filter_size(hist_entries, bloom_filter_bpe(hist_entries, fp_inv));
+		if (bytes > maxsize) {
+			bbs_debug(5, "Not building global Bloom filter (would take %lu B)\n", bytes);
+			SEEK_END_HISTORY(histfp);
+			bbs_mutex_unlock(&histlock);
+			return -1;
+		}
+		res = bloom_filter_init(bf, hist_entries, fp_inv);
+	} else {
+		res = bloom_filter_autoinit(bf, hist_entries);
+	}
+	if (res) {
+		SEEK_END_HISTORY(histfp);
+		bbs_mutex_unlock(&histlock);
+		return -1;
+	}
+	REWIND_HISTORY(histfp);
+	while ((fgets(buf, sizeof(buf), histfp))) {
+		char *msgid, *s = buf;
+		msgid = strsep(&s, "\t");
+		line++;
+		if (!msgid) {
+			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+			continue;
+		}
+		bloom_filter_add(bf, msgid, (int) strlen(msgid));
+	}
+	/* When we're done, seek back to the end of the file for appends */
+	SEEK_END_HISTORY(histfp);
+	bbs_mutex_unlock(&histlock);
+	return 0;
+}
+
+int history_bloom_init(struct bloom_filter *bf)
+{
+	return _history_bloom_init(bf, 0, 0);
+}
+
 int history_init(void)
 {
 	bbs_mutex_init(&histlock, NULL);
@@ -140,7 +284,8 @@ int history_init(void)
 		bbs_error("Failed to open %s: %s\n", history_file, strerror(errno));
 		return -1;
 	}
-	
+
+	__bbs_register_tests(tests, ARRAY_LEN(tests), thismodule);
 	return 0;
 }
 
@@ -152,6 +297,8 @@ void history_cleanup(void)
 		histfp = NULL;
 	}
 
+	__bbs_unregister_tests(tests, ARRAY_LEN(tests));
+
 	/* Lock and unlock to ensure that all expire operations have finished */
 	bbs_mutex_lock(&histlock);
 	bbs_mutex_unlock(&histlock);
@@ -159,13 +306,6 @@ void history_cleanup(void)
 	bbs_mutex_destroy(&histlock);
 	RWLIST_WRLOCK_REMOVE_ALL(&retention_patterns, entry, free);
 }
-
-#define REQUIRE_HISTORY_FP(histfp) \
-	if (unlikely(histfp == NULL)) { \
-		bbs_mutex_unlock(&histlock); \
-		bbs_error("History operation failed (history file not open)\n"); \
-		return -1; \
-	}
 
 static inline int expire_article(const char *group, int artnum)
 {
@@ -256,14 +396,6 @@ static inline int should_expire_article(const char *group, time_t now, time_t ar
 	EXPIRE_DEBUG(7, "Expires header says to %s for %s\n", res ? "expire" : "keep", group);
 	return res;
 }
-
-/* Seek to the beginning of the file */
-#define REWIND_HISTORY(histfp) \
-	if (fseek(histfp, 0, SEEK_SET)) { \
-		bbs_error("fseek failed: %s\n", strerror(errno)); \
-		bbs_mutex_unlock(&histlock); \
-		return -1; \
-	}
 
 int history_expire(const char *pattern)
 {
@@ -445,9 +577,7 @@ dokeep:
 			total_removed = -1;
 		}
 		/* Seek back to end for appends */
-		if (fseek(histfp, 0, SEEK_END)) {
-			bbs_error("fseek failed: %s\n", strerror(errno));
-		}
+		SEEK_END_HISTORY(histfp);
 	} else {
 		unlink(template); /* Discard new history file without swapping it in, nothing changed */
 	}
@@ -524,9 +654,7 @@ int history_newnews(struct nntp_session *nntp, const char *wildmat, time_t newer
 		}
 	}
 	/* When we're done, seek back to the end of the file for appends */
-	if (fseek(histfp, 0, SEEK_END)) {
-		bbs_error("fseek failed: %s\n", strerror(errno));
-	}
+	SEEK_END_HISTORY(histfp);
 	bbs_mutex_unlock(&histlock);
 	_nntp_send(nntp, ".\r\n");
 	return 0;
@@ -555,9 +683,7 @@ int history_messageid_exists(const char *messageid)
 		}
 	}
 	/* When we're done, seek back to the end of the file for appends */
-	if (fseek(histfp, 0, SEEK_END)) {
-		bbs_error("fseek failed: %s\n", strerror(errno));
-	}
+	SEEK_END_HISTORY(histfp);
 	bbs_mutex_unlock(&histlock);
 	return found;
 }
@@ -624,9 +750,7 @@ int history_find_article_by_messageid(struct nntp_session *nntp, const char *mes
 		break;
 	}
 	/* When we're done, seek back to the end of the file for appends */
-	if (fseek(histfp, 0, SEEK_END)) {
-		bbs_error("fseek failed: %s\n", strerror(errno));
-	}
+	SEEK_END_HISTORY(histfp);
 	bbs_mutex_unlock(&histlock);
 	return found ? 0 : 1;
 }

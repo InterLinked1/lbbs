@@ -91,7 +91,7 @@ static int nnsp_port = DEFAULT_NNSP_PORT;
 
 static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
 int nntp_unloading = 0; /* Used extern by nntp_feed_nntp.c and nntp_history.c */
-void *thismodule; /* Used extern by nntp_suck.c */
+void *thismodule; /* Used extern by nntp_suck.c, nntp_history.c */
 
 static bbs_rwlock_t nntp_lock;
 static FILE *newslog;

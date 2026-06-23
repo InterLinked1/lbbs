@@ -58,9 +58,10 @@ net_imap.so : net_imap.o $(IMAP_OBJ)
 net_nntp/%.o: nntp_subtargets $(NNTP_SRC)
 	@+$(SUBMAKE) --no-builtin-rules -C net_nntp $(basename $(notdir $@)).o
 
+# nntp_bloom.c needs -lm for math.h
 net_nntp.so : net_nntp.o $(NNTP_OBJ)
 	@echo "  [LD] $< $(NNTP_OBJ) -> $@"
-	$(CC) $(MOD_LDFLAGS) -o $(basename $<).so $(NNTP_OBJ) $<
+	$(CC) $(MOD_LDFLAGS) -o $(basename $<).so $(NNTP_OBJ) $< -lm
 
 # SSHLIB=$(pkg-config --libs libssh)
 net_ssh.so : net_ssh.o

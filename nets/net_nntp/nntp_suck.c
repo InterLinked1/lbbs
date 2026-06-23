@@ -26,6 +26,7 @@
 
 #include "nntp.h"
 #include "nntp_history.h"
+#include "nntp_bloom.h"
 #include "nntp_client.h"
 #include "nntp_suck.h"
 
@@ -1793,11 +1794,72 @@ static int suck_ordered(struct suck_feed *sf, struct nntp_client *nc, FILE *fp)
 	struct sorted_article *head, *lasthead;
 	struct nntp_client nc_stack;
 	time_t start, end;
-	int saved = 0, pipelined = 0, lineno = 0;
+	struct bloom_filter bf;
+	int use_bloom_filter = 0, false_positives = 0, true_positives = 0, true_negatives = 0;
+	int checked = 0, remaining = 0, saved = 0, pipelined = 0, lineno = 0;
 
 	BBS_LIST_HEAD_INIT(&articles);
 
-	/* First, build an list of the articles we want to download. */
+	/* First, build an list of the articles we want to download. Note that this whole function is idempotent,
+	 * since we skip articles that have already been processed. However, this operation can become
+	 * very slow as the history file and the # of articles to check grows large,
+	 * because a naive "check history for each message ID" is quadratic with respect to the number of articles.
+	 * For example, in one test, with ~130,000 articles in the list and ~30,000 files already downloaded,
+	 * the loop below took ~465 seconds.
+	 *
+	 * The reason this loop exists in the first place is to avoid requesting articles we
+	 * already have (which would be even slower). History could be larger than will fit
+	 * in memory, so we cannot directly load the Message-IDs into memory in the general
+	 * case to check for duplicates.
+	 *
+	 * Since the file is a list of articles to download in order, we would expect
+	 * that there are first 0 or more articles in history, followed by 0 or more
+	 * articles NOT in history, i.e. if and when we encounter an article that is
+	 * NOT in history, it's unlikely that any further articles are in history.
+	 * number of articles.
+	 *
+	 * However, because some articles may be rejected only when we fetch the full article,
+	 * it's possible we encounter an article that WAS processed, but was rejected,
+	 * and hence, there may be future articles that are in history. We don't separately
+	 * store a record of refused articles, and even if we did, could not rely on that
+	 * to be complete as that could grow unbounded.
+	 *
+	 * Taking this into account, since any articles in the list we do have are likely
+	 * in order, keeping our place in the history file would speed up the simplest case
+	 * where no other articles yet exist. However, this could keep history locked up
+	 * for a while. (Ditto for doing one pass of the history file, and looking up
+	 * each article - already pre-allocated in memory - and marking present/not present.)
+	 *
+	 * A Bloom filter is a good candidate for this sort of problem as we could do a linear scan
+	 * of history first and then use a probabilistic data structure to check if an article is
+	 * in history. However, Bloom filters tell us if a member is "probably in the set" or
+	 * "definitely not in the set". However, if we get "probably in the set", we still have
+	 * to check history. More useful would be "definitely in the set" or "probably not in the set",
+	 * no harm in false negatives (we may request a few duplicate articles again),
+	 * but we cannot have false positives (an article we thought was in the set, but wasn't,
+	 * so we skipped it, and now we don't have it). Unfortunately, there is no way to do THAT.
+	 *
+	 * (Also, if there are a lot of articles, more bits are needed in the Bloom filter to keep
+	 * false positives low; even with just 8 bits, if there are 500 million articles in history,
+	 * that's already ~500 MB of RAM, which is possibly more memory than we may have available
+	 * (though I would hope that large of a news server is better resourced than that...).)
+	 *
+	 * That said, a Bloom filter still helps, especially if we haven't downloaded most articles yet,
+	 * so we do use a Bloom filter below to at least help with that case. In the above scenario
+	 * of ~30,000 of ~130,000 articles being in history taking ~465 seconds with history lookups
+	 * for every Message-ID, using a ~70 KB Bloom filter took only 51 seconds, about 9x faster.
+	 *
+	 * Of course, in the case that all articles in the file already exist,
+	 * the Bloom filter won't help and will actually take slightly longer,
+	 * but in most other cases there is a potentially large speedup.
+	 */
+	bbs_debug(2, "Cross-checking article list against history to establish outstanding downloads...\n");
+
+	if (!history_bloom_init(&bf)) {
+		use_bloom_filter = 1;
+	}
+
+	start = time(NULL);
 	for (; (fgets(buf, sizeof(buf), fp)); lineno++) {
 		struct sorted_article *a;
 		size_t msgidlen;
@@ -1817,11 +1879,32 @@ static int suck_ordered(struct suck_feed *sf, struct nntp_client *nc, FILE *fp)
 			bbs_warning("Malformed line in article list, line %d\n", lineno);
 			continue;
 		}
+		checked++;
+
 		/* This command is idempotent, we'll skip any articles we already have */
-		if (history_messageid_exists(msgid)) {
+		if (use_bloom_filter) {
+			if (bloom_filter_contains(&bf, msgid, (int) strlen(msgid))) {
+				/* We still need to check history to confirm it's a real match */
+				if (history_messageid_exists(msgid)) {
+					bbs_debug(9, "Message %s already exists, skipping\n", msgid);
+					true_positives++;
+					continue;
+				}
+				/* Good thing we checked! The Bloom filter said it was in the set, but it's not */
+				false_positives++;
+			} else {
+				/* If it's not in the Bloom filter, it's definitely not in history, no need to scan the history file.
+				 * Note that it's possible this is a false negative if the article arrived AFTER we built
+				 * the Bloom filter but prior to this check. This is fairly unlikely, however,
+				 * and even then, false negatives are benign because the article will get filtered out
+				 * when we try to download the article anyways, so it's okay if there are a few of those. */
+				true_negatives++;
+			}
+		} else if (history_messageid_exists(msgid)) {
 			bbs_debug(9, "Message %s already exists, skipping\n", msgid);
 			continue;
 		}
+
 		msgidlen = strlen(msgid);
 		a = calloc(1, sizeof(*a) + msgidlen + strlen(groupart) + 2);
 		if (ALLOC_FAILURE(a)) {
@@ -1839,8 +1922,16 @@ static int suck_ordered(struct suck_feed *sf, struct nntp_client *nc, FILE *fp)
 			fclose(fp);
 			goto cleanup2;
 		}
+		remaining++;
 	}
 	fclose(fp);
+	end = time(NULL);
+	if (use_bloom_filter) {
+		bbs_debug(2, "History Bloom filter: %d false positive%s, %d true positives, %d true negatives\n", false_positives, ESS(false_positives), true_positives, true_negatives);
+		bloom_filter_destroy(&bf);
+		use_bloom_filter = 0;
+	}
+	bbs_verb(6, "Cross-checked %d article%s against history, %d remaining to download (%lds elapsed)\n", checked, ESS(checked), remaining, end - start);
 
 	if (BBS_LIST_EMPTY(&articles)) {
 		bbs_notice("No new articles present in sorted file for %s\n", sf->name);
@@ -1902,6 +1993,9 @@ static int suck_ordered(struct suck_feed *sf, struct nntp_client *nc, FILE *fp)
 cleanup:
 	bbs_tcp_client_cleanup(&nc->tcpclient);
 cleanup2:
+	if (use_bloom_filter) {
+		bloom_filter_destroy(&bf);
+	}
 	BBS_LIST_REMOVE_ALL(&articles, entry, free);
 	return -1;
 }
