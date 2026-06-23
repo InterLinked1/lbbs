@@ -365,8 +365,11 @@ static GMimeMessage *mk_mime(const char *file)
 
 	message = g_mime_parser_construct_message(parser, NULL);
 
+	/* g_object_unref closes our file descriptor for us; mark as closed before it actually is to avoid
+	 * a race condition where g_object_unref closes the fd and the fd gets reused before
+	 * we call bbs_mark_closed. Doing it in the other order avoids this possibility. */
+	bbs_mark_closed_prematurely(fd);
 	g_object_unref(parser);
-	bbs_mark_closed(fd); /* g_object_unref closed our file descriptor for us */
 
 	if (!message) {
 		bbs_error("Failed to parse message %s as MIME\n", file);
@@ -618,6 +621,10 @@ static int unload_module(void)
 	/* This doesn't free everything (possibly lost leaks in valgrind). See:
 	 * Q: https://mail.gnome.org/archives/gmime-devel-list/2012-November/msg00000.html
 	 * A: https://mail.gnome.org/archives/gmime-devel-list/2012-November/msg00001.html
+	 *
+	 * Also note that unloading and loading the module again can lead to crashes due to:
+	 * GLib-GObject-WARNING cannot register existing type 'GMimeStream'
+	 * so even though this should be hot swapable in theory, a full BBS restart is better.
 	 */
 	g_mime_shutdown();
 	return 0;

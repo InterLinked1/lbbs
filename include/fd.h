@@ -49,8 +49,20 @@ int bbs_std_fclose(FILE *ptr);
  * This function takes you at your word, so be sure it really is closed!
  * \param fd File descriptor
  * \retval 0 on success, 1 if fd was open at the time of this function call
+ * \note Use this immediately AFTER a library function closed the file descriptor
  */
 #define bbs_mark_closed(f) __bbs_mark_closed(f, __FILE__,__LINE__,__func__)
+
+/*!
+ * \brief Mark a file descriptor as closed. This is useful if
+ * a file descriptor was opened by the BBS and will be closed by another library,
+ * so we can keep the internal state table of file descriptors synchronized.
+ * This function takes you at your word, so be sure it will be closed afterwards!
+ * \param fd File descriptor
+ * \retval 0 on success, 1 if fd was open at the time of this function call
+ * \note Use this immediately BEFORE a library function will close the file descriptor
+ */
+#define bbs_mark_closed_prematurely(f) __bbs_mark_closed_prematurely(f, __FILE__,__LINE__,__func__)
 
 int __bbs_open(const char *file, int line, const char *func, const char *path, int flags, ...);
 int __bbs_pipe(int *fds, const char *file, int line, const char *func);
@@ -61,6 +73,7 @@ int __bbs_eventfd(unsigned int initval, int flags, const char *file, int line, c
 int __bbs_close(int fd, const char *file, int line, const char *func);
 int __bbs_mark_opened(int fd, const char *file, int line, const char *func);
 int __bbs_mark_closed(int fd, const char *file, int line, const char *func);
+int __bbs_mark_closed_prematurely(int fd, const char *file, int line, const char *func);
 FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line, const char *func);
 int __bbs_fclose(FILE *ptr, const char *file, int line, const char *func);
 int __bbs_dup2(int oldfd, int newfd, const char *file, int line, const char *func);

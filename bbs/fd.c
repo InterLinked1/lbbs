@@ -463,6 +463,27 @@ int __bbs_mark_closed(int fd, const char *file, int line, const char *func)
 	return 0;
 }
 
+int __bbs_mark_closed_prematurely(int fd, const char *file, int line, const char *func)
+{
+	if (!bbs_fd_valid(fd)) {
+		__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor %d is not valid\n", fd);
+		return 1;
+	}
+	bbs_debug(5, "Marking file descriptor %d as closed\n", fd);
+	if (ARRAY_IN_BOUNDS(fd, fdinfo)) {
+		if (bbs_assertion_failed(fdinfo[fd].isopen)) {
+			char datestring[24];
+			struct tm opendate;
+			localtime_r(&fdinfo[fd].now, &opendate);
+			strftime(datestring, sizeof(datestring), "%F %T", &opendate);
+			__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor %d marked closed, but was already closed at %s:%d at %s?\n", fd, fdinfo[fd].file, fdinfo[fd].line, datestring);
+		}
+		MARK_CLOSED(fd);
+	}
+	FD_LOGF(time(NULL), file, line, func, "mark_closed_prematurely(%d)\n", fd);
+	return 0;
+}
+
 FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line, const char *func)
 {
 	FILE *res = fopen(path, mode);
