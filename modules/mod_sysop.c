@@ -767,9 +767,17 @@ static int launch_sysop_console(int remote, int sfd)
 		/* XXX Hack job!
 		 * For command execution via rsysop, we don't want to launch a PTY (we don't need one) or display the usual banner (clutter).
 		 * The only way I can seem to distinguish the two automatically is that command executions will send
-		 * the data immediately, so POLLIN is already triggered here. */
-		usleep(1000); /* XXX Even more of a hack job, sometimes, it's not immediate so wait a ms for activity */
-		if (bbs_poll(sfd, 0) == 1) {
+		 * the data immediately, so POLLIN is already triggered here.
+		 *
+		 * Alternate option might be to have rsysop send a special character for interactive sessions,
+		 * (or vice versa), but then we'd have to wait for that, and this breaks compatibility. */
+
+		/* XXX Even more of a hack job, sometimes, it's not immediate so wait a moment for activity.
+		 * Increased because in some cases, 1 ms or even 10 ms doesn't seem to be enough time.
+		 *
+		 * While 100 ms should probably work well enough unless the system is overloaded, this is arbitrary and we really need to do this a better way.
+		 * Too much longer than that risks treating legitimate interactive sessions as non-interactive if the user begins typing immediately. */
+		if (bbs_poll(sfd, 100) == 1) {
 			skip_pty = 1;
 		}
 	}
@@ -781,12 +789,14 @@ static int launch_sysop_console(int remote, int sfd)
 		console->tty = 1; /* If it weren't, we would have aborted at the top of this function */
 	} else {
 		if (skip_pty) {
+			bbs_verb(4, "Accepting new remote sysop connection (non-interactive)\n");
 			console->fdin = sfd;
 			console->fdout = sfd;
 			console->interactive = 0;
 			console->tty = 0;
 		} else {
 			int aslave;
+			bbs_verb(4, "Accepting new remote sysop connection\n");
 			/* Now, we need to create a pseudoterminal for the UNIX socket, the sysop thread needs a PTY.
 			 * aslave and amaster are overridden here with the real values to use. */
 			aslave = spawn_pty_master(console); /* Only needed for remote consoles. The foreground console doesn't have a separate thread. */
@@ -869,7 +879,6 @@ static void *remote_sysop_listener(void *unused)
 			}
 			continue;
 		}
-		bbs_verb(4, "Accepting new remote sysop connection\n");
 		launch_sysop_console(CONSOLE_REMOTE, sfd); /* Launch sysop console for this connection */
 	}
 	return NULL;
