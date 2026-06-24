@@ -1884,8 +1884,10 @@ static int suck_ordered(struct suck_feed *sf, struct nntp_client *nc, FILE *fp)
 		/* This command is idempotent, we'll skip any articles we already have */
 		if (use_bloom_filter) {
 			if (bloom_filter_contains(&bf, msgid, (int) strlen(msgid))) {
-				/* We still need to check history to confirm it's a real match */
-				if (history_messageid_exists(msgid)) {
+				/* We still need to check history to confirm it's a real match.
+				 * Since we already used our own Bloom filter, we check history
+				 * directly without using the global Bloom filter. */
+				if (history_messageid_exists_rawscan(msgid)) {
 					bbs_debug(9, "Message %s already exists, skipping\n", msgid);
 					true_positives++;
 					continue;
@@ -2357,7 +2359,9 @@ int nntp_suckfeed_add_suckpat(struct suck_feed *sf, const char *pattern, const c
 	sp->recent = recent;
 
 	RWLIST_INSERT_TAIL(&sf->groups, sp, entry);
+#ifdef EXTRA_DEBUG
 	bbs_debug(5, "Suck feed %s: Added suck pattern '%s' (min=%d,max=%d,recent=%d)\n", sf->name, pattern, min, max, recent);
+#endif
 	return 0;
 }
 

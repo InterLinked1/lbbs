@@ -20,6 +20,7 @@
 #include "include/node.h"
 #include "include/utils.h"
 #include "include/stringlist.h"
+#include "include/cli.h"
 #include "include/test.h"
 
 #include "nntp.h"
@@ -32,6 +33,13 @@
 extern int min_history;
 extern int nntp_unloading;
 extern void *thismodule;
+
+/* Both of these variables are used extern from net_nntp.c: */
+/* With 50 MB, and a 1/10 false positive rate, we can handle up to 12.5 million articles. */
+size_t history_bloom_maxmem = 50;
+
+/* We start with a 1/25,000 false positive rate and worsen it if needed due to memory constraints */
+unsigned long history_bloom_maxfpinv = 25000;
 
 /* Each thread opens a group's overview file for reading/writing, so multiple readers can operate simultaneously */
 static bbs_mutex_t histlock;
@@ -220,33 +228,39 @@ static struct bbs_unit_test tests[] =
 	{ "Bloom Filter", test_bloom_filter },
 };
 
-static int _history_bloom_init(struct bloom_filter *bf, size_t maxsize, unsigned long fp_inv)
+static int _history_bloom_init(struct bloom_filter *bf, size_t maxsize, size_t min_elements, unsigned long fp_inv, size_t *restrict actual_num_elements)
 {
 	char buf[NNTP_BUFSIZ];
 	int res, line = 0;
 	size_t hist_entries = 0;
 
-	bbs_mutex_lock(&histlock);
 	REQUIRE_HISTORY_FP(histfp);
 	REWIND_HISTORY(histfp);
 	while ((fgets(buf, sizeof(buf), histfp))) {
 		hist_entries++;
 	}
 	if (maxsize && fp_inv) {
-		size_t bytes = bloom_filter_size(hist_entries, bloom_filter_bpe(hist_entries, fp_inv));
+		size_t bytes;
+		if (hist_entries < min_elements) {
+			/* Don't start out too small to begin with, we'll just have to increase it immediately. */
+			hist_entries = min_elements;
+		}
+		bytes = bloom_filter_size(hist_entries, bloom_filter_bpe(fp_inv));
+		while (bytes > maxsize && fp_inv >= 20) { /* Not much point in having worse than 1/10 false positive rate */
+			fp_inv /= 2;
+		}
 		if (bytes > maxsize) {
 			bbs_debug(5, "Not building global Bloom filter (would take %lu B)\n", bytes);
 			SEEK_END_HISTORY(histfp);
-			bbs_mutex_unlock(&histlock);
 			return -1;
 		}
+		*actual_num_elements = hist_entries;
 		res = bloom_filter_init(bf, hist_entries, fp_inv);
 	} else {
 		res = bloom_filter_autoinit(bf, hist_entries);
 	}
 	if (res) {
 		SEEK_END_HISTORY(histfp);
-		bbs_mutex_unlock(&histlock);
 		return -1;
 	}
 	REWIND_HISTORY(histfp);
@@ -262,14 +276,158 @@ static int _history_bloom_init(struct bloom_filter *bf, size_t maxsize, unsigned
 	}
 	/* When we're done, seek back to the end of the file for appends */
 	SEEK_END_HISTORY(histfp);
-	bbs_mutex_unlock(&histlock);
 	return 0;
 }
 
 int history_bloom_init(struct bloom_filter *bf)
 {
-	return _history_bloom_init(bf, 0, 0);
+	int res;
+	size_t n; /* Unused */
+	bbs_mutex_lock(&histlock);
+	res = _history_bloom_init(bf, 0, 0, 0, &n);
+	bbs_mutex_unlock(&histlock);
+	return res;
 }
+
+static struct hist_bloom_data {
+	struct bloom_filter filter;
+	size_t max_elements;
+	unsigned int false_positives;
+	unsigned int true_positives;
+	unsigned int true_negatives;
+	unsigned int available:1;
+} hist_bloom;
+
+/* All these helper functions are assumed to be called with histlock held */
+static void hist_bloom_destroy(void)
+{
+	if (hist_bloom.available) {
+		hist_bloom.available = 0;
+		bloom_filter_destroy(&hist_bloom.filter);
+	}
+}
+
+static int hist_bloom_create(void)
+{
+	size_t n, next_size;
+
+	if (!history_bloom_maxmem) {
+		return -1; /* Bloom filter disabled */
+	}
+
+	/* Start out with a minimum # of elements of 4096, so that we don't have to recreate the Bloom filter
+	 * several times just in the first few thousand articles. */
+	if (_history_bloom_init(&hist_bloom.filter, SIZE_MB(history_bloom_maxmem), 4096, history_bloom_maxfpinv, &n)) {
+		return -1;
+	}
+	hist_bloom.available = 1;
+
+	/* Since we initially allocate this Bloom filter based on the number of articles that
+	 * were present in history at startup, over time the filter will perform worse and worse
+	 * as more articles are added. At some point, we'll want to recreate the filter entirely
+	 * using a larger number of bits to ensure the effective false positive rate doesn't
+	 * get too bad, keeping in mind:
+	 * - We want to avoid doing this too often
+	 * - We want to avoid this if increasing the filter size would hit a memory limit (either history_bloom_maxmem or allocation failure)
+	 *   Makes sense to try to create the new filter first and then swap out on success.
+	 *
+	 * Here we calculate the # of elements at which we should consider recreating the filter anew.
+	 * For small numbers of articles, we double the size of the filter to avoid recreating it too often.
+	 * Once we have a sufficiently large number of articles, we grow by only 1.5x since we can grow more slowly.
+	 */
+	hist_bloom.max_elements = (n > 512000 ? 3 / 2 : 2) * n;
+
+	/* This isn't how much space the next Bloom filter would actually use, but the worst case scenario,
+	 * since we'll increase the error rate if we would run out of size, up to a point.
+	 * If we know we wouldn't be allowed to allocate that much memory, then there's no point in trying.
+	 * If even at that point, we'd still use too much memory, then this is as big a Bloom filter
+	 * as we can use, so we'll just have to deal with it. */
+	next_size = bloom_filter_size(hist_bloom.max_elements, bloom_filter_bpe(10UL));
+	if (next_size > SIZE_MB(history_bloom_maxmem)) {
+		bbs_debug(1, "Bloom filter cannot be further increased in the future (to %lu elements, would need %lu B)\n", hist_bloom.max_elements, next_size);
+		hist_bloom.max_elements = 0;
+	}
+
+	return 0;
+}
+
+static int hist_bloom_reset(void)
+{
+	hist_bloom_destroy();
+	return hist_bloom_create();
+}
+
+static inline void hist_bloom_add(const char *messageid)
+{
+	if (hist_bloom.available) {
+		bloom_filter_add(&hist_bloom.filter, messageid, (int) strlen(messageid));
+	}
+	if (hist_bloom.max_elements && hist_bloom.filter.count > hist_bloom.max_elements) {
+		/* We create the new filter in such a way that we always have a filter afterwards;
+		 * even if we fail to create the new filter, we'll still have the old one. */
+		struct bloom_filter old;
+		memcpy(&old, &hist_bloom.filter, sizeof(old));
+		if (hist_bloom_create()) {
+			/* Failed to create new filter, restore the old one */
+			bbs_warning("Couldn't enlarge Bloom filter, keeping the old one\n");
+			memcpy(&hist_bloom.filter, &old, sizeof(hist_bloom.filter));
+		} else {
+			/* We succeeded, finish the swap out */
+			bloom_filter_destroy(&old);
+		}
+	}
+}
+
+#define hist_bloom_check(messageid) (bloom_filter_contains(&hist_bloom.filter, messageid, (int) strlen(messageid)))
+
+static int cli_news_bloom_stats(struct bbs_cli_args *a)
+{
+	int calc_fp;
+	if (!hist_bloom.available) {
+		bbs_dprintf(a->fdout, "No global Bloom filter currently in use\n");
+		return 0;
+	}
+	/* Technically we should rdlock here, but we only have a mutex, so skip it */
+	if (hist_bloom.false_positives + hist_bloom.true_positives) {
+		calc_fp = (int) (100.0 * (hist_bloom.false_positives / (1.0 * hist_bloom.false_positives + hist_bloom.true_positives)));
+	} else {
+		calc_fp = 0;
+	}
+	bbs_dprintf(a->fdout, "%-15s %15lu\n", "# Elements", hist_bloom.filter.count); /* This is how many messages are in the history file */
+	bbs_dprintf(a->fdout, "%-15s %15lu\n", "Recreate Thresh", hist_bloom.max_elements); /* Threshold at which we should build a new Bloom filter */
+	bbs_dprintf(a->fdout, "%-15s %15lu\n", "# Bits", hist_bloom.filter.nbits);
+	bbs_dprintf(a->fdout, "%-15s %15u\n", "# Hashes", hist_bloom.filter.nhashes);
+	bbs_dprintf(a->fdout, "%-15s %15d%%\n", "False Pos. Rate", calc_fp);
+	bbs_dprintf(a->fdout, "%-15s %15u\n", "False Positives", hist_bloom.false_positives);
+	bbs_dprintf(a->fdout, "%-15s %15u\n", "True Positives", hist_bloom.true_positives);
+	bbs_dprintf(a->fdout, "%-15s %15u\n", "True Negatives", hist_bloom.true_negatives);
+	/* By definition, a Bloom filter has no false negatives */
+	return 0;
+}
+
+static int cli_news_bloom_size(struct bbs_cli_args *a)
+{
+	size_t bytes;
+	ssize_t n = atol(a->argv[3]);
+	long fp_inv = atol(a->argv[4]);
+
+	if (n < 0) {
+		bbs_dprintf(a->fdout, "Invalid number of elements: %s\n", a->argv[3]);
+		return -1;
+	} else if (fp_inv < 0) {
+		bbs_dprintf(a->fdout, "Invalid reciproval false positive ratio: %s\n", a->argv[4]);
+		return -1;
+	}
+
+	bytes = bloom_filter_size((size_t) n, bloom_filter_bpe((unsigned long) fp_inv));
+	bbs_dprintf(a->fdout, "Bloom filter size for %ld elements, 1/%ld f.p.: %lu B\n", n, fp_inv, bytes);
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_nntp_history[] = {
+	BBS_CLI_COMMAND(cli_news_bloom_stats, "news bloom stats", 3, "Display global history Bloom filter stats", NULL),
+	BBS_CLI_COMMAND(cli_news_bloom_size, "news bloom size", 5, "Compute size required for Bloom filter based on article count and false positives", "news bloom size <num> <fp_inv>"),
+};
 
 int history_init(void)
 {
@@ -285,6 +443,21 @@ int history_init(void)
 		return -1;
 	}
 
+	/* Initialize a Bloom filter to use for history check operations.
+	 * Certain operations will use their own, larger Bloom filters; this one serves as a stopgap.
+	 * Since it will remain allocated persistently, we don't want it to be too large,
+	 * and we accept a higher false positive rate.
+	 *
+	 * We keep the Bloom filter up to date with all new articles, so we can definitively
+	 * say that if the Bloom filter returns false, the article is not in history.
+	 *
+	 * Ideally, we have a false positive rate of at least 1/1,000, but
+	 * we even with a rate as bad as 1/10, in the case of checking whether
+	 * to accept an article offered by a peer, there's a good chance it
+	 * will be a true negative so the Bloom filter still avoids a history traversal. */
+	hist_bloom_create(); /* We can proceed even if this fails */
+
+	__bbs_cli_register_multiple(cli_commands_nntp_history, ARRAY_LEN(cli_commands_nntp_history), thismodule);
 	__bbs_register_tests(tests, ARRAY_LEN(tests), thismodule);
 	return 0;
 }
@@ -298,9 +471,11 @@ void history_cleanup(void)
 	}
 
 	__bbs_unregister_tests(tests, ARRAY_LEN(tests));
+	bbs_cli_unregister_multiple(cli_commands_nntp_history);
 
 	/* Lock and unlock to ensure that all expire operations have finished */
 	bbs_mutex_lock(&histlock);
+	hist_bloom_destroy();
 	bbs_mutex_unlock(&histlock);
 
 	bbs_mutex_destroy(&histlock);
@@ -424,6 +599,7 @@ int history_expire(const char *pattern)
 	}
 
 	if (nntp_unloading) {
+		bbs_mutex_unlock(&histlock);
 		bbs_notice("Module unload is pending, not starting article expiration\n");
 		return -1;
 	}
@@ -582,6 +758,9 @@ dokeep:
 		unlink(template); /* Discard new history file without swapping it in, nothing changed */
 	}
 
+	/* Since a bunch of articles may have been removed from history, rebuild the Bloom filter for existence checks */
+	hist_bloom_reset();
+
 	bbs_mutex_unlock(&histlock);
 	return total_removed;
 }
@@ -600,6 +779,7 @@ int history_add(const char *messageid, time_t arrival_time, time_t expires, size
 	REQUIRE_HISTORY_FP(histfp);
 	fprintf(histfp, "%s\t%ld~%s~%lu\t%s\n", messageid, arrival_time, expiresbuf, bytes, links);
 	fflush(histfp);
+	hist_bloom_add(messageid);
 	bbs_mutex_unlock(&histlock);
 	return 0;
 }
@@ -660,13 +840,20 @@ int history_newnews(struct nntp_session *nntp, const char *wildmat, time_t newer
 	return 0;
 }
 
-int history_messageid_exists(const char *messageid)
+static int history_messageid_exists_with_bloom_filter(const char *messageid, int check_bloom_filter)
 {
 	int found = 0;
 	char buf[NNTP_BUFSIZ];
 	int line = 0;
 
 	bbs_mutex_lock(&histlock);
+	if (check_bloom_filter && hist_bloom.available) {
+		if (!hist_bloom_check(messageid)) {
+			hist_bloom.true_negatives++;
+			bbs_mutex_unlock(&histlock);
+			return 0; /* Well, that was easy */
+		}
+	}
 	REQUIRE_HISTORY_FP(histfp);
 	REWIND_HISTORY(histfp);
 	while ((fgets(buf, sizeof(buf), histfp))) {
@@ -684,8 +871,27 @@ int history_messageid_exists(const char *messageid)
 	}
 	/* When we're done, seek back to the end of the file for appends */
 	SEEK_END_HISTORY(histfp);
+	if (check_bloom_filter && hist_bloom.available) {
+		if (found) {
+			hist_bloom.true_positives++;
+		} else {
+			hist_bloom.false_positives++;
+		}
+	}
 	bbs_mutex_unlock(&histlock);
 	return found;
+}
+
+int history_messageid_exists(const char *messageid)
+{
+	/* By default, use the Bloom filter to speed up existence checks for nonexistent articles. */
+	return history_messageid_exists_with_bloom_filter(messageid, 1);
+}
+
+int history_messageid_exists_rawscan(const char *messageid)
+{
+	/* For tasks that already use their own Bloom filter, checking a second (and likely inferior) Bloom filter is redundant */
+	return history_messageid_exists_with_bloom_filter(messageid, 0);
 }
 
 int history_find_article_by_messageid(struct nntp_session *nntp, const char *messageid, const char *prefgroup, char *group, size_t len, int *artnum)

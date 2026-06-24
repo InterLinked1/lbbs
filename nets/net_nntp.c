@@ -102,6 +102,9 @@ char newsname[256] = ""; /* Our site name and path identity. Non-static so other
 static char newsorg[256] = ""; /* Organization */
 char newsdir[256] = ""; /* Non-static so other files can access it extern */
 
+extern size_t history_bloom_maxmem;
+extern unsigned long history_bloom_maxfpinv;
+
 /* Global settings for incoming articles */
 static unsigned int max_article_size = 100000; /* ~100 KB should be plenty */
 unsigned int max_groups = 100; /* used extern in nntp_suck.c */
@@ -4900,6 +4903,7 @@ static int load_config(void)
 	struct bbs_config *cfg;
 	struct bbs_config_section *section = NULL;
 	struct bbs_keyval *keyval = NULL;
+	unsigned int utmp;
 
 	cfg = bbs_config_load("net_nntp.conf", 1);
 	if (!cfg) {
@@ -4910,6 +4914,14 @@ static int load_config(void)
 		bbs_config_unlock(cfg);
 		bbs_error("Invalid or missing newsdir in [general], declining to load\n");
 		return -2;
+	}
+
+	/* These settings needed to be loaded before calling history_init() */
+	if (!bbs_config_val_set_uint(cfg, "history", "bloom_maxmem", &utmp)) {
+		history_bloom_maxmem = (size_t) utmp;
+	}
+	if (!bbs_config_val_set_uint(cfg, "history", "bloom_maxfpinv", &utmp)) {
+		history_bloom_maxfpinv = utmp;
 	}
 
 	/* Note: nntp_suckfeed_init needs to be initialized before the bulk of load_config() so the list is ready to receive items when processing the config

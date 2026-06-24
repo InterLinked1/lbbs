@@ -96,6 +96,7 @@ void bloom_filter_add(struct bloom_filter *bf, const void *buf, int len)
 		size_t hashbyte = hashbit / 8;
 		bf->bits[hashbyte] |= (uint8_t) (1U << (hashbit % 8U));
 	}
+	bf->count++;
 }
 
 int bloom_filter_contains(const struct bloom_filter *bf, const void *buf, int len)
@@ -115,14 +116,10 @@ int bloom_filter_contains(const struct bloom_filter *bf, const void *buf, int le
 	return 1;
 }
 
-unsigned int bloom_filter_bpe(size_t num_elements, unsigned long fp_inv)
+unsigned int bloom_filter_bpe(unsigned long fp_inv)
 {
 	double error;
 
-	/* Make the arguments sane if they weren't */
-	if (!num_elements) {
-		num_elements = 1;
-	}
 	if (fp_inv < 10) {
 		fp_inv = 10;
 	} else if (fp_inv > 10000000) {
@@ -156,7 +153,7 @@ static int _bloom_filter_init(struct bloom_filter *bf, size_t num_elements, unsi
 	size_t nbytes;
 
 	memset(bf, 0, sizeof(struct bloom_filter));
-	bits_per_entry = bloom_filter_bpe(num_elements, fp_inv);
+	bits_per_entry = bloom_filter_bpe(fp_inv);
 	bf->nhashes = (unsigned int) ceil(0.693147180559945 * bits_per_entry); /* ln(2) */
 	bf->nbits = bloom_filter_size(num_elements, bits_per_entry);
 	nbytes = (bf->nbits + 7) / 8; /* round up to the nearest whole # of byte */
@@ -169,7 +166,7 @@ static int _bloom_filter_init(struct bloom_filter *bf, size_t num_elements, unsi
 		return -1;
 	}
 
-	bbs_debug(7, "Created Bloom filter with %lu B (1/%lu f.p.)\n", nbytes, fp_inv);
+	bbs_debug(7, "Created Bloom filter of size %lu with %lu B (1/%lu f.p.)\n", num_elements, nbytes, fp_inv);
 	bf->count = 0;
 	return 0;
 }

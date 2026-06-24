@@ -24,11 +24,10 @@ struct bloom_filter {
 
 /*!
  * \brief Calculate the bits per entry for a Bloom filter
- * \param num_elements Estimated number of elements that will be added to the Bloom filter. (Actual number can vary.)
  * \param fp_inv Reciprocal of desired false positive rate
  * \returns The bits per entry
  */
-unsigned int bloom_filter_bpe(size_t num_elements, unsigned long fp_inv);
+unsigned int bloom_filter_bpe(unsigned long fp_inv);
 
 /*!
  * \brief Calculate the space that would be required for a Bloom filter

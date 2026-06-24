@@ -227,7 +227,12 @@ int bbs_config_val_set_uint(struct bbs_config *cfg, const char *section_name, co
 {
 	const char *s = bbs_config_val(cfg, section_name, key);
 	if (!strlen_zero(s)) {
-		*var = (unsigned int) atoi(s); /* Explicitly set to an unsigned int, so we lose the negative */
+		int number = atoi(s);
+		if (number < 0) {
+			bbs_warning("Can't set [%s]:%s = %s (negative values not allowed)\n", section_name, key, s);
+			return -1;
+		}
+		*var = (unsigned int) number; /* Explicitly set to an unsigned int, so we lose the negative */
 		return 0;
 	}
 	return -1;

@@ -51,6 +51,9 @@ int history_newnews(struct nntp_session *nntp, const char *wildmat, time_t newer
  */
 int history_messageid_exists(const char *messageid);
 
+/*! \brief Same as history_messageid_exists, but skip the global Bloom filter check, intended if the caller has already used a better Bloom filter already */
+int history_messageid_exists_rawscan(const char *messageid);
+
 /*!
  * \brief Find an article by Message-ID
  * \param nntp
