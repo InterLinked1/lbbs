@@ -61,6 +61,9 @@ int tradspool_init(void)
 	if (get_block_size()) {
 		return -1;
 	}
+	if (spool_compression) {
+		BBS_REQUIRE_EXTERNAL_PROGRAM("zstd");
+	}
 	return 0;
 }
 
@@ -1352,6 +1355,115 @@ int tradspool_article_stat(struct nntp_session *nntp, const char *messageid, con
 	return 1;
 }
 
+ssize_t tradspool_article_send_raw(struct bbs_tcp_client *tcpclient, const char *artpath)
+{
+	ssize_t res;
+	char artpathbuf[NNTP_MAX_PATH_LENGTH];
+	int is_compressed;
+
+	is_compressed = bbs_str_ends_with(artpath, COMPRESSED_SUFFIX);
+	if (is_compressed) {
+		safe_strncpy(artpathbuf, artpath, sizeof(artpathbuf));
+		if (uncompress_article(artpathbuf)) {
+			return -1;
+		}
+		artpath = artpathbuf;
+	}
+
+	res = bbs_send_file(artpath, tcpclient->wfd);
+	if (is_compressed) {
+		remove_uncompressed_article(artpath);
+	}
+	if (res <= 0) {
+		return -1;
+	}
+	return res;
+}
+
+ssize_t tradspool_article_send_raw_noxref(struct bbs_tcp_client *tcpclient, const char *artpath)
+{
+	ssize_t wres;
+	size_t size;
+	char artpathbuf[NNTP_MAX_PATH_LENGTH];
+	char buf[NNTP_MAX_LINE_LENGTH + 1];
+	int is_compressed;
+	size_t headerlen = 0;
+	int skipping_header = 0;
+	FILE *fp;
+	off_t offset;
+
+	is_compressed = bbs_str_ends_with(artpath, COMPRESSED_SUFFIX);
+	if (is_compressed) {
+		safe_strncpy(artpathbuf, artpath, sizeof(artpathbuf));
+		if (uncompress_article(artpathbuf)) {
+			return -1;
+		}
+		artpath = artpathbuf;
+	}
+
+	fp = fopen(artpath, "r");
+	if (!fp) {
+		bbs_error("Failed to open %s: %s\n", artpath, strerror(errno));
+		return 0;
+	}
+
+	/* Parse the headers and send all of them except the few we MUST NOT send */
+	bbs_cork_fd(tcpclient->fd, 1); /* Cork file descriptor so calling bbs_write for each header won't result in a burst of packets */
+	while ((fgets(buf, sizeof(buf), fp))) {
+		size_t linelen;
+		if (!strcmp(buf, "\r\n")) {
+			break;
+		}
+		linelen = strlen(buf);
+		headerlen += linelen;
+		if (buf[0] == ' ' || buf[0] == '\t') {
+			/* Continuation */
+			if (skipping_header) {
+				continue;
+			}
+		} else {
+			/* New header */
+			skipping_header = 0;
+			/* Injection-Info and Xref MUST NOT be present (RFC 5537 3.4.1)
+			 * Multiple injection: We MUST NOT add an Injection-Date header if it is missing (RFC 5537 3.4.2)
+			 * We MUST retain unmodified any existing Message-ID, Date, and Injection-Date;
+			 * the Message-ID is what other sites will rely on to filter out duplicates. */
+			if (STARTS_WITH(buf, "Injection-Info:") || STARTS_WITH(buf, "Xref:")) {
+				skipping_header = 1;
+				continue;
+			}
+			/* Path SHOULD NOT contain a "POSTED" keyword (RFC 5537 3.4.1)
+			 * Technically, we could alter the header to remove the .POSTED and everything after it
+			 * (or even just the .POSTED), but this is generally even more frowned upon.
+			 * We could also rename the header, e.g. to X-Path, but the limited trace info
+			 * that exists at this point is unlikely to be of much interest to anyone on the other side. */
+			if (STARTS_WITH(buf, "Path:")) {
+				skipping_header = 1;
+				continue;
+			}
+		}
+		bbs_write(tcpclient->wfd, buf, linelen); /* Send it */
+	}
+	bbs_cork_fd(tcpclient->fd, 0); /* Flush anything remaining */
+
+	/* Now, send the rest of the article, i.e. the body. We can use sendfile for the rest,
+	 * since we kept track of our offset into the file. */
+	offset = (off_t) headerlen;
+	size = (size_t) lseek(fileno(fp), 0, SEEK_END); /* Seek to end to get size. lseek returns the pos, fseek does not, so we use lseek even though we have a FILE* */
+	fseek(fp, offset, SEEK_SET); /* Rewind to where we want to begin */
+
+	wres = bbs_sendfile(tcpclient->wfd, fileno(fp), &offset, size - (size_t) offset); /* Send remainder of article */
+	fclose(fp);
+
+	if (is_compressed) {
+		remove_uncompressed_article(artpath);
+	}
+	if (wres < 0) {
+		return -1; /* If something went wrong, abort before finalizing article */
+	}
+	return (ssize_t) size;
+}
+
 int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter filter, const char *messageid, const char *groupname, int article_num)
 {
 	int is_compressed;
@@ -1393,7 +1505,8 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 		return res;
 	}
 
-	if (spool_compression && is_compressed && uncompress_article(artpath)) {
+	/* spoolcompression could be disabled to stop compressing articles, but we still need to decompress existing compressed articles. */
+	if (is_compressed && uncompress_article(artpath)) {
 		return -1;
 	}
 
@@ -1454,7 +1567,7 @@ int tradspool_article_send(struct nntp_session *nntp, enum article_part_filter f
 		fclose(fp);
 	}
 	_nntp_send(nntp, ".\r\n"); /* Termination character. */
-	if (spool_compression && is_compressed && remove_uncompressed_article(artpath)) {
+	if (is_compressed && remove_uncompressed_article(artpath)) {
 		return -1;
 	}
 	return 0;

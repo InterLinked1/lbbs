@@ -535,6 +535,28 @@ int spool_article_exists(const char *groupname, int article_num);
  */
 int spool_article_stat(struct nntp_session *nntp, const char *messageid, const char *groupname, int article_num);
 
+struct bbs_tcp_client;
+
+/*!
+ * \brief Send an article using a TCP client
+ * \param tcpclient
+ * \param artpath Path to the article (may or may not be compressed)
+ * \retval -1 on error
+ * \retval 0 if artpath does not exist
+ * \returns Number of bytes written to file descriptor
+ */
+ssize_t spool_article_send_raw(struct bbs_tcp_client *tcpclient, const char *artpath);
+
+/*!
+ * \brief Send an article using a TCP client, except for its Xref header, if it has one
+ * \param tcpclient
+ * \param artpath Path to the article (may or may not be compressed)
+ * \retval -1 on error
+ * \retval 0 if artpath does not exist
+ * \returns Number of bytes written to file descriptor
+ */
+ssize_t spool_article_send_raw_noxref(struct bbs_tcp_client *tcpclient, const char *artpath);
+
 enum article_part_filter {
 	SEND_HEADERS = (1 << 0),
 	SEND_BODY = (1 << 1),

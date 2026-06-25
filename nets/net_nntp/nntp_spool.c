@@ -90,6 +90,16 @@ int spool_article_stat(struct nntp_session *nntp, const char *messageid, const c
 	return tradspool_article_stat(nntp, messageid, groupname, article_num);
 }
 
+ssize_t spool_article_send_raw(struct bbs_tcp_client *tcpclient, const char *artpath)
+{
+	return tradspool_article_send_raw(tcpclient, artpath);
+}
+
+ssize_t spool_article_send_raw_noxref(struct bbs_tcp_client *tcpclient, const char *artpath)
+{
+	return tradspool_article_send_raw_noxref(tcpclient, artpath);
+}
+
 int spool_article_send(struct nntp_session *nntp, enum article_part_filter filter, const char *messageid, const char *groupname, int article_num)
 {
 	return tradspool_article_send(nntp, filter, messageid, groupname, article_num);

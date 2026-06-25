@@ -114,16 +114,34 @@ static inline void log_fed_article(struct nntp_client *nc, struct site *site, st
 	fprintf(logfp, "%.15s.%03d %c %s %s%s%s\n", buf + 4, (int) (tvnow.tv_usec / 1000), c, site->name, art->messageid, exception ? " " : "", exception ? nc->buf : "");
 }
 
+static int can_feed_article(struct site_article *art, struct site *site)
+{
+	if (!bbs_file_exists(art->filepath)) {
+		/* Well, this is awkward... but better than offering an article we can't actually send.
+		 * Article must've expired or been deleted while it was backlogged for this site. */
+		bbs_notice("Article file %s no longer exists in the spool, can't send it to site %s!\n", art->messageid, site->name);
+		art->missing = 1;
+		return 0;
+	}
+	return 1;
+}
+
 /*! \brief Send a single article using POST (presumably via a reader connection) */
 static int send_article_post(struct nntp_client *nc, struct site *site, struct site_article *art)
 {
-	char buf[NNTP_MAX_LINE_LENGTH + 1];
 	int res;
-	FILE *fp;
-	size_t headerlen = 0;
-	int skipping_header = 0;
-	off_t offset;
 	ssize_t wres;
+
+	if (!can_feed_article(art, site)) {
+		return 0; /* Still try to send the rest */
+	}
+
+	nntp_client_send(nc, "POST\r\n");
+	res = nntp_client_expect_code(nc, SEC_MS(30), NNTP_CONT_POST);
+	if (res) {
+		return -1; /* If we can't POST this article, we won't be able to post any others eithers */
+	}
+	art->offered = 1;
 
 	/* In order to use POST, we need to convert the article back into a compliant proto-article.
 	 * As such, we need to parse the headers to omit those which MUST NOT be included in proto-articles,
@@ -131,77 +149,12 @@ static int send_article_post(struct nntp_client *nc, struct site *site, struct s
 	 *
 	 * Luckily, we don't need to ADD any headers, since proto-articles have strictly weaker requirements
 	 * for headers than injected articles. */
-	fp = fopen(art->filepath, "r");
-	if (!fp) {
-		if (errno == ENOENT) {
-			art->missing = 1;
-		} else {
-			bbs_error("Failed to open %s: %s\n", art->filepath, strerror(errno));
-		}
-		return 0; /* Still try to send the rest */
+	wres = spool_article_send_raw_noxref(&nc->tcpclient, art->filepath);
+	if (wres <= 0) {
+		return -1;
 	}
 
-	nntp_client_send(nc, "POST\r\n");
-	res = nntp_client_expect_code(nc, SEC_MS(30), NNTP_CONT_POST);
-	if (res) {
-		fclose(fp);
-		return -1; /* If we can't POST this article, we won't be able to post any others eithers */
-	}
-
-	art->offered = 1;
-
-	/* Parse the headers and send all of them except the few we MUST NOT send */
-	bbs_cork_fd(nc->tcpclient.fd, 1); /* Cork file descriptor so calling bbs_write for each header won't result in a burst of packets */
-	while ((fgets(buf, sizeof(buf), fp))) {
-		size_t linelen;
-		if (!strcmp(buf, "\r\n")) {
-			break;
-		}
-		linelen = strlen(buf);
-		headerlen += linelen;
-		if (buf[0] == ' ' || buf[0] == '\t') {
-			/* Continuation */
-			if (skipping_header) {
-				continue;
-			}
-		} else {
-			/* New header */
-			skipping_header = 0;
-			/* Injection-Info and Xref MUST NOT be present (RFC 5537 3.4.1)
-			 * Multiple injection: We MUST NOT add an Injection-Date header if it is missing (RFC 5537 3.4.2)
-			 * We MUST retain unmodified any existing Message-ID, Date, and Injection-Date;
-			 * the Message-ID is what other sites will rely on to filter out duplicates. */
-			if (STARTS_WITH(buf, "Injection-Info:") || STARTS_WITH(buf, "Xref:")) {
-				skipping_header = 1;
-				continue;
-			}
-			/* Path SHOULD NOT contain a "POSTED" keyword (RFC 5537 3.4.1)
-			 * Technically, we could alter the header to remove the .POSTED and everything after it
-			 * (or even just the .POSTED), but this is generally even more frowned upon.
-			 * We could also rename the header, e.g. to X-Path, but the limited trace info
-			 * that exists at this point is unlikely to be of much interest to anyone on the other side. */
-			if (STARTS_WITH(buf, "Path:")) {
-				skipping_header = 1;
-				continue;
-			}
-		}
-		bbs_write(nc->tcpclient.wfd, buf, linelen); /* Send it */
-	}
-	bbs_cork_fd(nc->tcpclient.fd, 0); /* Flush anything remaining */
-
-	/* Now, send the rest of the article, i.e. the body. We can use sendfile for the rest,
-	 * since we kept track of our offset into the file. */
-	offset = (off_t) headerlen;
-	art->size = (size_t) lseek(fileno(fp), 0, SEEK_END); /* Seek to end to get size. lseek returns the pos, fseek does not, so we use lseek even though we have a FILE* */
-	fseek(fp, offset, SEEK_SET); /* Rewind to where we want to begin */
-
-	wres = bbs_sendfile(nc->tcpclient.wfd, fileno(fp), &offset, art->size - (size_t) offset); /* Send remainder of article */
-	fclose(fp);
-
-	if (wres < 0) {
-		return -1; /* If something went wrong, abort before finalizing article */
-	}
-
+	art->size = (size_t) wres;
 	nntp_client_send(nc, ".\r\n");
 	res = nntp_client_read_code(nc, MIN_MS(10));
 	if (res < 0) {
@@ -234,11 +187,7 @@ static int send_article_ihave(struct nntp_client *nc, struct site *site, struct 
 	 * If refusal is likely, it's better to wait to avoid the overhead of opening the article only to be refused.
 	 * To compromise, we go ahead and check for existence up front, opening if requested. */
 
-	if (!bbs_file_exists(art->filepath)) {
-		/* Well, this is awkward... but better than offering an article we can't actually send.
-		 * Article must've expired or been deleted while it was backlogged for this site. */
-		bbs_notice("Article file %s no longer exists in the spool, can't send it to site %s!\n", art->messageid, site->name);
-		art->missing = 1;
+	if (!can_feed_article(art, site)) {
 		return 0; /* Still try to send the rest */
 	}
 
@@ -262,15 +211,14 @@ static int send_article_ihave(struct nntp_client *nc, struct site *site, struct 
 			return -1;
 	}
 
-	/* Go ahead and send it
+	/* Go ahead and send it.
 	 * We don't need to worry about dot-stuffing, since the articles in the spool are stored in wire format.
 	 * We MAY delete the Xref header when sending, but peers will usually ignore that anyways,
 	 * and some peers may want it if configured to slave off our Xref header. */
-	sent = bbs_send_file(art->filepath, nc->tcpclient.wfd);
-	if (sent < 0) {
+	sent = spool_article_send_raw(&nc->tcpclient, art->filepath);
+	if (sent <= 0) {
 		/* Not good. We offered the article, the server accepted, and now we can't oblige.
 		 * The only thing we can do now is disconnect. */
-		bbs_error("Failed to open %s: %s\n", art->filepath, strerror(errno));
 		return -1;
 	}
 	art->size = (size_t) sent;
@@ -302,38 +250,22 @@ static int send_article_ihave(struct nntp_client *nc, struct site *site, struct 
 
 static int takethis(struct nntp_client *nc, struct site *site, struct site_article *art)
 {
-	int fd;
-	off_t off;
-	ssize_t sres;
+	ssize_t wres;
 
-	/* We use bbs_sendfile instead of bbs_send_file so we can open the file descriptor and abort before sending TAKETHIS */
-	fd = open(art->filepath, O_RDONLY, 0600);
-	if (fd < 0) {
-		bbs_error("Failed to open %s: %s\n", art->filepath, strerror(errno));
-		if (errno == ENOENT) {
-			art->missing = 1;
-		}
+	if (!can_feed_article(art, site)) {
 		return 1; /* Can't send article, not in spool anymore? But this is not fatal */
 	}
 
-	off = lseek(fd, 0, SEEK_END); /* Seek to end to get size */
-	if (off < 0) {
-		close(fd);
-		return -1;
-	}
-	/* Now that we were able to open the file successfully, issue TAKETHIS */
 	nntp_client_send(nc, "TAKETHIS %s\r\n", art->messageid);
 	if (!site->feed.nntp.checkfirst) {
 		art->offered = 1; /* If we didn't send CHECK, then count it as offered now */
 	}
-	art->size = (size_t) off;
-	lseek(fd, 0, SEEK_SET); /* Rewind to send article */
-	sres = bbs_sendfile(nc->tcpclient.wfd, fd, 0, art->size);
-	close(fd);
-
-	if (sres != (ssize_t) art->size) {
+	wres = spool_article_send_raw(&nc->tcpclient, art->filepath);
+	if (wres <= 0) {
+		/* If we couldn't send the article for any reason, we need to abort, since we already sent TAKETHIS */
 		return -1;
 	}
+	art->size = (size_t) wres;
 	nntp_client_send(nc, ".\r\n"); /* End of article */
 	/* We are pipelining TAKETHIS, so we don't read the responses just yet */
 	return 0;
