@@ -19,6 +19,7 @@
 
 #include "include/node.h"
 #include "include/utils.h"
+#include "include/hash.h"
 #include "include/stringlist.h"
 #include "include/cli.h"
 #include "include/test.h"
@@ -159,6 +160,80 @@ int history_add_retention_pattern(const char *key, const char *value)
 	return 0;
 }
 
+/* Each hist_cache_msg should be 24 bytes (16 + 8), so 1,024 elements gives us a 24 KB cache.
+ * This cache is used on history existence checks or Message-ID lookups, but exists mainly for two purposes:
+ * 1) Checking if an article exists for IHAVE/CHECK/TAKETHIS, in which case only very recent articles are likely to be offered.
+ * 2) NEWNEWS, which returns a list of recent Message-IDs, with which a user will issue OVER, ARTICLE, etc.
+ * Both of these use cases benefit greatly from caching the most recent articles and almost not at all from caching anything else.
+ * Furthermore, we don't want the cache bigger than necessary since the ring buffer scan will add a little latency to every lookup.
+ * The low thousands is probably a good middle ground for now. */
+#define HIST_CACHE_SIZE 1024
+
+struct hist_cache_msg {
+	unsigned char msgid_hash[MD5_LEN]; /*!< MD5 digest of the Message-ID */
+	off_t offset; /*!< Offset into the history file for this message */
+};
+
+/*! \brief Ring buffer for the most recent Message-IDs */
+static struct hist_cache_data {
+	struct hist_cache_msg cache[HIST_CACHE_SIZE];
+	unsigned int index;
+	unsigned int count;
+	size_t hits_true;
+	size_t hits_false;
+	size_t misses;
+} hist_cache;
+
+static void hist_cache_reset_stats(void)
+{
+	hist_cache.hits_true = 0;
+	hist_cache.hits_false = 0;
+	hist_cache.misses = 0;
+}
+
+static void hist_cache_put(const char *messageid, size_t len, off_t offset)
+{
+	hash_md5_bytes((unsigned const char*) messageid, len, hist_cache.cache[hist_cache.index].msgid_hash);
+	hist_cache.cache[hist_cache.index].offset = offset;
+	if (hist_cache.count < hist_cache.index + 1) {
+		hist_cache.count++; /* This will get capped at HIST_CACHE_SIZE */
+	}
+	if (++hist_cache.index == HIST_CACHE_SIZE) {
+		hist_cache.index = 0; /* Wrap around back to the beginning of the ring buffer */
+	}
+}
+
+/* off_t is typically a long int, so ssize_t captures its domain */
+static ssize_t hist_cache_get(const char *messageid)
+{
+	unsigned char hash[MD5_LEN];
+	unsigned int i;
+
+	hash_md5_bytes((unsigned const char*) messageid, strlen(messageid), hash);
+
+	/* Check all valid slots in the ring buffer
+	 * We keep track of the index so we know the oldest cache member that will get evicted next,
+	 * but the traversal order here doesn't really matter (i.e. doesn't need to be oldest to newest). */
+	for (i = 0; i < hist_cache.count; i++) {
+		if (!memcmp(hash, hist_cache.cache[i].msgid_hash, MD5_LEN)) {
+			return hist_cache.cache[i].offset;
+		}
+	}
+	hist_cache.misses++;
+	return -1; /* Not cached */
+}
+
+static int cli_news_cache_stats(struct bbs_cli_args *a)
+{
+	bbs_dprintf(a->fdout, "%-18s %15d\n", "Cache Slots", HIST_CACHE_SIZE);
+	bbs_dprintf(a->fdout, "%-18s %15u\n", "Cache Size", hist_cache.count);
+	bbs_dprintf(a->fdout, "%-18s %15u\n", "Cache Head", hist_cache.index);
+	bbs_dprintf(a->fdout, "%-18s %15lu\n", "Cache Hits (True)", hist_cache.hits_true);
+	bbs_dprintf(a->fdout, "%-18s %15lu\n", "Cache Hits (False)", hist_cache.hits_false);
+	bbs_dprintf(a->fdout, "%-18s %15lu\n", "Cache Misses", hist_cache.misses);
+	return 0;
+}
+
 /* The number of iterations is kept small so that the test completes in a reasonable time when run under valgrind.
  * NUM_ITERATIONS of 4194304 takes about 5 seconds normally but almost a minute under valgrind. */
 #define NUM_ITERATIONS 1572864
@@ -228,7 +303,7 @@ static struct bbs_unit_test tests[] =
 	{ "Bloom Filter", test_bloom_filter },
 };
 
-static int _history_bloom_init(struct bloom_filter *bf, size_t maxsize, size_t min_elements, unsigned long fp_inv, size_t *restrict actual_num_elements)
+static int _history_bloom_init(struct bloom_filter *bf, int global, size_t maxsize, size_t min_elements, unsigned long fp_inv, size_t *restrict actual_num_elements)
 {
 	char buf[NNTP_BUFSIZ];
 	int res, line = 0;
@@ -263,16 +338,34 @@ static int _history_bloom_init(struct bloom_filter *bf, size_t maxsize, size_t m
 		SEEK_END_HISTORY(histfp);
 		return -1;
 	}
+	if (global) {
+		/* Reset cache counters */
+		hist_cache.index = 0;
+		hist_cache.count = 0;
+	}
 	REWIND_HISTORY(histfp);
-	while ((fgets(buf, sizeof(buf), histfp))) {
+
+	for (;;) {
+		size_t len;
 		char *msgid, *s = buf;
+		off_t offset = ftell(histfp);
+		if (!(fgets(buf, sizeof(buf), histfp))) {
+			break;
+		}
 		msgid = strsep(&s, "\t");
 		line++;
 		if (!msgid) {
 			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
 			continue;
 		}
-		bloom_filter_add(bf, msgid, (int) strlen(msgid));
+		len = strlen(msgid);
+		bloom_filter_add(bf, msgid, (int) len);
+		if (global) {
+			/* This has nothing to do with the Bloom filter, but since we're already traversing history,
+			 * also update the ring buffer cache so we don't have to do another traversal,
+			 * and we build/rebuild the cache whenever we build/rebuild the Bloom filter. */
+			hist_cache_put(msgid, len, offset);
+		}
 	}
 	/* When we're done, seek back to the end of the file for appends */
 	SEEK_END_HISTORY(histfp);
@@ -284,7 +377,7 @@ int history_bloom_init(struct bloom_filter *bf)
 	int res;
 	size_t n; /* Unused */
 	bbs_mutex_lock(&histlock);
-	res = _history_bloom_init(bf, 0, 0, 0, &n);
+	res = _history_bloom_init(bf, 0, 0, 0, 0, &n);
 	bbs_mutex_unlock(&histlock);
 	return res;
 }
@@ -318,11 +411,17 @@ static int hist_bloom_create(void)
 
 	/* Start out with a minimum # of elements of 4096, so that we don't have to recreate the Bloom filter
 	 * several times just in the first few thousand articles. */
-	if (_history_bloom_init(&hist_bloom.filter, SIZE_MB(history_bloom_maxmem), 4096, history_bloom_maxfpinv, &n)) {
+	if (_history_bloom_init(&hist_bloom.filter, 1, SIZE_MB(history_bloom_maxmem), 4096, history_bloom_maxfpinv, &n)) {
 		return -1;
 	}
 	hist_bloom.available = 1;
+
+	/* Reset stats for Bloom filter only on success */
 	hist_bloom.cursize = n;
+	hist_bloom.false_positives = 0;
+	hist_bloom.true_positives = 0;
+	hist_bloom.true_negatives = 0;
+	hist_cache_reset_stats();
 
 	/* Since we initially allocate this Bloom filter based on the number of articles that
 	 * were present in history at startup, over time the filter will perform worse and worse
@@ -359,10 +458,10 @@ static int hist_bloom_reset(void)
 	return hist_bloom_create();
 }
 
-static inline void hist_bloom_add(const char *messageid)
+static inline void hist_bloom_add(const char *messageid, size_t msgidlen)
 {
 	if (hist_bloom.available) {
-		bloom_filter_add(&hist_bloom.filter, messageid, (int) strlen(messageid));
+		bloom_filter_add(&hist_bloom.filter, messageid, (int) msgidlen);
 	}
 	if (hist_bloom.max_elements && hist_bloom.filter.count > hist_bloom.max_elements) {
 		/* We create the new filter in such a way that we always have a filter afterwards;
@@ -428,6 +527,7 @@ static int cli_news_bloom_size(struct bbs_cli_args *a)
 }
 
 static struct bbs_cli_entry cli_commands_nntp_history[] = {
+	BBS_CLI_COMMAND(cli_news_cache_stats, "news histcache stats", 3, "Display history Message-ID cache stats", NULL),
 	BBS_CLI_COMMAND(cli_news_bloom_stats, "news bloom stats", 3, "Display global history Bloom filter stats", NULL),
 	BBS_CLI_COMMAND(cli_news_bloom_size, "news bloom size", 5, "Compute size required for Bloom filter based on article count and false positives", "news bloom size <num> <fp_inv>"),
 };
@@ -771,6 +871,8 @@ dokeep:
 int history_add(const char *messageid, time_t arrival_time, time_t expires, size_t bytes, const char *links)
 {
 	char expiresbuf[32]; /* - indicates no expiration */
+	size_t msgidlen;
+	off_t offset;
 
 	if (expires > 0) {
 		snprintf(expiresbuf, sizeof(expiresbuf), "%ld", expires);
@@ -780,9 +882,15 @@ int history_add(const char *messageid, time_t arrival_time, time_t expires, size
 
 	bbs_mutex_lock(&histlock); /* The write will be atomic, but other threads may want to read the hist file */
 	REQUIRE_HISTORY_FP(histfp);
+	offset = ftell(histfp);
 	fprintf(histfp, "%s\t%ld~%s~%lu\t%s\n", messageid, arrival_time, expiresbuf, bytes, links);
 	fflush(histfp);
-	hist_bloom_add(messageid);
+
+	/* Update Bloom filter and cache */
+	msgidlen = strlen(messageid);
+	hist_bloom_add(messageid, msgidlen);
+	hist_cache_put(messageid, strlen(messageid), offset);
+
 	bbs_mutex_unlock(&histlock);
 	return 0;
 }
@@ -848,6 +956,8 @@ static int history_messageid_exists_with_bloom_filter(const char *messageid, int
 	int found = 0;
 	char buf[NNTP_BUFSIZ];
 	int line = 0;
+	ssize_t offset;
+	char *msgid, *restofline;
 
 	bbs_mutex_lock(&histlock);
 	if (check_bloom_filter && hist_bloom.available) {
@@ -858,9 +968,28 @@ static int history_messageid_exists_with_bloom_filter(const char *messageid, int
 		}
 	}
 	REQUIRE_HISTORY_FP(histfp);
+
+	offset = hist_cache_get(messageid);
+	if (offset != -1) {
+		/* We found the Message-ID in the cache, or at least an article with the same hashed Message-ID.
+		 * Check if it's actually the same message, and if it is, no need to do a full history traversal to find it. */
+		if (fseek(histfp, offset, SEEK_SET) == -1) {
+			bbs_error("Failed to seek history to %ld: %s\n", offset, strerror(errno));
+		} else if (fgets(buf, sizeof(buf), histfp)) {
+			restofline = buf;
+			msgid = strsep(&restofline, "\t");
+			if (msgid && !strcmp(msgid, messageid)) {
+				hist_cache.hits_true++;
+				found = 1;
+				goto done;
+			}
+			hist_cache.hits_false++;
+		}
+	}
+
 	REWIND_HISTORY(histfp);
 	while ((fgets(buf, sizeof(buf), histfp))) {
-		char *msgid, *s = buf;
+		char *s = buf;
 		msgid = strsep(&s, "\t");
 		line++;
 		if (!msgid) {
@@ -872,8 +1001,7 @@ static int history_messageid_exists_with_bloom_filter(const char *messageid, int
 			break;
 		}
 	}
-	/* When we're done, seek back to the end of the file for appends */
-	SEEK_END_HISTORY(histfp);
+
 	if (check_bloom_filter && hist_bloom.available) {
 		if (found) {
 			hist_bloom.true_positives++;
@@ -881,6 +1009,8 @@ static int history_messageid_exists_with_bloom_filter(const char *messageid, int
 			hist_bloom.false_positives++;
 		}
 	}
+done:
+	SEEK_END_HISTORY(histfp); /* When we're done, seek back to the end of the file for appends */
 	bbs_mutex_unlock(&histlock);
 	return found;
 }
@@ -902,13 +1032,34 @@ int history_find_article_by_messageid(struct nntp_session *nntp, const char *mes
 	int found = 0;
 	char buf[NNTP_BUFSIZ];
 	int line = 0;
+	ssize_t offset;
+	char *msgid, *grp, *artnumstr, *restofline;
 
 	bbs_mutex_lock(&histlock);
 	REQUIRE_HISTORY_FP(histfp);
+
+	offset = hist_cache_get(messageid);
+	if (offset != -1) {
+		/* We found the Message-ID in the cache, or at least an article with the same hashed Message-ID.
+		 * Check if it's actually the same message, and if it is, no need to do a full history traversal to find it. */
+		if (fseek(histfp, offset, SEEK_SET) == -1) {
+			bbs_error("Failed to seek history to %ld: %s\n", offset, strerror(errno));
+		} else if (fgets(buf, sizeof(buf), histfp)) {
+			restofline = buf;
+			msgid = strsep(&restofline, "\t");
+			if (msgid && !strcmp(msgid, messageid) && !strlen_zero(restofline) && strchr(restofline, '\t')) {
+				hist_cache.hits_true++;
+				line = -1; /* We don't know the actual number, and in most (but not all) errors, this branch is not taken */
+				goto match;
+			}
+			hist_cache.hits_false++;
+		}
+	}
+
 	REWIND_HISTORY(histfp);
 	while ((fgets(buf, sizeof(buf), histfp))) {
-		char *grp, *artnumstr, *restofline = buf;
-		char *msgid = strsep(&restofline, "\t");
+		restofline = buf;
+		msgid = strsep(&restofline, "\t");
 		line++;
 		if (!msgid) {
 			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
@@ -917,13 +1068,13 @@ int history_find_article_by_messageid(struct nntp_session *nntp, const char *mes
 		if (strcmp(msgid, messageid)) {
 			continue;
 		}
+match:
 		/* Found the article */
 		strsep(&restofline, "\t"); /* This is the complex middle, restofline now is just the links */
 		if (strlen_zero(restofline)) {
 			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
 			continue;
 		}
-
 		if (*restofline == '\n') {
 			/* It can have no entries if the article was removed, but is still in history for a little while longer to refuse duplicates.
 			 * Since we found the Message-ID, we can stop searching, but the article isn't in the spool, so it's not considered "found". */
