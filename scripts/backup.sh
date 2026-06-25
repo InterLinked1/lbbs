@@ -22,6 +22,7 @@
 
 # Adjustable options:
 # Specify environment variable GPG_PUBKEY to specify the path to a GPG public key to be used for encryption of the backup
+# Specify environment variable EXCLUSIONS to provide a space-separated list of directories which should NOT be included in the backup
 
 # Get all the relevant paths from the LBBS config files
 BBS_CONFIG_DIR=/etc/lbbs
@@ -69,8 +70,25 @@ BBS_NNTP_DIR=$( get_config_value "net_nntp.conf" "general" "newsdir" )
 
 DIRS="$BBS_CONFIG_DIR $BBS_FILES_ROOT $BBS_HOMEDIR_TEMPLATE $BBS_CONTAINER_TEMPLATE $LMDB_DIR $BBS_MAILDIR $BBS_HTTP_ROOT $BBS_GOPHER_ROOT $BBS_NNTP_DIR"
 
-DIRS=$( printf "%s" "$DIRS" | tr -s " " | xargs ) # squash multiple whitespace to avoid turning it into multiple newlines below
+DIRS=$( printf "%s" "$DIRS" | tr -d '\r' | tr -s " " | xargs ) # squash multiple whitespace to avoid turning it into multiple newlines below
 DIRS="$DIRS " # end with whitespace for last directory
+
+eliminate_exclusions() {
+	EXCLUSIONS=$( printf "%s" "$EXCLUSIONS" | tr ' ' '\n' )
+	printf "$DIRS" | tr ' ' '\n' | while read DIR; do
+		if printf "%s" "$EXCLUSIONS" | grep "^$DIR"; then
+			# Can't print debug messages to STDOUT or they'll be part of the result,
+			# and we don't want to print them to STDERR either or cron will send an email
+			# Uncomment for debugging:
+			# printf "Directory excluded: %s\n" "$DIR" >&2
+			: # Directory is excluded
+		else
+			printf "%s " "$DIR"
+		fi
+	done
+}
+
+DIRS=$( eliminate_exclusions )
 
 # Get the "minimum spanning set" of these directories
 
@@ -84,7 +102,7 @@ done
 eliminate_nonexistent() {
 	# Normally, when pipelining, any modifications made in the loop (since it's at the end of the pipeline) won't persist after the loop
 	# So we call this as a function and echo the result so the parent can see it
-	printf "$DIRS" | tr -d '\r' | tr ' ' '\n' | while read DIR; do
+	printf "$DIRS" | tr ' ' '\n' | while read DIR; do
 		if [ ! -d "$DIR" ]; then
 			# Don't include in result, so print to STDERR
 			printf "Directory does not exist: %s\n" "$DIR" >&2
