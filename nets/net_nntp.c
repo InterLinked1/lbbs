@@ -3178,7 +3178,7 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 			if (injection_add_posting_account == INJECTION_POSTING_ACCOUNT_OBFUSCATED) {
 				/* Yes, SHA1 is not as good as SHA256, but SHA256 is a bit long for this value and we are just intending to obfuscate, not provide cryptographic guarantees */
 				char hash[SHA1_BUFSIZE];
-				hash_sha1(bbs_username(nntp->node->user), hash);
+				hash_sha1_hex((const unsigned char*) bbs_username(nntp->node->user), strlen(bbs_username(nntp->node->user)), hash);
 				SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "; posting-account=\"%s\"", hash);
 			} else {
 				SAFE_FAST_APPEND_NOSPACE(append, sizeof(append), appendpos, appendleft, "; posting-account=\"%s\"", bbs_username(nntp->node->user));

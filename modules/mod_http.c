@@ -947,7 +947,7 @@ int http_websocket_handshake(struct http_session *http)
 	key = http_request_header(http, "Sec-WebSocket-Key");
 	if (key) { /* This is optional, only if the client wants to */
 		char concatenation[256];
-		char hash[SHA1_LEN];
+		unsigned char hash[SHA1_LEN];
 		int outlen;
 		char *response;
 		/* Compute the challenge response to include in our response. */
@@ -957,8 +957,8 @@ int http_websocket_handshake(struct http_session *http)
 			bbs_warning("Buffer truncation during handshake\n"); /* sizeof(concatenation) too small, or malicious request */
 			return -1;
 		}
-		hash_sha1_bytes(concatenation, hash);
-		response = base64_encode(hash, SHA1_LEN, &outlen);
+		hash_sha1_bytes((unsigned char*) concatenation, strlen(concatenation), hash);
+		response = base64_encode((const char*) hash, SHA1_LEN, &outlen);
 		if (!response) {
 			bbs_warning("base64 encoding failed\n");
 			return -1;

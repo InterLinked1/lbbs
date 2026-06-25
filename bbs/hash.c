@@ -24,6 +24,7 @@
 /* For hashing: */
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/md5.h>
 
 #include <openssl/bio.h>
 #include <openssl/ssl.h>
@@ -31,19 +32,17 @@
 
 #undef sprintf
 
+/* We already use OpenSSL, so just use its functions */
+
 /*! \todo Migrate to EVP functions or newer wrappers */
 
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* SHA256_Init, SHA256_Update, SHA256_Final deprecated in OpenSSL 3.0 */
-int hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
+int hash_sha256_hex(const unsigned char *s, size_t bytes, char buf[SHA256_BUFSIZE])
 {
 	int i;
 	unsigned char hash[SHA256_DIGEST_LENGTH];
 
-	/* We already use OpenSSL, just use that */
-	SHA256_CTX sha256;
-	SHA256_Init(&sha256);
-	SHA256_Update(&sha256, s, strlen(s));
-	SHA256_Final(hash, &sha256);
+	SHA256(s, (unsigned long) bytes, hash);
 
 	for(i = 0; i < SHA256_DIGEST_LENGTH; i++) {
 		sprintf(buf + (i * 2), "%02x", hash[i]); /* Safe */
@@ -52,16 +51,12 @@ int hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
 	return 0;
 }
 
-int hash_sha1(const char *s, char buf[SHA1_BUFSIZE])
+int hash_sha1_hex(const unsigned char *s, size_t bytes, char buf[SHA1_BUFSIZE])
 {
 	int i;
 	unsigned char hash[SHA_DIGEST_LENGTH];
 
-	/* We already use OpenSSL, just use that */
-	SHA_CTX sha1;
-	SHA1_Init(&sha1);
-	SHA1_Update(&sha1, s, strlen(s));
-	SHA1_Final(hash, &sha1);
+	SHA1(s, (unsigned long) bytes, hash);
 
 	for(i = 0; i < SHA_DIGEST_LENGTH; i++) {
 		sprintf(buf + (i * 2), "%02x", hash[i]); /* Safe */
@@ -70,17 +65,15 @@ int hash_sha1(const char *s, char buf[SHA1_BUFSIZE])
 	return 0;
 }
 
-int hash_sha1_bytes(const char *s, char buf[SHA1_LEN])
+int hash_sha1_bytes(const unsigned char *s, size_t bytes, unsigned char buf[SHA1_LEN])
 {
-	unsigned char hash[SHA_DIGEST_LENGTH];
+	SHA1(s, (unsigned long) bytes, buf);
+	return 0;
+}
 
-	/* We already use OpenSSL, just use that */
-	SHA_CTX sha1;
-	SHA1_Init(&sha1);
-	SHA1_Update(&sha1, s, strlen(s));
-	SHA1_Final(hash, &sha1);
-
-	memcpy(buf, hash, SHA1_LEN);
+int hash_md5_bytes(const unsigned char *s, size_t bytes, unsigned char buf[MD5_LEN])
+{
+	MD5(s, (unsigned long) bytes, buf);
 	return 0;
 }
 #pragma GCC diagnostic pop /* -Wdeprecated-declarations */

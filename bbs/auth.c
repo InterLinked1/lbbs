@@ -572,10 +572,10 @@ static int bbs_node_authenticate(struct bbs_node *node, const char *username, co
 		return -1;
 	}
 
-	hash_sha256(password, sha256_hash);
+	hash_sha256_hex((const unsigned char*) password, strlen(password), sha256_hash);
 
 	/* Fast authentication for previously and recently successful logins */
-	if (login_is_cached(node, username, sha256_hash)) {
+	if (login_is_cached(node, username, (const char*) sha256_hash)) {
 		node->user = bbs_user_info_by_username(username); /* Get the actual user from the DB */
 		if (!node->user) {
 			bbs_warning("Login cached for nonexistent user %s?\n", username);
