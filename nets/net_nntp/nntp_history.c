@@ -291,6 +291,7 @@ int history_bloom_init(struct bloom_filter *bf)
 
 static struct hist_bloom_data {
 	struct bloom_filter filter;
+	size_t cursize;
 	size_t max_elements;
 	unsigned int false_positives;
 	unsigned int true_positives;
@@ -321,6 +322,7 @@ static int hist_bloom_create(void)
 		return -1;
 	}
 	hist_bloom.available = 1;
+	hist_bloom.cursize = n;
 
 	/* Since we initially allocate this Bloom filter based on the number of articles that
 	 * were present in history at startup, over time the filter will perform worse and worse
@@ -389,11 +391,12 @@ static int cli_news_bloom_stats(struct bbs_cli_args *a)
 	}
 	/* Technically we should rdlock here, but we only have a mutex, so skip it */
 	if (hist_bloom.false_positives + hist_bloom.true_positives) {
-		calc_fp = (int) (100.0 * (hist_bloom.false_positives / (1.0 * hist_bloom.false_positives + hist_bloom.true_positives)));
+		calc_fp = (int) (100.0 * (hist_bloom.false_positives / (1.0 * hist_bloom.false_positives + hist_bloom.true_positives + hist_bloom.true_negatives)));
 	} else {
 		calc_fp = 0;
 	}
 	bbs_dprintf(a->fdout, "%-15s %15lu\n", "# Elements", hist_bloom.filter.count); /* This is how many messages are in the history file */
+	bbs_dprintf(a->fdout, "%-15s %15lu\n", "Alloc Elements", hist_bloom.cursize); /* This was the # of elements used to create the Bloom filter */
 	bbs_dprintf(a->fdout, "%-15s %15lu\n", "Recreate Thresh", hist_bloom.max_elements); /* Threshold at which we should build a new Bloom filter */
 	bbs_dprintf(a->fdout, "%-15s %15lu\n", "# Bits", hist_bloom.filter.nbits);
 	bbs_dprintf(a->fdout, "%-15s %15u\n", "# Hashes", hist_bloom.filter.nhashes);

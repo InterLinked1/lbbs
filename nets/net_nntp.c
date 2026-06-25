@@ -1354,7 +1354,9 @@ static int _path_contains_site(const char *path, const char *site, size_t sitele
 		/* Check if this is the site of interest */
 		thissitelen = (size_t) (nextbang - path);
 		/* If the lengths aren't equal, don't even bother comparing, can't match. */
-		if (thissitelen >= sitelen && thissitelen == sitelen) {
+		if (thissitelen == sitelen || (thissitelen == sitelen + 1 && path[sitelen] == ' ')) {
+			/* If the Path header had to be wrapped and we are searching for a site identity at the end of a line,
+			 * then a single space exists where the header folder; this is still a match. */
 			if (!strncasecmp(path, site, sitelen)) {
 				return 1;
 			}
@@ -3509,6 +3511,7 @@ static int save_header_value(struct article_info *artinfo, char *s, char *errbuf
 			snprintf(errbuf, errbuflen, "Temporary system error"); \
 			return -1; \
 		} \
+		hval = var; /* The logic at the end of the function to replace with space needs to operate on the saved variable */ \
 	}
 
 	/* CR LF pairs will not be present even in unfolded multi-line headers, since we appended with a space between lines.
@@ -3820,6 +3823,9 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 						 * then the rest of what was originally in the header, making sure we keep the length up to date.
 						 * If we are receiving an article from a reader, we also add .POSTED (but not not-for-mail as tail is already present).
 						 *
+						 * Note that we don't reject articles that already had our site name, so as to ensure that a malicious node
+						 * doesn't cause us to reject articles we haven't actually yet seen.
+						 *
 						 * RFC 5537 allows us to append the FQDN/IP of the source to !.POSTED; we do not, to protect poster privacy. */
 						SAFE_FAST_APPEND(headerbuf, sizeof(headerbuf), headerpos, headerleft, "Path: %s%s",
 							newsname, mode == NNTP_MODE_READER ? "!.POSTED" : "");
@@ -3870,7 +3876,7 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 				dot_stuffed_lines++; /* This line is dot-stuffed, keep track so we can adjust the length */
 				if (s[1] && s[1] != '.') {
 					snprintf(errbuf, errbuflen, "Line %d was not dot-stuffed but should've been", lines);
-					postfail = 1;
+					permerror = postfail = 1;
 					continue;
 				}
 			}
@@ -3881,14 +3887,14 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 		 * and as in practice, there are a lot of Usenet articles with lines between 512 and 1024. */
 		if (len > 2 * NNTP_MAX_LINE_LENGTH - 2) {
 			snprintf(errbuf, errbuflen, "Contains excessively long line (%lu > %d B)", len + 2, 2 * NNTP_MAX_LINE_LENGTH);
-			postfail = 1;
+			permerror = postfail = 1;
 			*artlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
 			continue;
 		}
 
 		if (article_too_large(mode, (unsigned int) (*artlen + (long unsigned int) len + 2))) {
 			snprintf(errbuf, errbuflen, "Size exceeds site size limit");
-			postfail = 1;
+			permerror = postfail = 1;
 			*artlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
 			continue;
 		}
@@ -3994,6 +4000,9 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 		} else {
 			/* Temporary error */
 			if (streaming) {
+				if (!s_strlen_zero(errbuf)) {
+					bbs_debug(4, "Transfer failed: %s\n", errbuf);
+				}
 				nntp_rx_reply(nntp, artlen, articleid, LOG_DEFER, NNTP_FAIL_TERMINATING, "Transfer failed; retry later");
 				return -1;
 			} else if (nntp->mode == NNTP_MODE_TRANSIT) {
@@ -4802,7 +4811,10 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 
 static void handle_client(struct nntp_session *nntp)
 {
-	char buf[NNTP_MAX_LINE_LENGTH + 1];
+	/* This is a way more than NNTP_MAX_LINE_LENGTH, but this matches the buffer size used when sucking articles,
+	 * as a lot of articles exceed the 512-byte limit. A separate limit enforces a line length limit in
+	 * nntp_read_article, but a large buffer here avoids buffer exhaustion for routine articles. */
+	char buf[8192];
 	struct readline_data rldata;
 	int posting_allowed = can_post_at_all();
 
@@ -4873,7 +4885,10 @@ static void *__nntp_handler(void *varg)
 	struct bbs_node *node = varg;
 
 	bbs_node_net_begin(node);
-	nntp_handler(node, !strcmp(node->protname, "NNTPS"), !strcmp(node->protname, "NNSP") ? NNTP_MODE_TRANSIT: NNTP_MODE_READER);
+
+	/* Connections to the default NNTP port (119) are initially transit unless MODE READER is used to switch to reader mode.
+	 * The secure ports are only either reader or transit depending on the port. */
+	nntp_handler(node, !strcmp(node->protname, "NNTPS"), !strcmp(node->protname, "NNTPS") ? NNTP_MODE_READER: NNTP_MODE_TRANSIT);
 	bbs_node_exit(node);
 	return NULL;
 }
@@ -4923,12 +4938,28 @@ static int load_config(void)
 	if (!bbs_config_val_set_uint(cfg, "history", "bloom_maxfpinv", &utmp)) {
 		history_bloom_maxfpinv = utmp;
 	}
+	bbs_config_val_set_true(cfg, "articles", "spoolcompression", &spool_compression);
 
 	/* Note: nntp_suckfeed_init needs to be initialized before the bulk of load_config() so the list is ready to receive items when processing the config
 	 * However, it also needs to be after loading newsdir */
-	if (active_init() || spool_init() || history_init() || nntp_suckfeed_init()) {
+	if (active_init()) {
 		bbs_config_unlock(cfg);
-		return -1;
+		return -2;
+	} else if (spool_init()) {
+		active_cleanup();
+		bbs_config_unlock(cfg);
+		return -2;
+	} else if (history_init()) {
+		active_cleanup();
+		spool_init();
+		bbs_config_unlock(cfg);
+		return -2;
+	} else if (nntp_suckfeed_init()) {
+		active_cleanup();
+		spool_init();
+		history_cleanup();
+		bbs_config_unlock(cfg);
+		return -2;
 	}
 
 	/* Remaining general settings */
@@ -4972,7 +5003,6 @@ static int load_config(void)
 	bbs_config_val_set_uint(cfg, "articles", "minhistory", &min_history);
 	bbs_config_val_set_uint(cfg, "articles", "minlines", &min_lines);
 	bbs_config_val_set_uint(cfg, "articles", "maxlines", &max_lines);
-	bbs_config_val_set_true(cfg, "articles", "spoolcompression", &spool_compression);
 
 	/* Reader settings */
 	bbs_config_val_set_true(cfg, "readers", "requiresecurelogin", &require_secure_login);
@@ -5001,6 +5031,7 @@ static int load_config(void)
 	while ((section = bbs_config_walk(cfg, section))) {
 		/* Skip sections already processed above */
 		SKIP_SECTION("general");
+		SKIP_SECTION("history");
 		SKIP_SECTION("nntp");
 		SKIP_SECTION("nntps");
 		SKIP_SECTION("nnsp");

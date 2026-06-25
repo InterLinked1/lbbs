@@ -87,6 +87,8 @@ static int run(void)
 	client1 = test_make_socket(119);
 	REQUIRE_FD(client1);
 	CLIENT_EXPECT(client1, XSTR(NNTP_OK_BANNER_POST) " " TEST_NEWS_HOSTNAME);
+	SWRITE(client1, "MODE READER\r\n");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_BANNER_POST);
 	SWRITE(client1, "AUTHINFO USER " TEST_USER "@" TEST_NEWS_HOSTNAME "\r\n");
 	CLIENT_EXPECT_CODE(client1, NNTP_CONT_AUTHINFO);
 	SWRITE(client1, "AUTHINFO PASS " TEST_PASS "\r\n");

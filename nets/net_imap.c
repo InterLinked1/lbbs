@@ -91,7 +91,7 @@
 #define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT UNAUTHENTICATE SPECIAL-USE LIST-EXTENDED LIST-STATUS XLIST CHILDREN IDLE NOTIFY NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ MULTIAPPEND APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC STATUS=SIZE"
 
 #define CAPABILITY_FMT "%s%s%s"
-#define CAPABILITY_ARGS IMAP_CAPABILITIES, allow_idle ? " IDLE" : "", deflate_compression_available() ? " COMPRESS=DEFLATE" : ""
+#define CAPABILITY_ARGS IMAP_CAPABILITIES, allow_idle ? " IDLE" : "", allow_compression && deflate_compression_available() ? " COMPRESS=DEFLATE" : ""
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -171,6 +171,7 @@ static int imap_port = DEFAULT_IMAP_PORT;
 static int imaps_port = DEFAULT_IMAPS_PORT;
 
 static int imap_enabled = 0, imaps_enabled = 1;
+static int allow_compression = 1;
 
 static int allow_idle = 1;
 static int idle_notify_interval = 600; /* Every 10 minutes, by default */
@@ -5148,7 +5149,7 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 	} else if (!strcasecmp(command, "COMPRESS")) {
 		REQUIRE_ARGS(s);
 		if (!strcasecmp(s, "DEFLATE")) {
-			if (!deflate_compression_available()) {
+			if (!allow_compression || !deflate_compression_available()) {
 				imap_reply(imap, "NO Compression unavailable");
 			} else if (bbs_io_transform_active(&imap->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
 				imap_reply(imap, "NO [COMPRESSIONACTIVE] DEFLATE already enabled");
@@ -5319,6 +5320,7 @@ static int load_config(void)
 	}
 
 	bbs_config_val_set_true(cfg, "general", "allowidle", &allow_idle);
+	bbs_config_val_set_true(cfg, "general", "allowcompression", &allow_compression);
 	bbs_config_val_set_true(cfg, "general", "idlenotifyinterval", &idle_notify_interval);
 	bbs_config_val_set_uint(cfg, "general", "maxappendsize", &max_append_size);
 	bbs_config_val_set_uint(cfg, "general", "maxuserproxies", &maxuserproxies);

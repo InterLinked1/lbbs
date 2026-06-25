@@ -345,6 +345,12 @@ static int send_articles_streaming(struct nntp_client *nc, struct site *site, st
 			return -1;
 		}
 		bbs_term_line(nc->buf); /* Strip LF from message ID */
+		res = atoi(nc->buf); /* Parse the code */
+		if (res != NNTP_FAIL_TAKETHIS_REJECT && res != NNTP_FAIL_TERMINATING && res != NNTP_OK_TAKETHIS) {
+			/* Probably a 4xx or 5xx error */
+			bbs_notice("TAKETHIS failed: %s\n", nc->buf);
+			return -1;
+		}
 		messageid = bbs_strcnext(nc->buf, ' ');
 		if (!messageid) {
 			bbs_client_err("Unexpected TAKETHIS response: '%s'\n", nc->buf);
@@ -354,7 +360,6 @@ static int send_articles_streaming(struct nntp_client *nc, struct site *site, st
 			bbs_client_err("Article ID mismatch in TAKETHIS response, expected '%s', got '%s'\n", art->messageid, messageid);
 			return -1;
 		}
-		res = atoi(nc->buf); /* Parse the code */
 		switch (res) {
 			case NNTP_FAIL_TAKETHIS_REJECT:
 				art->rejected = 1;
@@ -867,7 +872,12 @@ void feed_nntp_cleanup_feed(struct site *site)
 		if (!site->feed.nntp.thread_done && site->feed.nntp.waiting) { /* Don't interrupt unless thread is waiting or we may interrupt a transmission, let it end gracefully */
 			bbs_pthread_interrupt(site->feed.nntp.thread);
 		}
+		/* Release the lock to wait or we'll deadlock when the feeder thread calls merge_backlog upon exit.
+		 * (It needs the mutex to ensure no further articles are written to the backlog simultaneously.)
+		 * feed_nntp_cleanup_feed can only be called once, so we're not worried about concurrency right here either. */
+		bbs_mutex_unlock(&site->feed.nntp.lock);
 		bbs_pthread_join(site->feed.nntp.thread, NULL);
+		bbs_mutex_lock(&site->feed.nntp.lock);
 	}
 	if (site->feed.nntp.fp) {
 		fclose(site->feed.nntp.fp);

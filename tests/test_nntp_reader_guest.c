@@ -77,6 +77,8 @@ static int run(void)
 	REQUIRE_FD(client1);
 	CLIENT_EXPECT(client1, "200 " TEST_HOSTNAME);
 
+	SWRITE(client1, "MODE READER\r\n");
+	CLIENT_EXPECT_CODE(client1, NNTP_OK_BANNER_POST);
 	SWRITE(client1, "AUTHINFO USER " TEST_USER "@" TEST_HOSTNAME "\r\n");
 	CLIENT_EXPECT(client1, "381");
 	SWRITE(client1, "AUTHINFO PASS " TEST_PASS "\r\n");
@@ -91,6 +93,9 @@ static int run(void)
 	guest = test_make_socket(119);
 	REQUIRE_FD(guest);
 	CLIENT_EXPECT(guest, "200 " TEST_HOSTNAME);
+
+	SWRITE(guest, "MODE READER\r\n");
+	CLIENT_EXPECT_CODE(guest, NNTP_OK_BANNER_POST);
 
 	SWRITE(guest, "LIST ACTIVE\r\n");
 	CLIENT_EXPECT_EVENTUALLY(guest, "misc.test");

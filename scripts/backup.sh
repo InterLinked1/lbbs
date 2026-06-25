@@ -84,7 +84,7 @@ done
 eliminate_nonexistent() {
 	# Normally, when pipelining, any modifications made in the loop (since it's at the end of the pipeline) won't persist after the loop
 	# So we call this as a function and echo the result so the parent can see it
-	printf "$DIRS" | tr ' ' '\n' | while read DIR; do
+	printf "$DIRS" | tr -d '\r' | tr ' ' '\n' | while read DIR; do
 		if [ ! -d "$DIR" ]; then
 			# Don't include in result, so print to STDERR
 			printf "Directory does not exist: %s\n" "$DIR" >&2
