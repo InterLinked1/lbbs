@@ -1163,6 +1163,8 @@ static int handle_etrn(struct smtp_session *smtp, char *s)
 	int res;
 	char *args;
 
+	/*! \todo Even though ETRN is not insecure like TURN, there should probably be some kind of IP-based ACL for who is allowed to issue ETRN */
+
 	if (smtp->from) {
 		/* RFC 1985 5: Illegal during transactions */
 		smtp_reply(smtp, 502, 5.5.1, "Unsupported command");

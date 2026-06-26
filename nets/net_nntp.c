@@ -22,6 +22,8 @@
  * \note Supports RFC 6048 LIST extensions
  * \note Supports RFC 8054 COMPRESS DEFLATE
  *
+ * \note Supports unofficial ETRN extension
+ *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
@@ -60,6 +62,7 @@
 #include "net_nntp/nntp_history.h"
 #include "net_nntp/nntp_feed.h"
 #include "net_nntp/nntp_suck.h"
+#include "net_nntp/nntp_client.h"
 
 /* NNTP ports */
 /* Reading server */
@@ -1259,6 +1262,142 @@ static int sites_init_feeds(void)
 		}
 	}
 	RWLIST_UNLOCK(&sites);
+	return 0;
+}
+
+/* Support for NNTP ETRN ACL checks */
+struct etrn_client {
+	const char *host; /* Hostname or IP */
+	struct stringlist identities; /* Allowed sites/path identities */
+	RWLIST_ENTRY(etrn_client) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(etrn_clients, etrn_client);
+
+static int add_etrn(const char *host, const char *identities)
+{
+	struct etrn_client *e = calloc(1, sizeof(*e) + strlen(host) + 1);
+	if (ALLOC_FAILURE(e)) {
+		return -1;
+	}
+	strcpy(e->data, host); /* Safe */
+	e->host = e->data;
+	stringlist_push_list(&e->identities, identities);
+	RWLIST_INSERT_TAIL(&etrn_clients, e, entry);
+	return 0;
+}
+
+static void free_etrn(struct etrn_client *e)
+{
+	stringlist_empty(&e->identities);
+	free(e);
+}
+
+static inline int etrn_allowed(struct site *site, struct stringlist *identities)
+{
+	struct stringitem *i = NULL;
+	const char *exclusion;
+
+	/* Site name, if not exclusions only */
+	if (!site->exclusionsonly && stringlist_contains(identities, site->name)) {
+		return 1;
+	}
+
+	/* Exclusions */
+	while ((exclusion = stringlist_next(&site->exclusions, &i))) {
+		if (stringlist_contains(identities, exclusion)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int handle_etrn(struct nntp_session *nntp, const char *identity)
+{
+	/* ~Same as RFC 1985 ETRN for SMTP, but simpler:
+	 * - no @ or # as RFC 1985 in 5.3 (at least in this implementation)
+	 * - only flush a certain feed based on provided path identity
+	 * - only valid in transit mode, not reader mode
+	 */
+	struct etrn_client *e;
+	struct site *site;
+
+	/* Check if this peer is authorized to use ETRN */
+	RWLIST_RDLOCK(&etrn_clients);
+	RWLIST_TRAVERSE(&etrn_clients, e, entry) {
+		if (bbs_ip_match_ipv4(nntp->node->ip, e->host)) {
+			break;
+		}
+	}
+	if (!e) {
+		RWLIST_UNLOCK(&etrn_clients);
+		nntp_send(nntp, 459, "Not allowed to flush feeds");
+		return 0;
+	}
+
+	/* If so, check if it's authorized to flush feed for requested site */
+	RWLIST_RDLOCK(&sites);
+	RWLIST_TRAVERSE(&sites, site, entry) {
+		/* Find the site that uses the identity in the ETRN command */
+		if ((!site->exclusionsonly && !strcmp(identity, site->name)) || stringlist_contains(&site->exclusions, identity)) {
+			/* Check if the peer is authorized for this identity */
+			if (!etrn_allowed(site, &e->identities)) {
+				nntp_send(nntp, 459, "Not allowed to flush this feed");
+			} else if (!site_flush(site)) {
+				nntp_send(nntp, 250, "Feed flushed for %s", identity);
+			} else {
+				nntp_send(nntp, 250, "No articles waiting for %s", identity);
+			}
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&sites);
+	RWLIST_UNLOCK(&etrn_clients);
+	if (!site) {
+		nntp_send(nntp, 458, "Unable to queue messages for %s", identity);
+	}
+	return 0;
+}
+
+static int cli_feedflushreq(struct bbs_cli_args *a)
+{
+	struct bbs_url url;
+	char urlargs[256];
+	int res;
+	const char *identity = a->argv[3];
+	struct nntp_client nc_stack, *nc = &nc_stack;
+
+	memset(&nc->tcpclient, 0, sizeof(struct bbs_tcp_client));
+	memset(&url, 0, sizeof(url));
+
+	safe_strncpy(urlargs, a->argv[2], sizeof(urlargs));
+	if (bbs_parse_url(&url, urlargs)) {
+		bbs_dprintf(a->fdout, "Failed to parse URI '%s'\n", urlargs);
+		return -1;
+	}
+
+	if (!url.port) {
+		url.port = DEFAULT_NNTP_PORT;
+	}
+
+	res = nntp_client_connect(nc, &url, !strcmp(url. prot, "nntps"));
+	if (res) {
+		bbs_tcp_client_cleanup(&nc->tcpclient);
+		return -1;
+	}
+
+	/* Use ETRN to request the peer flush its article backlog for us */
+	nntp_client_send(nc, "ETRN %s\r\n", identity);
+	res = nntp_client_read_code(nc, MIN_MS(3));
+	if (res / 100 != 2) {
+		bbs_dprintf(a->fdout, "Flush request failed: %s\n", nc->buf);
+		bbs_tcp_client_cleanup(&nc->tcpclient);
+		return -1;
+	}
+
+	bbs_dprintf(a->fdout, "Flush request succeeded: %s\n", nc->buf);
+	bbs_tcp_client_cleanup(&nc->tcpclient);
 	return 0;
 }
 
@@ -4242,6 +4381,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 				_nntp_send(nntp, "MODE-READER\r\n");
 			}
 			_nntp_send(nntp, "STREAMING\r\n");
+			_nntp_send(nntp, "ETRN\r\n");
 		}
 		_nntp_send(nntp, "HDR\r\n");
 		_nntp_send(nntp, "XPAT\r\n");
@@ -4324,6 +4464,9 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		}
 		_nntp_send(nntp, " COMPRESS DEFLATE\r\n");
 		_nntp_send(nntp, " DATE\r\n");
+		if (nntp->mode == NNTP_MODE_TRANSIT) {
+			_nntp_send(nntp, " ETRN site\r\n");
+		}
 		_nntp_send(nntp, " GROUP newsgroup\r\n");
 		_nntp_send(nntp, " HDR header [message-ID|range]\r\n");
 		_nntp_send(nntp, " HEAD [message-ID|number]\r\n");
@@ -4806,6 +4949,14 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		REQUIRE_TRANSIT();
 		REQUIRE_ARGS(s);
 		handle_check(nntp, s);
+	} else if (!strcasecmp(command, "ETRN")) {
+		/* Don't use REQUIRE_TRANSIT since that includes other checks that aren't needed for this case */
+		if (nntp->mode != NNTP_MODE_TRANSIT) {
+			nntp_send(nntp, NNTP_FAIL_WRONG_MODE, "Readers must use POST, not IHAVE");
+			return 0;
+		}
+		REQUIRE_ARGS(s);
+		handle_etrn(nntp, s);
 	} else {
 		nntp_send(nntp, NNTP_ERR_COMMAND, "Unknown command");
 	}
@@ -4914,6 +5065,7 @@ static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_fgexpire, "news fgexpire", 2, "Remove expired articles from the spool (optionally just for one group), in foreground", "news expire <group>"),
 	BBS_CLI_COMMAND(cli_feedflush, "news feedflush", 2, "Flush queued articles for feed(s)", "news feedflush [<site>]"),
 	BBS_CLI_COMMAND(cli_feedstats, "news feedstats", 2, "Show outgoing feed stats", "news feedstats [<site>]"),
+	BBS_CLI_COMMAND(cli_feedflushreq, "news feedflushreq", 4, "Request a peer flush its backlog for us", "news feedflushreq <URI> <identity>"),
 };
 
 static int load_config(void)
@@ -5025,6 +5177,7 @@ static int load_config(void)
 	RWLIST_WRLOCK(&acls);
 	RWLIST_WRLOCK(&inpeers);
 	RWLIST_WRLOCK(&sites);
+	RWLIST_WRLOCK(&etrn_clients);
 	RWLIST_WRLOCK(&distributions);
 	RWLIST_WRLOCK(&distrib_pats);
 	RWLIST_WRLOCK(&moderators);
@@ -5095,6 +5248,10 @@ static int load_config(void)
 		} else if (!strcasecmp(bbs_config_section_name(section), "outgoing")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				add_site(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "etrn")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_etrn(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}
 		} else if (!strcasecmp(bbs_config_section_name(section), "kill")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
@@ -5231,6 +5388,7 @@ static int load_config(void)
 	RWLIST_UNLOCK(&acls);
 	RWLIST_UNLOCK(&inpeers);
 	RWLIST_UNLOCK(&sites);
+	RWLIST_UNLOCK(&etrn_clients);
 	RWLIST_UNLOCK(&distributions);
 	RWLIST_UNLOCK(&distrib_pats);
 	RWLIST_UNLOCK(&moderators);
@@ -5246,6 +5404,7 @@ static void cleanup_lists(void)
 	/* First, empty the site list, which will stop any article feeding.
 	 * Then we can clean up the feed types themselves. */
 	RWLIST_WRLOCK_REMOVE_ALL(&sites, entry, free_site);
+	RWLIST_WRLOCK_REMOVE_ALL(&etrn_clients, entry, free_etrn);
 	sites_cleanup_feed_types();
 
 	nntp_suckfeed_cleanup();
@@ -5280,6 +5439,7 @@ static int load_module(void)
 	RWLIST_HEAD_INIT(&acls);
 	RWLIST_HEAD_INIT(&inpeers);
 	RWLIST_HEAD_INIT(&sites);
+	RWLIST_HEAD_INIT(&etrn_clients);
 	RWLIST_HEAD_INIT(&distributions);
 	RWLIST_HEAD_INIT(&distrib_pats);
 	RWLIST_HEAD_INIT(&moderators);
