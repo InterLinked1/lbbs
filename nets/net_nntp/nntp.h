@@ -175,6 +175,7 @@ struct nntp_session {
 	struct article_info artinfo; /* Temporary info saved about the current article being received */
 	enum nntp_mode mode;
 	unsigned int inpeer_any:1; /* Whether this is an in peer authorized in at least one inpeer ACL */
+	unsigned int inpeer_tlsrequired:1; /* Whether this is an in peer that is required to use TLS to deliver articles */
 };
 
 #ifndef MAIN_NNTP_FILE

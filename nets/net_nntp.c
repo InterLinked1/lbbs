@@ -121,7 +121,6 @@ static char poisongroups[NNTP_MAX_LINE_LENGTH];
 static char poisonsites[NNTP_MAX_LINE_LENGTH];
 
 /* Global settings for incoming articles from peers */
-static int requirerelaytls = 1;
 static int keepjunk = 0;
 static int xref_slave = 0;
 
@@ -799,6 +798,56 @@ static int we_want_distribution(struct nntp_session *nntp, const char *distribs)
 	}
 	RWLIST_UNLOCK(&inpeers);
 	return i ? 1 : 0;
+}
+
+struct tls_rule {
+	const char *host;
+	unsigned int required:1;
+	RWLIST_ENTRY(tls_rule) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(tls_rules, tls_rule);
+
+static int add_tls_rule(const char *host, const char *value)
+{
+	struct tls_rule *t;
+
+	if (strcasecmp(value, "yes") && strcasecmp(value, "no")) {
+		bbs_error("Invalid TLS rule '%s' for host '%s'\n", value, host);
+		return -1;
+	}
+
+	t = calloc(1, sizeof(*t) + strlen(host) + 1);
+	if (ALLOC_FAILURE(t)) {
+		return -1;
+	}
+
+	strcpy(t->data, host); /* Safe */
+	t->host = t->data;
+	SET_BITFIELD(t->required, S_TRUE(value));
+	RWLIST_INSERT_TAIL(&tls_rules, t, entry);
+	return 0;
+}
+
+static int tls_required_for_peer(struct nntp_session *nntp)
+{
+	struct tls_rule *t;
+	int required = 0;
+
+	/* Unfortunately, we cannot be granular at the newsgroup level,
+	 * because we need to be able to reject IHAVE/TAKETHIS before
+	 * we have the message (and thus the newsgroups in the article).
+	 * Thus, we have to do this at the peer level. */
+	RWLIST_RDLOCK(&tls_rules);
+	RWLIST_TRAVERSE(&tls_rules, t, entry) {
+		if (!strcmp(t->host, "*") || bbs_ip_match_ipv4(nntp->node->ip, t->host)) {
+			required = t->required;
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&tls_rules);
+	return required;
 }
 
 static int add_inpeer(const char *identity, const char *groups)
@@ -3615,7 +3664,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		nntp_send(nntp, NNTP_FAIL_WRONG_MODE, "Readers must use POST, not IHAVE"); \
 		return 0; \
 	} \
-	if (requirerelaytls && !nntp->node->secure) { \
+	if (nntp->inpeer_tlsrequired && !nntp->node->secure) { \
 		nntp_send(nntp, NNTP_FAIL_PRIVACY_NEEDED, "Secure connection required"); \
 		return 0; \
 	} \
@@ -4987,6 +5036,7 @@ static void handle_client(struct nntp_session *nntp)
 		"%s Newsgroup Service Ready, %s", newsname, posting_allowed ? "posting allowed" : "posting prohibited");
 
 	SET_BITFIELD(nntp->inpeer_any, authorized_inpeer_for_any_groups(nntp)); /* Cache whether this client has an inpeer ACL */
+	SET_BITFIELD(nntp->inpeer_tlsrequired, tls_required_for_peer(nntp));
 
 	/* Default mode is transit mode (NNTP_MODE_TRANSIT) for mode-switching servers */
 	for (;;) {
@@ -5171,7 +5221,6 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "readers", "postinghost", &injection_add_posting_host);
 	bbs_config_val_set_str(cfg, "readers", "complaints", complaints_addr, sizeof(complaints_addr));
 
-	bbs_config_val_set_true(cfg, "peers", "requiretls", &requirerelaytls);
 	bbs_config_val_set_true(cfg, "peers", "keepjunk", &keepjunk);
 	bbs_config_val_set_true(cfg, "peers", "xrefslave", &xref_slave);
 
@@ -5180,6 +5229,7 @@ static int load_config(void)
 #define SKIP_SECTION(sectname) if (!strcasecmp(bbs_config_section_name(section), sectname)) { continue; }
 
 	RWLIST_WRLOCK(&acls);
+	RWLIST_WRLOCK(&tls_rules);
 	RWLIST_WRLOCK(&inpeers);
 	RWLIST_WRLOCK(&sites);
 	RWLIST_WRLOCK(&etrn_clients);
@@ -5206,6 +5256,10 @@ static int load_config(void)
 				} else if (!strcasecmp(key, "poisonsites")) {
 					safe_strncpy(poisonsites, val, sizeof(poisonsites));
 				}
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "tls")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_tls_rule(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}
 		} else if (!strcasecmp(bbs_config_section_name(section), "readers")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
@@ -5392,6 +5446,7 @@ static int load_config(void)
 	check_distributions();
 
 	RWLIST_UNLOCK(&acls);
+	RWLIST_UNLOCK(&tls_rules);
 	RWLIST_UNLOCK(&inpeers);
 	RWLIST_UNLOCK(&sites);
 	RWLIST_UNLOCK(&etrn_clients);
@@ -5416,6 +5471,7 @@ static void cleanup_lists(void)
 	nntp_suckfeed_cleanup();
 
 	RWLIST_WRLOCK_REMOVE_ALL(&acls, entry, free_acl);
+	RWLIST_WRLOCK_REMOVE_ALL(&tls_rules, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&inpeers, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&distributions, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&distrib_pats, entry, free);
@@ -5443,6 +5499,7 @@ static int load_module(void)
 	thismodule = BBS_MODULE_SELF;
 
 	RWLIST_HEAD_INIT(&acls);
+	RWLIST_HEAD_INIT(&tls_rules);
 	RWLIST_HEAD_INIT(&inpeers);
 	RWLIST_HEAD_INIT(&sites);
 	RWLIST_HEAD_INIT(&etrn_clients);
