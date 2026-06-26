@@ -125,6 +125,9 @@ static int requirerelaytls = 1;
 static int keepjunk = 0;
 static int xref_slave = 0;
 
+/* Global settings for feeding articles to peers */
+unsigned int feed_timeout = MIN_MS(5); /* used extern in nntp_feed_nntp.c */
+
 /* Reader settings */
 enum injection_posting_account {
 	INJECTION_POSTING_ACCOUNT_OBFUSCATED,
@@ -5172,6 +5175,8 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "peers", "keepjunk", &keepjunk);
 	bbs_config_val_set_true(cfg, "peers", "xrefslave", &xref_slave);
 
+	bbs_config_val_set_uint(cfg, "feeding", "feedtimeout", &feed_timeout);
+
 #define SKIP_SECTION(sectname) if (!strcasecmp(bbs_config_section_name(section), sectname)) { continue; }
 
 	RWLIST_WRLOCK(&acls);
@@ -5192,6 +5197,7 @@ static int load_config(void)
 		SKIP_SECTION("nntps");
 		SKIP_SECTION("nnsp");
 		SKIP_SECTION("peers");
+		SKIP_SECTION("feeding");
 		if (!strcasecmp(bbs_config_section_name(section), "articles")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				const char *key = bbs_keyval_key(keyval), *val = bbs_keyval_val(keyval);

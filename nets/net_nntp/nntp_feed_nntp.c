@@ -32,6 +32,8 @@
 /* This is an approximation - not exactly obeyed - max # of articles to ever send using a single connection before closing/reopening */
 #define MAX_ARTICLES_PER_CONNECTION 120000
 
+extern unsigned int feed_timeout;
+
 static char backlogdir[512];
 static FILE *logfp;
 
@@ -683,7 +685,7 @@ static int wait_for_more_articles(struct nntp_client *nc, struct site *site)
 {
 	site->feed.nntp.waiting = 1;
 	/* XXX There is a small chance that a writing thread could signal us here, after setting flag but before sleeping */
-	bbs_tcp_client_safe_sleep(&nc->tcpclient, MIN_MS(5)); /* Wait for 5 minutes for more articles, then close the connection. */
+	bbs_tcp_client_safe_sleep(&nc->tcpclient, (int) feed_timeout); /* Wait this long for more articles, then close the connection. */
 	site->feed.nntp.waiting = 0;
 
 	/* If we got interrupted, check if there are more articles to deliver */
@@ -788,7 +790,7 @@ static void feed_thread(struct site *site)
 			continue; /* There are already more articles to process */
 		}
 		/* Sleep for a little bit, in case there are more articles to process shortly */
-		if (wait_for_more_articles(nc, site)) {
+		if (!feed_timeout || wait_for_more_articles(nc, site)) {
 			break;
 		}
 	}
