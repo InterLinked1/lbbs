@@ -1410,7 +1410,7 @@ static int suck_group(struct nntp_client *nc, struct suck_feed *sf, struct artic
 	if (g->lasthigh && artlow < g->lasthigh + 1) {
 		artlow = g->lasthigh + 1; /* Not interested in articles we already saw */
 	}
-	if (artlow >= g->high) {
+	if (artlow > g->high) {
 		bbs_debug(5, "No more articles available for %s (high: %d)\n", g->name, g->high);
 		return 0;
 	}
