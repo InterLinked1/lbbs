@@ -892,6 +892,16 @@ void feed_nntp_cleanup_feed(struct site *site)
 	/* don't need to free site itself here */
 }
 
+static inline void cleanup_old_feed_thread(struct site *site)
+{
+	if (site->feed.nntp.thread && site->feed.nntp.thread_done) {
+		bbs_pthread_join(site->feed.nntp.thread, NULL); /* Since thread exited, this will complete immediately */
+		/* Reset for the next thread: */
+		site->feed.nntp.thread = 0;
+		site->feed.nntp.thread_done = 0;
+	}
+}
+
 int feed_nntp_send(struct article_info *artinfo, struct site *site)
 {
 	/* So as not to block the client thread here, we do a minimal
@@ -918,10 +928,7 @@ int feed_nntp_send(struct article_info *artinfo, struct site *site)
 	site->feed.nntp.processmore = 1;
 
 	/* If there was a previous thread that exited, reap it before spawning a new one */
-	if (site->feed.nntp.thread && site->feed.nntp.thread_done) {
-		bbs_pthread_join(site->feed.nntp.thread, NULL); /* Since thread exited, this will complete immediately */
-		site->feed.nntp.thread = 0;
-	}
+	cleanup_old_feed_thread(site);
 
 	if (!nntp_unloading && !site->feed.nntp.queue) { /* If 'Q' flag set, we only queue articles during propagation but don't actually send them immediately */
 		if (site->feed.nntp.thread) {
@@ -943,10 +950,7 @@ int feed_nntp_send(struct article_info *artinfo, struct site *site)
 int feed_nntp_flush(struct site *site)
 {
 	bbs_mutex_lock(&site->feed.nntp.lock);
-	if (site->feed.nntp.thread && site->feed.nntp.thread_done) {
-		bbs_pthread_join(site->feed.nntp.thread, NULL); /* Since thread exited, this will complete immediately */
-		site->feed.nntp.thread = 0;
-	}
+	cleanup_old_feed_thread(site);
 	if (!site->feed.nntp.backlogcount) {
 		/* There are no articles to flush, don't bother spawning a thread to connect and do nothing */
 		bbs_mutex_unlock(&site->feed.nntp.lock);

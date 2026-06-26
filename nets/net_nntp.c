@@ -1048,6 +1048,9 @@ static int parse_feed_nntp_args(struct site *site, char *args)
 			bbs_error("Failed to parse feed arguments '%s'\n", args);
 			return -1;
 		}
+		/* news:// and nntp:// are both supported URI schemes;
+		 * snews:// is typically the URI scheme for NNTPS
+		 * but is not widely used/supported - RFC 5538 */
 		if (!strcmp(url.prot, "nntp")) {
 			site->feed.nntp.secure = 0;
 		} else if (!strcmp(url. prot, "nntps")) {
@@ -1222,7 +1225,7 @@ static int cli_feedflush(struct bbs_cli_args *a)
 	}
 	RWLIST_UNLOCK(&sites);
 	if (!c) {
-		bbs_dprintf(a->fdout, "Could not flush articles for any sites\n"); /* Normal, if no articles are in queue */
+		bbs_dprintf(a->fdout, "Could not flush any articles for %s\n", name ? "this site" : "any sites"); /* Normal, if no articles are in queue */
 	}
 	return 0;
 }
