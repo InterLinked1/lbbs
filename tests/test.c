@@ -78,8 +78,9 @@ int running_under_valgrind(void)
  * However, occasionally if something takes longer, we don't want the test to fail
  * just because we jumped the gun too soon. */
 
-/* How long to wait for the BBS to start fully */
-#define STARTUP_TIMEOUT 40
+/* How long to wait for the BBS to start fully
+ * In theory, this should only need to be 30-40 seconds at most, but the Arch Linux CI needs much longer for some reason. */
+#define STARTUP_TIMEOUT 60
 
 /* Maximum amount of time for any single test duration */
 #define TEST_TIMEOUT 180

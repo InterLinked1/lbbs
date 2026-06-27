@@ -33,6 +33,7 @@
 #define MAX_ARTICLES_PER_CONNECTION 120000
 
 extern unsigned int feed_timeout;
+extern unsigned int feed_retries;
 
 static char backlogdir[512];
 static FILE *logfp;
@@ -729,7 +730,7 @@ static void feed_thread(struct site *site)
 	 * so allow ourselves to be interrupted here if we want to shut down feeding.
 	 * This scenario actually occurs in test_nntp_transit, speeding the test up so we don't need to wait 30 seconds. */
 	site->feed.nntp.waiting = 1;
-	res = nntp_client_connect(nc, &url, site->feed.nntp.secure);
+	res = nntp_client_connect_retry(nc, &url, site->feed.nntp.secure, (int) feed_retries + 1);
 	site->feed.nntp.waiting = 0;
 	if (res || site->feed.nntp.wantexit) {
 		goto done;

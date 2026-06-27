@@ -58,6 +58,7 @@ struct nntp_client {
 })
 
 int nntp_client_connect(struct nntp_client *nc, struct bbs_url *url, int secure);
+int nntp_client_connect_retry(struct nntp_client *nc, struct bbs_url *url, int secure, int max_attempts);
 int nntp_client_read(struct nntp_client *nc, int timeout);
 int nntp_client_read_code(struct nntp_client *nc, int timeout);
 int nntp_client_capabilities(struct nntp_client *nc);

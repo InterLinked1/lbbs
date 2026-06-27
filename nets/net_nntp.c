@@ -127,6 +127,7 @@ static int xref_slave = 0;
 
 /* Global settings for feeding articles to peers */
 unsigned int feed_timeout = MIN_MS(5); /* used extern in nntp_feed_nntp.c */
+unsigned int feed_retries = 5; /* No retries by default */
 
 /* Reader settings */
 enum injection_posting_account {
@@ -5228,6 +5229,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "peers", "xrefslave", &xref_slave);
 
 	bbs_config_val_set_uint(cfg, "feeding", "feedtimeout", &feed_timeout);
+	bbs_config_val_set_uint(cfg, "feeding", "feedretries", &feed_retries);
 
 #define SKIP_SECTION(sectname) if (!strcasecmp(bbs_config_section_name(section), sectname)) { continue; }
 

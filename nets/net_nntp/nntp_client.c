@@ -24,7 +24,7 @@
 #include "nntp.h"
 #include "nntp_client.h"
 
-static void back_off(int *restrict attempts)
+static void back_off(int *restrict attempts, int max_attempts)
 {
 	int timeout = 0;
 	switch (*attempts) {
@@ -65,17 +65,17 @@ static void back_off(int *restrict attempts)
 			timeout = 86400;
 	}
 	*attempts += 1;
-	if (bbs_safe_sleep(SEC_MS(timeout))) {
+	if ((*attempts >= max_attempts) || bbs_safe_sleep(SEC_MS(timeout))) {
 		*attempts = -1; /* Abort (probably BBS shutdown) */
 	}
 }
 
-int nntp_client_connect(struct nntp_client *nc, struct bbs_url *url, int secure)
+int nntp_client_connect_retry(struct nntp_client *nc, struct bbs_url *url, int secure, int max_attempts)
 {
 	int res, attempts, code;
 	nc->url = url; /* Save pointer to URL so we can log hostname later in log messages if needed */
 	/* Establish a connection to the site and make sure we can send articles */
-	for (attempts = 0 ; attempts != -1 ; back_off(&attempts)) {
+	for (attempts = 0 ; attempts != -1 ; back_off(&attempts, max_attempts)) {
 		res = bbs_tcp_client_connect(&nc->tcpclient, url, secure, nc->buf, sizeof(nc->buf));
 		/* If we fail now, it's possible the connection could succeed later;
 		 * we should periodically retry. */
@@ -94,6 +94,11 @@ int nntp_client_connect(struct nntp_client *nc, struct bbs_url *url, int secure)
 		break;
 	}
 	return attempts == -1 ? -1 : 0;
+}
+
+int nntp_client_connect(struct nntp_client *nc, struct bbs_url *url, int secure)
+{
+	return nntp_client_connect_retry(nc, url, secure, 1);
 }
 
 int nntp_client_read(struct nntp_client *nc, int timeout)
