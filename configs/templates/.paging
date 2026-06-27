@@ -10,6 +10,7 @@
 ; pin = 1234 ; Optional PIN to require in order to page to this device (Compatibility Warning: PINs are only supported by SNPP, not TAP/IXO or other input methods)
 ; messages = alpha ; Type of messages to accept. Can be alpha for alphanumeric (the default), numeric for numeric-only paging, and none for tone-only paging
 ; externalcmd = ~/pagehandler.sh "${PAGENUMBER}" "${PAGESUBJECT}" "${PAGEMESSAGE}" ; System command to run.
+; retries = yes ; Whether delivery should be retried if it fails initially. If disabled, unsuccessfully delivered pages are immediately discarded, useful for time-sensitive pages that quickly lose relevance.
 ; irc = yes ; Send message via IRC, if you are online. Configure at least one other method to avoid rejected messages if offline.
 ; snpp = 2125556000@snpp.usamobility.net ; Redirect the page to an external SNPP destination
 ; email = jsmith@example.com ; Send message to email address. The domain argument is required, even for local mailboxes.

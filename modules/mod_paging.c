@@ -68,6 +68,7 @@ struct pager_endpoint {
 	/* User only */
 	unsigned int userid;				/*!< Optional: User ID associated with this pager ID */
 	unsigned int sendirc:1;				/*!< Attempt delivery via IRC */
+	unsigned int retries:1;				/*!< Whether to retry if we can't deliver it immediately (similar to !NOQUEUE in SNPP, but set at the endpoint level) */
 	const char *snpp;					/*!< Attempt delivery to this SNPP destination */
 	const char *snppid;					/*!< SNPP pager ID override */
 	const char *snpppin;				/*!< SNPP pin */
@@ -711,8 +712,8 @@ static int deliver_page(struct pager_endpoint *e, struct bbs_paging_recipient *r
 		if (res) {
 			saved_errno = errno;
 			if (saved_errno == EAGAIN) {
-				if (!data->noqueue) {
-					methods |= QUEUE_SNPP; /* Sure, we can try again later (unless NOQUEUE is set) */
+				if (!data->noqueue && e->retries) {
+					methods |= QUEUE_SNPP; /* Sure, we can try again later (unless NOQUEUE is set via SNPP or !retries is set in the endpoint config) */
 				}
 			} /* else, any other error is fatal */
 		} else {
@@ -864,8 +865,8 @@ static int deliver_queued_message(struct queued_page *q)
 	PAGE_TRY_METHOD(email, QUEUE_SMTP, PAGING_PROT_SMTP, S_OR(q->e->emailuser, q->pagerid), NULL, q->e->email);
 	PAGE_TRY_METHOD(tap, QUEUE_TAP, PAGING_PROT_TAP_IXO, S_OR(q->e->tapuser, q->pagerid), NULL, q->e->tap);
 
-	if (q->data.noqueue) {
-		q->expired = 1; /* If NOQUEUE is set, then after one attempt, we stop */
+	if (q->data.noqueue || !q->e->retries) {
+		q->expired = 1; /* If NOQUEUE is set, or we should not retry, then after one attempt, we stop */
 		update_timestamp(q, time(NULL));
 	}
 
@@ -1111,8 +1112,9 @@ static int cli_endpoint(struct bbs_cli_args *a)
 			bbs_username_from_userid(e->userid, username, sizeof(username));
 		}
 		bbs_dprintf(a->fdout, "Pager ID:  %s\n", e->pagerid);
-		bbs_dprintf(a->fdout, "PIN:       %s\n", e->pin);
+		bbs_dprintf(a->fdout, "PIN:       %s\n", S_IF(e->pin));
 		bbs_dprintf(a->fdout, "Type:      %s\n", pager_type_name(e->type));
+		bbs_dprintf(a->fdout, "Retries:   %s\n", BBS_YESNO(e->retries));
 		bbs_dprintf(a->fdout, "Two-Way:   %s\n", BBS_YESNO(e->type & PAGER_TWOWAY));
 		bbs_dprintf(a->fdout, "User:      %s\n", username);
 		bbs_dprintf(a->fdout, "IRC Alert: %s\n", BBS_YESNO(e->sendirc));
@@ -1694,6 +1696,7 @@ static int load_user_config(struct bbs_config_section *delegated, const char *fi
 		char *email = NULL, *emailuser = NULL;
 		char *tap = NULL, *tapuser = NULL;
 		const char *externalcmd = NULL;
+		int retries = 1;
 		const char *pagerid = bbs_config_section_name(section);
 		/* Before processing anything, check if we are delegated this pager ID */
 		if (!delegation_authorized(delegated, userid, pagerid)) {
@@ -1751,6 +1754,8 @@ static int load_user_config(struct bbs_config_section *delegated, const char *fi
 				}
 			} else if (!strcasecmp(key, "externalcmd")) {
 				externalcmd = val;
+			} else if (!strcasecmp(key, "retries")) {
+				retries = S_TRUE(val);
 			} else {
 				bbs_user_config_log(userid, cfg, LOG_ERROR, LOG_NOTICE, "Invalid delivery method '%s'\n", key);
 			}
@@ -1768,6 +1773,7 @@ static int load_user_config(struct bbs_config_section *delegated, const char *fi
 		e->userid = userid;
 		e->type = type;
 		SET_BITFIELD(e->sendirc, sendirc);
+		SET_BITFIELD(e->retries, retries);
 	}
 
 	bbs_config_unlock(cfg);
