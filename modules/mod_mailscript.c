@@ -749,7 +749,7 @@ static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time
 		/* Don't allow forwarding to self, or that will create a loop (one that can't even be detected, since message is not modified) */
 		if (!stringlist_contains(mproc->forward, s)) {
 			bbs_debug(5, "%s:%d: Redirecting to %s\n", filename, lineno, s);
-			stringlist_push(mproc->forward, s);
+			stringlist_push_tail(mproc->forward, s); /* Tail insert since recipients are popped off the head in net_smtp */
 		}
 	} else if (!strcasecmp(next, "RELAY")) {
 		REQUIRE_ARG(s);

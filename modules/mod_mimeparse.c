@@ -343,19 +343,13 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs, int level)
 	g_string_append_c(gs, ')');
 }
 
-static GMimeMessage *mk_mime(const char *file)
+/* Note: The file descriptor passed into this function is closed by this function, dup() in advance if needed */
+static GMimeMessage *mk_mime(int fd, const char *filename)
 {
 	GMimeFormat format = GMIME_FORMAT_MESSAGE;
 	GMimeMessage *message;
 	GMimeParser *parser;
 	GMimeStream *stream;
-	int fd;
-
-	fd = open(file, O_RDONLY, 0);
-	if (fd < 0) {
-		bbs_error("Failed to open %s: %s\n", file, strerror(errno));
-		return NULL;
-	}
 
 	stream = g_mime_stream_fs_new(fd);
 	parser = g_mime_parser_new_with_stream(stream);
@@ -372,7 +366,12 @@ static GMimeMessage *mk_mime(const char *file)
 	g_object_unref(parser);
 
 	if (!message) {
-		bbs_error("Failed to parse message %s as MIME\n", file);
+		if (filename) {
+			bbs_error("Failed to parse message %s as MIME\n", filename);
+		} else {
+			/* Logging the file descriptor is probably not even meaningful as it just got dup'ed from the original */
+			bbs_error("Failed to parse message as MIME\n");
+		}
 	}
 
 	return message;
@@ -383,13 +382,13 @@ struct bbs_mime_message {
 	GMimeMessage *message;
 };
 
-struct bbs_mime_message *bbs_mime_message_parse(const char *filename)
+static struct bbs_mime_message *mime_message_parse(int fd, const char *filename)
 {
-	GMimeMessage *message;
 	struct bbs_mime_message *mime;
+	GMimeMessage *message;
 
 	/* This is more likely to fail, so do it first before allocating the container */
-	message = mk_mime(filename);
+	message = mk_mime(fd, filename);
 	if (!message) {
 		/* Return NULL if we failed here, since bbs_mime_make_bodystructure expects mime->message to be non-NULL */
 		return NULL;
@@ -402,6 +401,26 @@ struct bbs_mime_message *bbs_mime_message_parse(const char *filename)
 	}
 	mime->message = message;
 	return mime;
+}
+
+struct bbs_mime_message *bbs_mime_message_parse(const char *filename)
+{
+	int fd = open(filename, O_RDONLY, 0);
+	if (fd < 0) {
+		bbs_error("Failed to open %s: %s\n", filename, strerror(errno));
+		return NULL;
+	}
+	return mime_message_parse(fd, filename);
+}
+
+struct bbs_mime_message *bbs_mime_message_parse_fd(int fd)
+{
+	int dupfd = dup(fd);
+	if (dupfd < 0) {
+		bbs_error("Failed to dup file descriptor %d: %s\n", fd, strerror(errno));
+		return NULL;
+	}
+	return mime_message_parse(dupfd, NULL);
 }
 
 void bbs_mime_message_destroy(struct bbs_mime_message *mime)
@@ -606,6 +625,39 @@ char *bbs_mime_get_part(struct bbs_mime_message *mime, const char *spec, size_t 
 	g_object_unref(mem);
 
 	return buf; /* gchar is just a typedef for char, so this returns a char */
+}
+
+char *bbs_mime_get_plain_text(struct bbs_mime_message *mime)
+{
+	GMimeObject *body;
+
+	body = g_mime_message_get_body(mime->message);
+	if (GMIME_IS_MULTIPART(body)) {
+		int i, nparts;
+		GMimeMultipart *multipart;
+
+		multipart = GMIME_MULTIPART(body);
+		nparts = g_mime_multipart_get_count(multipart);
+		for (i = 0; i < nparts; i++) {
+			GMimeObject *part;
+			GMimeContentType *content_type;
+
+			part = g_mime_multipart_get_part(multipart, i);
+			content_type = g_mime_object_get_content_type(part);
+			if (g_mime_content_type_is_type(content_type, "text", "plain")) {
+				GMimeTextPart *text_part = GMIME_TEXT_PART(part);
+				return g_mime_text_part_get_text(text_part);
+			}
+		}
+	} else if (GMIME_IS_TEXT_PART(body)) {
+		return g_mime_text_part_get_text(GMIME_TEXT_PART(body));
+	}
+	return NULL;
+}
+
+void bbs_mime_free_string(char *s)
+{
+	g_free(s);
 }
 
 static int load_module(void)

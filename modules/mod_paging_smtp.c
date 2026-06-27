@@ -26,8 +26,10 @@
 #include "include/mail.h"
 #include "include/user.h"
 #include "include/utils.h"
+#include "include/config.h"
 
 #include "include/net_smtp.h"
+#include "include/mod_mimeparse.h"
 
 /* If a page doesn't have a subject and gets relayed to email, give it a generic subject ("New Page")
  * This probably makes the most sense, since it avoids subjectless emails if a page was submitted
@@ -42,6 +44,8 @@
  * so this only affects pages submitted via TAP/IXO or SNPP, if SUBJ was not used.
  * Comment it out if you disagree. */
 #define ALWAYS_HAVE_A_SUBJECT
+
+static int require_plaintext_messages = 1;
 
 /*! \brief Send page via SMTP */
 static int page_single(struct bbs_paging_recipient *recipient, struct bbs_paging_data *data, struct bbs_paging_message_metadata *meta)
@@ -153,6 +157,7 @@ static int receive_emailed_page(struct smtp_session *smtp, struct smtp_response 
 	struct bbs_paging_recipient recip;
 	struct bbs_paging_data data;
 	struct bbs_paging_message_metadata meta;
+	int is_plaintext = 0;
 
 	UNUSED(from);
 	UNUSED(recipient);
@@ -195,10 +200,19 @@ static int receive_emailed_page(struct smtp_session *smtp, struct smtp_response 
 			ltrim(tmp);
 			if (!strlen_zero(tmp)) {
 				bbs_term_line(tmp);
-				if (!strcasestr(tmp, "text/plain")) {
-					/* No HTML or multipart messages! */
-					smtp_abort(resp, 550, 5.7.1, "Only plain text replies accepted at this address");
-					goto abort;
+				if (!is_plaintext && strcasestr(tmp, "text/plain")) {
+					is_plaintext = 1;
+				} else {
+					if (require_plaintext_messages) {
+						/* No HTML or multipart messages! */
+						smtp_abort(resp, 550, 5.7.1, "Unsupported Content-Type; please resend as plain text");
+						goto abort;
+					} else if (!strcasestr(tmp, "multipart/alternative")) {
+						/* If it's not multipart/alternative, it probably doesn't even have a plain text part we can use.
+						 * Reject anyways. */
+						smtp_abort(resp, 550, 5.7.1, "Unsupported multipart message; please resend as plain text");
+						goto abort;
+					}
 				}
 			}
 		} else if (!strcmp(tmp, "\r\n")) {
@@ -206,16 +220,10 @@ static int receive_emailed_page(struct smtp_session *smtp, struct smtp_response 
 		}
 	}
 
-	/* Now, parse the body, which is just plain text. */
 	memset(&dstr, 0, sizeof(dstr));
-	while ((fgets(buf, sizeof(buf), fp))) {
-		dyn_str_append(&dstr, buf, strlen(buf)); /* fgets will return the CR LF */
-	}
-
 	memset(&recip, 0, sizeof(recip));
 	recip.pagerid = userpart;
 	memset(&data, 0, sizeof(data));
-	data.body = dstr.buf;
 	data.node = smtp_node(smtp);
 	/* If the page arrived via email, preserve the Subject and From header,
 	 * if we relay the page out via a method that supports these. */
@@ -226,7 +234,39 @@ static int receive_emailed_page(struct smtp_session *smtp, struct smtp_response 
 		data.callerid = fromhdr;
 	}
 	memset(&meta, 0, sizeof(meta));
-	mres = bbs_page_single(&recip, &data, &meta);
+
+	if (is_plaintext) {
+		/* Parse the body, which is just plain text. */
+		while ((fgets(buf, sizeof(buf), fp))) {
+			dyn_str_append(&dstr, buf, strlen(buf)); /* fgets will return the CR LF */
+		}
+		data.body = dstr.buf;
+		mres = bbs_page_single(&recip, &data, &meta);
+	} else {
+		/* If it's not just plain text, then call on the assistance of a real MIME parser. */
+		char *pt;
+		struct bbs_mime_message *msg;
+
+		/* We need to seek back to the beginning of the file first as the MIME parser won't and will fail otherwise */
+		if (lseek(srcfd, 0, SEEK_SET)) {
+			bbs_error("lseek(%d) failed: %s\n", srcfd, strerror(errno));
+		}
+
+		msg = bbs_mime_message_parse_fd(srcfd);
+		if (!msg) {
+			smtp_abort(resp, 550, 5.7.1, "Invalid MIME message; please resend as plain text");
+			goto abort;
+		}
+		pt = bbs_mime_get_plain_text(msg);
+		bbs_mime_message_destroy(msg);
+		if (!pt) {
+			smtp_abort(resp, 550, 5.7.1, "Invalid MIME part; please resend as plain text");
+			goto abort;
+		}
+		data.body = pt;
+		mres = bbs_page_single(&recip, &data, &meta);
+		bbs_mime_free_string(pt);
+	}
 
 	if (mres) {
 		switch (errno) {
@@ -269,6 +309,16 @@ abort:
 	return res;
 }
 
+static int load_config(void)
+{
+	struct bbs_config *cfg = bbs_config_load("mod_paging.conf", 1);
+	if (cfg) {
+		bbs_config_val_set_true(cfg, "email", "requireplaintext", &require_plaintext_messages);
+		bbs_config_unlock(cfg);
+	}
+	return 0;
+}
+
 struct smtp_delivery_agent page_submission = {
 	.type = SMTP_DELIVERY_AGENT_LOCAL,
 	.exists = exists,
@@ -281,7 +331,12 @@ struct bbs_paging_callbacks paging_callbacks = {
 
 static int load_module(void)
 {
-	smtp_register_delivery_handler(&page_submission, 9); /* Priority needs to be more urgent than mod_smtp_delivery_local */
+	if (load_config()) {
+		return -1;
+	}
+	/* Priority needs to be MORE urgent than mod_smtp_delivery_local */
+	/* XXX Why is this? */
+	smtp_register_delivery_handler(&page_submission, 9);
 	return bbs_register_paging_provider(&paging_callbacks, 5, PAGING_PROT_SMTP);
 }
 
@@ -292,4 +347,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_DEPENDENT("SNPP Paging Client", "net_smtp.so");
+BBS_MODULE_INFO_DEPENDENT("SMTP Paging Client", "net_smtp.so,mod_mimeparse.so");

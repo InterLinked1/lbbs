@@ -178,7 +178,7 @@ static int my_redirect(sieve2_context_t *s, void *varg)
 	bbs_debug(3, "Action: REDIRECT, destination: %s\n", dest);
 	sieve->actiontaken = 1;
 	if (!stringlist_contains(sieve->mproc->forward, dest)) {
-		stringlist_push(sieve->mproc->forward, dest);
+		stringlist_push_tail(sieve->mproc->forward, dest);
 	}
 	return SIEVE2_OK;
 }

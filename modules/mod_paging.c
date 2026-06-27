@@ -1836,6 +1836,8 @@ static int load_config(void)
 			continue;
 		} else if (!strcmp(bbs_config_section_name(section), "aliases")) {
 			continue;
+		} else if (!strcmp(bbs_config_section_name(section), "email")) {
+			continue; /* mod_paging_smtp uses this */
 		} else if (strcmp(bbs_config_section_name(section), "general")) {
 			/* Only in Stage 1 do we emit warnings about foreign section names, to avoid duplicate warnings */
 			bbs_warning("Invalid section name '%s'\n", bbs_config_section_name(section));

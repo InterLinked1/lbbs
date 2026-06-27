@@ -23,6 +23,13 @@ struct bbs_mime_message;
 struct bbs_mime_message *bbs_mime_message_parse(const char *filename) __attribute__((nonnull (1)));
 
 /*!
+ * \brief Create a MIME message structure by parsing a message from a file descriptor
+ * \param fd File descriptor (will be dup'ed by the function)
+ * \return NULL on failure, opaque MIME structure on success which must be destroyed using bbs_mime_message_parse
+ */
+struct bbs_mime_message *bbs_mime_message_parse_fd(int fd);
+
+/*!
  * \brief Destroy a MIME message structure
  */
 void bbs_mime_message_destroy(struct bbs_mime_message *mime) __attribute__((nonnull (1)));
@@ -50,3 +57,13 @@ enum mime_part_filter {
  * \returns NULL on failure, requested section on success, which must be freed using free()
  */
 char *bbs_mime_get_part(struct bbs_mime_message *mime, const char *spec, size_t *restrict outlen, enum mime_part_filter filter) __attribute__((nonnull (1, 2, 3)));
+
+/*!
+ * \brief Retrieve the plain text body of a message
+ * \param mime
+ * \returns Allocated string on success, to be freed with bbs_mime_free_string
+ */
+char *bbs_mime_get_plain_text(struct bbs_mime_message *mime);
+
+/*! \brief Wrapper around g_free */
+void bbs_mime_free_string(char *s);

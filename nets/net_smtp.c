@@ -2590,7 +2590,7 @@ static char *smtp_recipient_pop(struct smtp_session *smtp)
 		}
 		/* If we already delivered to the address, skip it */
 		if (duplicate_loop_avoidance(smtp, recipient)) {
-			continue;
+			continue; /* duplicate_loop_avoidance already logs, and frees recipient if needed */
 		}
 		if (*recipient != '<') {
 			bbs_warning("Malformed recipient (missing <>): %s\n", recipient);
@@ -2796,7 +2796,11 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 			mres = h->agent->deliver(smtp, &resp, smtp->from, recipient, user, domain, smtp->fromlocal, srcfd, datalen, &freedata);
 			bbs_module_unref(h->mod, 4);
 			if (mres) {
-				bbs_debug(6, "SMTP delivery agent returned %d\n", mres);
+				if (mres == -1 && resp.reply) {
+					bbs_debug(6, "SMTP delivery agent %s:%d returned %d (%s)\n", bbs_module_name(h->mod), h->priority, mres, resp.reply);
+				} else {
+					bbs_debug(6, "SMTP delivery agent %s:%d returned %d\n", bbs_module_name(h->mod), h->priority, mres);
+				}
 				break;
 			}
 		}
