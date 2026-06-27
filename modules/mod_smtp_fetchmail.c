@@ -32,6 +32,9 @@
 #include "include/mod_smtp_client.h"
 #include "include/net_smtp.h" /* use smtp_hostname */
 
+static int fetch_startup = 0;
+static int fetch_load = 0;
+
 static pthread_t global_thread = 0;
 
 struct upstream_host {
@@ -83,11 +86,10 @@ cleanup:
 }
 
 /*! \brief Fetch queued mail from a single SMTP server */
-static int fetch_single_host(const char *hostname, struct stringlist *domains)
+static int fetch_single_host(const char *hostname, struct stringlist *domains, const char *domain)
 {
 	struct bbs_smtp_client smtpclient;
 	struct stringitem *i = NULL;
-	const char *domain;
 	char buf[1024];
 	char hostnamebuf[256];
 	const char *colon;
@@ -128,8 +130,12 @@ static int fetch_single_host(const char *hostname, struct stringlist *domains)
 		}
 	}
 
-	while ((domain = stringlist_next(domains, &i))) {
+	if (domain) {
 		incr_res += fetch_single_host_domain(smtpclient, domain);
+	} else {
+		while ((domain = stringlist_next(domains, &i))) {
+			incr_res += fetch_single_host_domain(smtpclient, domain);
+		}
 	}
 
 cleanup:
@@ -140,25 +146,40 @@ cleanup:
 	return incr_res;
 }
 
+struct fetch_args {
+	const char *hostname;
+	const char *domain;
+	int res;
+};
+
 /*! \brief Synchronously fetch all queued mail, on-demand */
 static void *do_fetch(void *varg)
 {
 	int res = 0;
-	int *resptr = varg;
+	struct fetch_args *args = varg;
 	struct upstream_host *h;
 
-	/* Since we're just coming online now, if we're configured to
-	 * accept mail from an upstream SMTP server, reach out to that server now
-	 * and use ETRN to request any mail queued for us be sent immediately. */
+	/* Use ETRN to request any mail queued for us be sent immediately. */
 
 	RWLIST_RDLOCK(&upstream_hosts);
 	RWLIST_TRAVERSE(&upstream_hosts, h, entry) {
-		res += fetch_single_host(h->hostname, &h->domains);
+		if (args->hostname && strcmp(h->hostname, args->hostname)) {
+			continue; /* Not the specific hostname we want */
+		}
+		if (args->domain) {
+			/* Only a specific domain */
+			if (!stringlist_contains(&h->domains, args->domain)) {
+				continue;
+			}
+			res += fetch_single_host(h->hostname, NULL, args->domain);
+		} else {
+			res += fetch_single_host(h->hostname, &h->domains, NULL);
+		}
 	}
 	RWLIST_UNLOCK(&upstream_hosts);
 
-	if (resptr) {
-		*resptr = res;
+	if (args) {
+		args->res = res;
 	}
 	return NULL;
 }
@@ -181,16 +202,19 @@ static void *background_task(void *varg)
 static int cli_fetchmail(struct bbs_cli_args *a)
 {
 	pthread_t fetch_thread;
-	int res;
+	struct fetch_args args;
 
-	bbs_pthread_create(&fetch_thread, NULL, do_fetch, &res);
+	args.hostname = a->argc >= 3 ? a->argv[2] : NULL;
+	args.domain = a->argc >= 4 ? a->argv[3] : NULL;
+
+	bbs_pthread_create(&fetch_thread, NULL, do_fetch, &args);
 	bbs_pthread_join(fetch_thread, NULL);
-	bbs_dprintf(a->fdout, "Successfully flushed %d upstream queue%s\n", res, ESS(res));
+	bbs_dprintf(a->fdout, "Flushed %d upstream queue%s\n", args.res, ESS(args.res));
 	return 0;
 }
 
 static struct bbs_cli_entry cli_commands_fetchmail[] = {
-	BBS_CLI_COMMAND(cli_fetchmail, "smtp fetchmail", 2, "Request upstream SMTP servers flush any queued messages for us", NULL),
+	BBS_CLI_COMMAND(cli_fetchmail, "smtp fetchmail", 2, "Request upstream SMTP servers flush any queued messages for us", "smtp fetchmail [<hostname> [<domain>]]"),
 };
 
 static int load_config(void)
@@ -202,6 +226,9 @@ static int load_config(void)
 	if (!cfg) {
 		return -1;
 	}
+
+	bbs_config_val_set_true(cfg, "general", "fetchatstartup", &fetch_startup);
+	bbs_config_val_set_true(cfg, "general", "fetchatload", &fetch_load);
 
 	while ((section = bbs_config_walk(cfg, section))) {
 		struct bbs_keyval *keyval = NULL;
@@ -234,13 +261,18 @@ static int load_module(void)
 	}
 
 	bbs_cli_register_multiple(cli_commands_fetchmail);
-	return bbs_pthread_create(&global_thread, NULL, background_task, NULL);
+	if ((!bbs_is_fully_started() && fetch_startup) || (bbs_is_fully_started() && fetch_load)) {
+		bbs_pthread_create(&global_thread, NULL, background_task, NULL);
+	}
+	return 0;
 }
 
 static int unload_module(void)
 {
 	bbs_cli_unregister_multiple(cli_commands_fetchmail);
-	bbs_pthread_join(global_thread, NULL);
+	if (global_thread) {
+		bbs_pthread_join(global_thread, NULL);
+	}
 	RWLIST_WRLOCK_REMOVE_ALL(&upstream_hosts, entry, upstream_host_free);
 	return 0;
 }
