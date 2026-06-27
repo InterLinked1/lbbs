@@ -22,7 +22,8 @@
  * \note Supports RFC 6048 LIST extensions
  * \note Supports RFC 8054 COMPRESS DEFLATE
  *
- * \note Supports unofficial ETRN extension
+ * \note Supports nonstandardized LIST ACTIVE.ALL command
+ * \note Supports nonstandardized ETRN command
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -3524,6 +3525,8 @@ static enum list_category parse_list_category(const char *s)
 		return LIST_ACTIVE_TIMES | LIST_PER_NEWSGROUP;
 	} else if (!strcasecmp(s, "NEWSGROUPS")) {
 		return LIST_NEWSGROUPS | LIST_PER_NEWSGROUP;
+	} else if (!strcasecmp(s, "ACTIVE.ALL")) {
+		return LIST_ACTIVE_ALL | LIST_PER_NEWSGROUP;
 	} else if (!strcasecmp(s, "SUBSCRIPTIONS")) {
 		return LIST_SUBSCRIPTIONS; /* This is newsgroup-based, but not per newsgroup since it's a hardcoded list */
 	} else if (!strcasecmp(s, "OVERVIEW.FMT")) {
@@ -4437,7 +4440,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		}
 		_nntp_send(nntp, "HDR\r\n");
 		_nntp_send(nntp, "XPAT\r\n");
-		_nntp_send(nntp, "LIST ACTIVE ACTIVE.TIMES COUNTS DISTRIB.PATS DISTRIBUTIONS HEADERS MODERATORS MOTD NEWSGROUPS OVERVIEW.FMT SUBSCRIPTIONS\r\n");
+		_nntp_send(nntp, "LIST ACTIVE ACTIVE.ALL ACTIVE.TIMES COUNTS DISTRIB.PATS DISTRIBUTIONS HEADERS MODERATORS MOTD NEWSGROUPS OVERVIEW.FMT SUBSCRIPTIONS\r\n");
 		_nntp_send(nntp, "OVER MSGID\r\n");
 		_nntp_send(nntp, "XSECRET\r\n");
 		if ((nntp->node->secure || !require_secure_login) && !bbs_user_is_registered(nntp->node->user)) {
@@ -4525,7 +4528,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 		_nntp_send(nntp, " HELP\r\n");
 		_nntp_send(nntp, " IHAVE message-ID\r\n");
 		_nntp_send(nntp, " LAST\r\n");
-		_nntp_send(nntp, " LIST [ACTIVE [wildmat]|ACTIVE.TIMES [wildmat]|COUNT [wildmat]|DISTRIB.PATS|DISTRIBUTIONS|MODERATORS|MOTD|NEWSGROUPS [wildmat]|HEADERS [MSGID|RANGE]|OVERVIEW.FMT|SUBSCRIPTIONS [wildmat]]\r\n");
+		_nntp_send(nntp, " LIST [ACTIVE [wildmat]|ACTIVE.ALL [wildmat]|ACTIVE.TIMES [wildmat]|COUNT [wildmat]|DISTRIB.PATS|DISTRIBUTIONS|MODERATORS|MOTD|NEWSGROUPS [wildmat]|HEADERS [MSGID|RANGE]|OVERVIEW.FMT|SUBSCRIPTIONS [wildmat]]\r\n");
 		_nntp_send(nntp, " LISTGROUP [newsgroup [range]]\r\n");
 		if (nntp->mode == NNTP_MODE_TRANSIT) {
 			_nntp_send(nntp, " MODE READER|STREAM\r\n");

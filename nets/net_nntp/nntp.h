@@ -386,13 +386,14 @@ enum list_category {
 	LIST_COUNTS = (1U << 1), /* Same as LIST ACTIVE but with article count */
 	LIST_ACTIVE_TIMES = (1U << 2), /* active.times list provides creation information: <name> <epoch time of creation> <creator, i.e. email address> */
 	LIST_NEWSGROUPS = (1U << 3), /* <name> <short description about purpose of the group> (groups for which information is unavailable may be omitted, i.e. may miss groups included in LIST ACTIVE) */
-	LIST_OVERVIEW_FMT = (1U << 4), /* format of overview file */
-	LIST_HEADERS = (1U << 5), /* list headers supported for HDR */
-	LIST_DISTRIB_PATS = (1U << 6), /* distrib.pats list assists clients to choose a value for the Distribution header of an article being posted. */
-	LIST_DISTRIBUTIONS = (1U << 7), /* Distributions list (name and description of each distribution) */
-	LIST_MODERATORS = (1U << 8), /* Moderators list */
-	LIST_MOTD = (1U << 9), /* Message of the day */
-	LIST_SUBSCRIPTIONS = (1U << 10), /* Subscriptions (recommended newsgroups) */
+	LIST_ACTIVE_ALL = (1U << 4), /* Everything in the active file */
+	LIST_OVERVIEW_FMT = (1U << 5), /* format of overview file */
+	LIST_HEADERS = (1U << 6), /* list headers supported for HDR */
+	LIST_DISTRIB_PATS = (1U << 7), /* distrib.pats list assists clients to choose a value for the Distribution header of an article being posted. */
+	LIST_DISTRIBUTIONS = (1U << 8), /* Distributions list (name and description of each distribution) */
+	LIST_MODERATORS = (1U << 9), /* Moderators list */
+	LIST_MOTD = (1U << 10), /* Message of the day */
+	LIST_SUBSCRIPTIONS = (1U << 11), /* Subscriptions (recommended newsgroups) */
 	LIST_PER_NEWSGROUP = (1U << 15), /* This LIST command is per-newsgroup */
 };
 

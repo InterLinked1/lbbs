@@ -491,14 +491,19 @@ static int active_file_group_list_full(struct nntp_session *nntp, enum list_cate
 
 	switch (listcat) {
 		case LIST_ACTIVE:
-		case LIST_COUNTS:
 			nntp_send(nntp, newgroups ? NNTP_OK_NEWGROUPS : NNTP_OK_LIST, "Newsgroup listing follows in form \"group high low status\"");
+			break;
+		case LIST_COUNTS:
+			nntp_send(nntp, NNTP_OK_LIST, "Newsgroup listing follows in form \"group high low count status\"");
 			break;
 		case LIST_ACTIVE_TIMES:
 			nntp_send(nntp, NNTP_OK_LIST, "Newsgroup creation times follow in form \"group time who\"");
 			break;
 		case LIST_NEWSGROUPS:
 			nntp_send(nntp, NNTP_OK_LIST, "Newsgroup information follows in form \"group description\"");
+			break;
+		case LIST_ACTIVE_ALL:
+			nntp_send(nntp, NNTP_OK_LIST, "Newsgroup information follows in form \"group high low count status created creator description\"");
 			break;
 		default:
 			bbs_assert(0);
@@ -550,6 +555,9 @@ static int active_file_group_list_full(struct nntp_session *nntp, enum list_cate
 				break;
 			case LIST_NEWSGROUPS:
 				_nntp_send(nntp, "%s\t%s\r\n", group, g.description); /* The RFC allows space or tab delimiter, but says tab is preferred */
+				break;
+			case LIST_ACTIVE_ALL:
+				_nntp_send(nntp, "%s\t%d\t%d\t%d\t%s\t%ld\t%s\t%s\r\n", group, g.high, g.low, g.count, g.status, g.created, g.creator, g.description);
 				break;
 			default:
 				__builtin_unreachable(); /* We would have asserted in the switch at the top of the function */
