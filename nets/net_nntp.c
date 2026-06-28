@@ -5335,7 +5335,7 @@ static int load_config(void)
 				if (stringlist_contains(&subscriptions, bbs_keyval_key(keyval))) {
 					bbs_warning("Duplicate subscription '%s'\n", bbs_keyval_key(keyval));
 				} else {
-					stringlist_push(&subscriptions, bbs_keyval_key(keyval));
+					stringlist_push_tail(&subscriptions, bbs_keyval_key(keyval));
 				}
 			}
 		} else if (!strcasecmp(bbs_config_section_name(section), "distrib.pats")) {
