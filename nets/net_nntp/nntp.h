@@ -537,6 +537,17 @@ int spool_article_exists(const char *groupname, int article_num);
  */
 int spool_article_stat(struct nntp_session *nntp, const char *messageid, const char *groupname, int article_num);
 
+/*!
+ * \brief Get the (a) file path on disk to an article
+ * \param groupname Article's group name
+ * \param article_num Article's number within the group
+ * \param[out] buf Full file path
+ * \param[in] len Size of buf
+ * \param[out] is_compressed Whether or not the article is compressed
+ * \note This function should generally be avoided as it is usually unnecessary outside of the spool implementation to know the path to a file
+ */
+int spool_get_article_path(const char *groupname, int article_num, char *buf, size_t len, int *restrict is_compressed);
+
 struct bbs_tcp_client;
 
 /*!

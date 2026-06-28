@@ -1455,6 +1455,49 @@ static int cli_feedflushreq(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int refeed(int fdout, struct site *site, time_t newerthan)
+{
+	FILE *feedfp;
+	char template[TMPNAME_BUFSIZ];
+	bbs_renamable_tempname("nntp_refeed", template, TMPNAME_BUFSIZ);
+	feedfp = bbs_mkftemp(template, 0644);
+	if (!feedfp) {
+		return -1;
+	}
+	if (history_refeed(feedfp, site->groups, newerthan)) {
+		fclose(feedfp);
+		unlink(template);
+		return -1;
+	}
+	fclose(feedfp);
+	/* Now the user can swap the site's backlog file with this one to refeed all the articles */
+	bbs_dprintf(fdout, "Finished refeeding articles for %s to %s\n", site->name, template);
+	return 0;
+}
+
+static int cli_refeed(struct bbs_cli_args *a)
+{
+	struct site *site;
+
+	RWLIST_RDLOCK(&sites);
+	RWLIST_TRAVERSE(&sites, site, entry) {
+		if (!strcmp(site->name, a->argv[2])) {
+			if (refeed(a->fdout, site, a->argc >= 4 ? atol(a->argv[3]) : 0L)) {
+				bbs_dprintf(a->fdout, "Failed to generate refeed file for %s\n", site->name);
+				site = NULL;
+				goto done;
+			}
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&sites);
+	if (!site) {
+		bbs_dprintf(a->fdout, "No such site '%s'\n", a->argv[2]);
+	}
+done:
+	return site ? 0 : -1;
+}
+
 /* Feed stats */
 static bbs_rwlock_t statlock = BBS_RWLOCK_INITIALIZER;
 struct site_feed_stats overallstats; /* For all sites combined */
@@ -5123,6 +5166,7 @@ static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_feedflush, "news feedflush", 2, "Flush queued articles for feed(s)", "news feedflush [<site>]"),
 	BBS_CLI_COMMAND(cli_feedstats, "news feedstats", 2, "Show outgoing feed stats", "news feedstats [<site>]"),
 	BBS_CLI_COMMAND(cli_feedflushreq, "news feedflushreq", 4, "Request a peer flush its backlog for us", "news feedflushreq <URI> <identity>"),
+	BBS_CLI_COMMAND(cli_refeed, "news refeed", 3, "Refeed articles for a site to a new backlog file", "news refeed <site> [<newerthan>]"),
 };
 
 static int load_config(void)

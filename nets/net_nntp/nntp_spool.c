@@ -90,6 +90,11 @@ int spool_article_stat(struct nntp_session *nntp, const char *messageid, const c
 	return tradspool_article_stat(nntp, messageid, groupname, article_num);
 }
 
+int spool_get_article_path(const char *groupname, int article_num, char *buf, size_t len, int *restrict is_compressed)
+{
+	return tradspool_get_article_path(groupname, article_num, buf, len, is_compressed);
+}
+
 ssize_t spool_article_send_raw(struct bbs_tcp_client *tcpclient, const char *artpath)
 {
 	return tradspool_article_send_raw(tcpclient, artpath);

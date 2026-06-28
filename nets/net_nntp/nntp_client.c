@@ -202,6 +202,8 @@ int nntp_client_capabilities(struct nntp_client *nc)
 					nc->caps.listcaps |= LIST_SUBSCRIPTIONS;
 				}
 			}
+		} else if (!strcasecmp(nc->buf, "ETRN")) {
+			continue; /* Don't care */
 		} else if (!strcasecmp(nc->buf, "XSECRET")) {
 			continue; /* Don't care */
 		} else {

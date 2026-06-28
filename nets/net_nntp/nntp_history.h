@@ -43,6 +43,16 @@ int history_expire(const char *pattern);
 int history_newnews(struct nntp_session *nntp, const char *wildmat, time_t newerthan);
 
 /*!
+ * \brief Refeed the articles for a site to a backlog file
+ * \param feedfp Temp file to which to write the refed backlog
+ * \param wildmat Only articles with newsgroups matching this wildmat will be fed
+ * \param newerthan Only articles newer than this epoch will be fed
+ * \retval 0 on success, -1 on failure
+ * \note feedfp is not closed by this function
+ */
+int history_refeed(FILE *feedfp, const char *wildmat, time_t newerthan);
+
+/*!
  * \brief Whether a message ID exists in history
  * \param messageid
  * \retval 1 Message-ID is in history

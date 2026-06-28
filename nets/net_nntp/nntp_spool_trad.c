@@ -151,6 +151,11 @@ static int build_group_article_path(const char *groupname, int article_num, char
 	return 0;
 }
 
+int tradspool_get_article_path(const char *groupname, int article_num, char *buf, size_t len, int *restrict is_compressed)
+{
+	return build_group_article_path(groupname, article_num, buf, len, is_compressed);
+}
+
 static int delete_article(const char *groupname, int article_num)
 {
 	char articlefile[NNTP_MAX_PATH_LENGTH + 32];

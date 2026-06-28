@@ -951,6 +951,69 @@ int history_newnews(struct nntp_session *nntp, const char *wildmat, time_t newer
 	return 0;
 }
 
+int history_refeed(FILE *feedfp, const char *wildmat, time_t newerthan)
+{
+	char buf[NNTP_BUFSIZ];
+	int line = 0;
+
+	bbs_mutex_lock(&histlock);
+	REQUIRE_HISTORY_FP(histfp);
+	REWIND_HISTORY(histfp);
+	while ((fgets(buf, sizeof(buf), histfp))) {
+		int sendmsg = 0;
+		time_t epoch;
+		int artnum = 0;
+		char *grp, *middle, *artnumstr, *restofline = buf;
+		char *msgid;
+
+		msgid = strsep(&restofline, "\t");
+		line++;
+		if (!msgid) {
+			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+			continue;
+		}
+		middle = strsep(&restofline, "\t"); /* This is the complex middle, restofline now is just the links */
+		epoch = atol(middle); /* Will stop at ~ */
+		/* We check the time first since that will be faster than matching the wildmat, and most of the time, we'll only want the most recent articles */
+		if (epoch <= newerthan) {
+			continue;
+		}
+		if (strlen_zero(restofline)) {
+			bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+			continue;
+		}
+
+		/* Check if the wildmat matches any of the groups containing this article */
+		while ((artnumstr = strsep(&restofline, " "))) {
+			grp = strsep(&artnumstr, "/"); /* Parse out the group name */
+			if (!grp) {
+				bbs_warning("History file %s corrupted (line %d)\n", history_file, line);
+				break;
+			}
+			if (!uwildmat(grp, wildmat)) {
+				continue;
+			}
+			sendmsg = 1;
+			artnum = atoi(artnumstr);
+			break; /* No need to check the other groups, one group is enough */
+		}
+		if (sendmsg) {
+			char filepath[2048];
+			int is_compressed;
+			if (spool_get_article_path(grp, artnum, filepath, sizeof(filepath), &is_compressed)) {
+				continue;
+			}
+			/* The file path used here may not be the same exact one that was / would have been used originally,
+			 * but it would at least be a hard link for the same file. */
+			fprintf(feedfp, "%s %s\n", filepath, msgid);
+		}
+	}
+	/* When we're done, seek back to the end of the file for appends */
+	SEEK_END_HISTORY(histfp);
+	bbs_mutex_unlock(&histlock);
+	return 0;
+}
+
 static int history_messageid_exists_with_bloom_filter(const char *messageid, int check_bloom_filter)
 {
 	int found = 0;
