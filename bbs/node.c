@@ -656,7 +656,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 
 	bbs_node_lock(node); /* Prevent node from being freed until we release the lock. */
 	node->active = 0;
-	bbs_debug(2, "Beginning shut down of node %d\n", node->id);
+	bbs_debug(9, "Beginning shut down of node %d\n", node->id);
 
 	/* Dispatch the event first, while the node is still intact. */
 	bbs_event_dispatch(node, EVENT_NODE_SHUTDOWN);
@@ -740,7 +740,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	} else {
 		/* node_thread is what called this, so don't join ourself.
 		 * The node owning thread will free it subsequently. */
-		bbs_debug(3, "Shutdown pending finalization for node %u\n", nodeid);
+		bbs_debug(9, "Shutdown pending finalization for node %u\n", nodeid);
 	}
 }
 
@@ -785,7 +785,7 @@ static void node_free(struct bbs_node *node)
 		bbs_module_unref(node->module, 1);
 		node->module = NULL;
 	} else {
-		bbs_debug(3, "Node had no module reference?\n");
+		bbs_debug(8, "Node had no module reference?\n");
 	}
 
 	bbs_verb(3, "Node %u has exited\n", node->id);
@@ -1869,7 +1869,7 @@ static int read_cursor_pos_response(struct bbs_node *node, struct timespec *rest
 		if (pres < 0) {
 			return -1;
 		} else if (pres) {
-			bbs_debug(4, "Retrying cursor position query due to timeout (attempt %d)\n", i + 2); /* 1-index it, plus we already tried once prior */
+			bbs_debug(8, "Retrying cursor position query due to timeout (attempt %d)\n", i + 2); /* 1-index it, plus we already tried once prior */
 			/* Reset start time, since we're really starting now */
 			if (record_start_time(start)) {
 				return 0;

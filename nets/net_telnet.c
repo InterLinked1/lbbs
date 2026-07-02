@@ -99,10 +99,10 @@ static int telnet_read_command(int fd, unsigned char *buf, size_t len)
 {
 	ssize_t res = bbs_poll(fd, 300); /* qodem needs a bit more time to respond to certain requests */
 	if (res < 0) {
-		bbs_debug(4, "poll returned %ld: %s\n", res, strerror(errno));
+		bbs_debug(8, "poll returned %ld: %s\n", res, strerror(errno));
 		return (int) res;
 	} else if (!res) {
-		bbs_debug(4, "poll returned 0\n");
+		bbs_debug(9, "poll returned 0\n");
 		return 0;
 	}
 	res = read(fd, buf, len - 1);
@@ -487,7 +487,7 @@ static int __handle_option_do(struct bbs_node *node, struct telnet_settings *set
 	switch (opt) {
 	case TELOPT_ECHO:
 		settings->rcv_noecho = 1; /* Inhibit unneeded renegotiation of this option later */
-		bbs_debug(3, "Client acknowledged local echo disable\n");
+		bbs_debug(8, "Client acknowledged local echo disable\n");
 		return 0;
 	default:
 		bbs_debug(3, "No handler for option %s\n", telopts[opt]);
@@ -926,7 +926,7 @@ static int telnet_handshake(struct bbs_node *node)
 		 * which would otherwise be a reasonable thing to do when dealing only with actual clients.
 		 * This is purely to keep the test suite synchronized. */
 		if (!node->dimensions && settings.options[TELOPT_NAWS].him == WANTYES) {
-			bbs_debug(3, "Haven't yet received response to NAWS option inquiry, waiting for it...\n");
+			bbs_debug(8, "Haven't yet received response to NAWS option inquiry, waiting for it...\n");
 			res = read_and_process_command(node, &settings, buf, sizeof(buf));
 			if (res < 0) {
 				return res;
@@ -944,7 +944,7 @@ static int telnet_handshake(struct bbs_node *node)
 	}
 
 	if (!settings.rcv_noecho) {
-		bbs_debug(3, "Request to enable ECHO not yet acknowledged, retrying\n");
+		bbs_debug(8, "Request to enable ECHO not yet acknowledged, retrying\n");
 		/* Temporarily break with RFC 1143, and manually fiddle some bits to force the request to send */
 		settings.options[TELOPT_ECHO].us = NO;
 		if (telnet_option_send(node, &settings, WILL, TELOPT_ECHO)) {

@@ -939,7 +939,7 @@ static void handle_session(ssh_event event, ssh_session session)
 			}
 			continue;
 		} else if (!cdata.node) {
-			bbs_debug(3, "No BBS node\n");
+			bbs_debug(8, "No BBS node\n");
 			continue;
 		}
 		bbs_assert(!node_started);
