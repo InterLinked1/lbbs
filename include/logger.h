@@ -68,6 +68,13 @@ int bbs_set_verbose(int newlevel);
 int bbs_set_debug(int newlevel);
 
 /*!
+ * \brief Set BBS default local debug level
+ * \param newlevel Level between 0 and 10
+ * \retval -1 on failure, non-negative old debug level on success
+ */
+int bbs_set_default_debug(int newlevel);
+
+/*!
  * \brief Enable or disable logging to STDOUT
  * \param enabled 1 to enable, 0 to disable
  * \note This only has an effect when BBS is started with -c option

@@ -45,6 +45,8 @@ extern int option_debug;
 extern int option_verbose;
 extern int max_logfile_debug_level;
 
+static int default_local_debug = MAX_DEBUG; /* By default, no limit */
+
 static FILE *logfp = NULL;
 static int logstdout = 0;
 static int stdoutavailable = 0;
@@ -78,6 +80,21 @@ int bbs_set_debug(int newlevel)
 	/* Only log if logger is initialized */
 	if (logfp) {
 		bbs_verb(1, "Debug level changed from %d to %d\n", old, newlevel);
+	}
+	return old;
+}
+
+int bbs_set_default_debug(int newlevel)
+{
+	int old = default_local_debug;
+	if (newlevel < 0 || newlevel > MAX_DEBUG) {
+		bbs_warning("Invalid default local debug level: %d\n", newlevel);
+		return -1;
+	}
+	default_local_debug = newlevel;
+	/* Only log if logger is initialized */
+	if (logfp) {
+		bbs_verb(1, "Default local debug level changed from %d to %d\n", old, newlevel);
 	}
 	return old;
 }
@@ -121,7 +138,7 @@ static struct bbs_cli_entry cli_commands_logger[] = {
 	BBS_CLI_COMMAND(cli_verbose, "verbose", 2, "Set verbose log level", "verbose <newlevel>"),
 	BBS_CLI_COMMAND(cli_debug, "debug", 2, "Set debug log level", "debug <newlevel>"),
 	BBS_CLI_COMMAND(cli_maxdebug, "maxdebug", 2, "Set max file debug log level", "maxdebug <newlevel>"),
-	BBS_CLI_COMMAND(cli_localdebug, "localdebug", 2, "Set max debug log level for current console session", "localdebug <newlevel>"),
+	BBS_CLI_COMMAND(cli_localdebug, "localdebug", 2, "Set max global/per-file debug log level for current console session", "localdebug <newlevel|'reset'> [<fileprefix>]"),
 };
 
 static int open_logfile(void)
@@ -246,6 +263,15 @@ int bbs_set_stdout_logging(int enabled)
 	return 0;
 }
 
+struct debug_filter {
+	const char *resource;
+	int level;
+	BBS_LIST_ENTRY(debug_filter) entry;
+	char data[];
+};
+
+BBS_LIST_HEAD_NOLOCK(debug_filters, debug_filter);
+
 /*! \note int lists, anyone? */
 struct remote_log_fd {
 	int fd;			/* File descriptor for this console */
@@ -253,6 +279,7 @@ struct remote_log_fd {
 	unsigned int skipped:1;
 	unsigned int enabled:1;
 	bbs_mutex_t lock;
+	struct debug_filters filters;
 	RWLIST_ENTRY(remote_log_fd) entry; /* Next entry */
 };
 
@@ -277,7 +304,32 @@ int bbs_set_fd_logging(int fd, int enabled)
 	return rfd ? 0 : -1;
 }
 
-static int set_fd_logging_max_debug(int fd, int maxdebug)
+static inline int set_filter(struct debug_filters *filters, int level, const char *filter)
+{
+	struct debug_filter *d;
+
+	/* First, check if there is an existing filter. If so, just update the debug level. */
+	BBS_LIST_TRAVERSE(filters, d, entry) {
+		if (!strcmp(d->resource, filter)) {
+			d->level = level;
+			return 0;
+		}
+	}
+
+	/* Not found, add a new filter to the list.
+	 * Currently, filters persist until the console itself is freed or "localdebug reset" is run from the console in question. */
+	d = calloc(1, sizeof(*d) + strlen(filter) + 1);
+	if (ALLOC_FAILURE(d)) {
+		return -1;
+	}
+	strcpy(d->data, filter); /* Safe */
+	d->resource = d->data;
+	d->level = level;
+	BBS_LIST_INSERT_TAIL(filters, d, entry);
+	return 0;
+}
+
+static int set_fd_logging_debug(int fd, int maxdebug, const char *filter)
 {
 	int oldmax;
 	struct remote_log_fd *rfd;
@@ -285,7 +337,11 @@ static int set_fd_logging_max_debug(int fd, int maxdebug)
 	RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
 		if (rfd->fd == fd) {
 			oldmax = rfd->maxdebug;
-			rfd->maxdebug = maxdebug;
+			if (filter) {
+				set_filter(&rfd->filters, maxdebug, filter);
+			} else {
+				rfd->maxdebug = maxdebug;
+			}
 			break;
 		}
 	}
@@ -293,9 +349,53 @@ static int set_fd_logging_max_debug(int fd, int maxdebug)
 	return rfd ? oldmax : -1;
 }
 
+static void reset_fd_logging(int fd)
+{
+	struct remote_log_fd *rfd;
+	RWLIST_WRLOCK(&remote_log_fds);
+	RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
+		if (rfd->fd == fd) {
+			BBS_LIST_REMOVE_ALL(&rfd->filters, entry, free);
+			rfd->maxdebug = default_local_debug;
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&remote_log_fds);
+}
+
+static inline int log_to_remote_console(struct remote_log_fd *rfd, enum bbs_log_level loglevel, int level, const char *filename)
+{
+	if (!rfd->enabled) {
+		return 0; /* Logging disabled for this console */
+	}
+
+	if (loglevel == LOG_DEBUG) {
+		struct debug_filter *d;
+		int filter_debug_level = -1;
+		BBS_LIST_TRAVERSE(&rfd->filters, d, entry) {
+			if (strstr(filename, d->resource)) {
+				filter_debug_level = d->level;
+			}
+		}
+		if (filter_debug_level != -1) {
+			return level <= filter_debug_level;
+		} else {
+			return level <= rfd->maxdebug;
+		}
+	} else {
+		return 1;
+	}
+}
+
 static int cli_localdebug(struct bbs_cli_args *a)
 {
 	int oldmax, newmax;
+
+	if (!strcmp(a->argv[1], "reset")) {
+		reset_fd_logging(a->fdout);
+		bbs_dprintf(a->fdout, "Cleared debug filters, reset local debug level to %d\n", default_local_debug);
+		return 0;
+	}
 
 	newmax = atoi(a->argv[1]);
 	if (newmax < 0 || newmax > MAX_DEBUG) {
@@ -306,12 +406,14 @@ static int cli_localdebug(struct bbs_cli_args *a)
 		oldmax = fg_maxdebug;
 		fg_maxdebug = newmax;
 	} else {
-		oldmax = set_fd_logging_max_debug(a->fdout, newmax);
+		oldmax = set_fd_logging_debug(a->fdout, newmax, a->argc >= 3 ? a->argv[2] : NULL);
 		if (oldmax == -1) {
 			return -1;
 		}
 	}
-	bbs_debug(1, "Max local debug level for fd %d changed from %d to %d\n", a->fdout, oldmax, newmax);
+	if (!a->argv[2]) {
+		bbs_debug(1, "Max local debug level for fd %d changed from %d to %d\n", a->fdout, oldmax, newmax);
+	}
 	return 0;
 }
 
@@ -337,13 +439,19 @@ int bbs_add_logging_fd(int fd)
 	}
 	rfd->fd = fd;
 	rfd->enabled = 1; /* Initialize to enabled */
-	rfd->maxdebug = MAX_DEBUG; /* By default, there is no local restriction on the max debug level */
+	rfd->maxdebug = default_local_debug; /* By default, there is no local restriction on the max debug level */
 	bbs_mutex_init(&rfd->lock, NULL);
 	RWLIST_INSERT_HEAD(&remote_log_fds, rfd, entry);
 	active_remote_consoles++;
 	RWLIST_UNLOCK(&remote_log_fds);
 	bbs_debug(5, "Registered file descriptor %d for logging\n", fd);
 	return 0;
+}
+
+static inline void free_logging_fd(struct remote_log_fd *rfd)
+{
+	BBS_LIST_REMOVE_ALL(&rfd->filters, entry, free);
+	free(rfd);
 }
 
 int bbs_remove_logging_fd(int fd)
@@ -358,7 +466,7 @@ int bbs_remove_logging_fd(int fd)
 		bbs_error("File descriptor %d did not have logging\n", fd);
 	} else {
 		bbs_mutex_destroy(&rfd->lock);
-		free(rfd);
+		free_logging_fd(rfd);
 		bbs_debug(5, "Unregistered file descriptor %d from logging\n", fd);
 	}
 	return rfd ? 0 : -1;
@@ -632,11 +740,8 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 			size_t bytesleft = (size_t) bytes;
 			ssize_t wres;
 
-			if (loglevel == LOG_DEBUG && level > rfd->maxdebug) {
-				/* Skip consoles that don't want debug messages of this debug level */
+			if (!log_to_remote_console(rfd, loglevel, level, file)) {
 				continue;
-			} else if (!rfd->enabled) {
-				continue; /* Logging disabled for this console */
 			}
 
 			/* Although acquiring a lock for every log message to every remote console is not ideal,

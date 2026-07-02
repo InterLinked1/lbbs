@@ -1096,9 +1096,13 @@ static int load_config(void)
 	}
 	if (!bbs_config_val_set_int(cfg, "logger", "debug", &tmp)) {
 		bbs_set_debug(tmp);
+		bbs_set_default_debug(tmp);
 #ifdef EXTRA_STARTUP_LOGGING
 		fprintf(stdout, "Debug level set to %d\n", tmp);
 #endif
+	}
+	if (!bbs_config_val_set_int(cfg, "logger", "defaultdebug", &tmp)) {
+		bbs_set_default_debug(tmp);
 	}
 	if (!bbs_config_val_set_int(cfg, "logger", "logfile_debug", &tmp)) {
 		max_logfile_debug_level = tmp;
