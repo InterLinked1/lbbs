@@ -384,6 +384,8 @@ static int add_killpat(const char *header, const char *pattern)
 
 /* =============== Begin ACL Code =============== */
 
+static int total_acl_count;
+
 struct reader_acl {
 	const char *users; /*!< Wildmat of usernames to which this ACL applies */
 	const char *read; /*!< Wildmat of newsgroups for which this ACL allows read access */
@@ -435,6 +437,7 @@ static int load_acl(const char *guests, const char *userswm, const char *readwm,
 		stringlist_push_list(&acl->guests, guests);
 	}
 	RWLIST_INSERT_HEAD(&acls, acl, entry);
+	total_acl_count++;
 	return 0;
 }
 
@@ -471,39 +474,39 @@ static inline int acl_matches(struct nntp_session *nntp, struct reader_acl *acl)
 int allowed_by_acl_locked(struct nntp_session *nntp, const char *group, enum nntp_acl_action action)
 {
 	struct reader_acl *acl;
-	int acl_count = 0;
 
-	RWLIST_TRAVERSE(&acls, acl, entry) {
-		acl_count++;
-		if (acl_matches(nntp, acl)) {
-			/* ACL matches the connection, check if it allows this action */
-			switch (action) {
-				case NNTP_ACL_READ:
-					if (acl->read && uwildmat(group, acl->read)) {
-						if (!acl->minreadpriv || (bbs_user_is_registered(nntp->node->user) && nntp->node->user->priv >= acl->minreadpriv)) {
-							return 1;
-						}
-					}
-					break;
-				case NNTP_ACL_POST:
-					if (acl->post && uwildmat(group, acl->post)) {
-						if (!acl->minpostpriv || (bbs_user_is_registered(nntp->node->user) && nntp->node->user->priv >= acl->minpostpriv)) {
-							return 1;
-						}
-					}
-					break;
-				case NNTP_ACL_APPROVE:
-					if (acl->minapprovepriv) { /* If 0, approvals are disabled */
-						if (bbs_user_is_registered(nntp->node->user) && nntp->node->user->priv >= acl->minapprovepriv) {
-							return 1;
-						}
-					}
-					break;
-			}
-		}
+	if (!total_acl_count) {
+		return 1; /* If no ACLs are configured, actions are implicitly authorized */
+	}
+	if (!nntp->acl) {
+		return 0;
 	}
 
-	return acl_count ? 0 : 1; /* If no ACLs are configured, actions are implicitly authorized */
+	acl = nntp->acl;
+	switch (action) {
+		case NNTP_ACL_READ:
+			if (acl->read && uwildmat(group, acl->read)) {
+				if (!acl->minreadpriv || (bbs_user_is_registered(nntp->node->user) && nntp->node->user->priv >= acl->minreadpriv)) {
+					return 1;
+				}
+			}
+			break;
+		case NNTP_ACL_POST:
+			if (acl->post && uwildmat(group, acl->post)) {
+				if (!acl->minpostpriv || (bbs_user_is_registered(nntp->node->user) && nntp->node->user->priv >= acl->minpostpriv)) {
+					return 1;
+				}
+			}
+			break;
+		case NNTP_ACL_APPROVE:
+			if (acl->minapprovepriv) { /* If 0, approvals are disabled */
+				if (bbs_user_is_registered(nntp->node->user) && nntp->node->user->priv >= acl->minapprovepriv) {
+					return 1;
+				}
+			}
+			break;
+	}
+	return 0;
 }
 
 static int allowed_by_acl(struct nntp_session *nntp, const char *group, enum nntp_acl_action action)
@@ -559,7 +562,10 @@ static int can_post_at_all(void)
  * In theory, we COULD have used the same ACL structure and allowed for the same configuration, but it's not quite the same use case.
  * In particular, reading clients will generally authenticate, while transit clients generally won't.
  * The actual underlying differences in ACL handling between transit and reader clients are mostly abstracted away using the ACL_ macros,
- * so if we wanted to change this in the future, it would not be super disruptive. */
+ * so if we wanted to change this in the future, it would not be super disruptive.
+ *
+ * For efficiency, we determine up front which inpeer object matches a connection and then refer directly to that later.
+ * While it might be more flexible to allow for multiple matches, the performance benefit of this is worth it. */
 
 /*! \brief ACL for transit peer authorized to send us articles (using IHAVE) */
 enum inpeer_type {
@@ -761,10 +767,55 @@ static inline int inpeer_acl_matches(struct nntp_session *nntp, struct inpeer *i
 	return 0;
 }
 
+static void cleanup_acls(struct nntp_session *nntp)
+{
+	if (nntp->acl) {
+		nntp->acl = NULL;
+		RWLIST_UNLOCK(&acls);
+	}
+	if (nntp->inpeer) {
+		nntp->inpeer = NULL;
+		RWLIST_UNLOCK(&inpeers);
+	}
+}
+
+static void associate_acls(struct nntp_session *nntp)
+{
+	struct reader_acl *acl;
+	struct inpeer *i;
+
+	cleanup_acls(nntp);
+
+	RWLIST_RDLOCK(&acls);
+	RWLIST_RDLOCK(&inpeers);
+
+	RWLIST_TRAVERSE(&acls, acl, entry) {
+		if (acl_matches(nntp, acl)) {
+			nntp->acl = acl;
+			break;
+		}
+	}
+	RWLIST_TRAVERSE(&inpeers, i, entry) {
+		if (inpeer_acl_matches(nntp, i)) {
+			nntp->inpeer = i;
+			break;
+		}
+	}
+
+	/* Keep lists locked if we have one of its items, to ensure it won't go away.
+	 * Note that this really makes no difference in practice, since the list is never wrlock'd until module unload.
+	 * Usage-wise, the list locking behavior here is similar to reference counting (and could be replaced with that down the line). */
+	if (!nntp->acl) {
+		RWLIST_UNLOCK(&acls);
+	}
+	if (!nntp->inpeer) {
+		RWLIST_UNLOCK(&inpeers);
+	}
+}
+
 /*! \brief Whether we want any of the distributions in this article */
 static int we_want_distribution(struct nntp_session *nntp, const char *distribs)
 {
-	struct inpeer *i;
 	char *hdrdists[MAX_ARTICLE_DISTRIBUTIONS];
 	char buf[NNTP_BUFSIZ];
 
@@ -788,18 +839,7 @@ static int we_want_distribution(struct nntp_session *nntp, const char *distribs)
 	 *    Accordingly, it is almost definitely a mistake to have a single feed that specifies distributions that start with an exclamation point along with some that don't.
 	 * If an article has more than one distribution specified, then each one is handled according according to the above rules.
 	 * - If any of the specified distributions indicate that the article should be sent, it is; if none do, it is not sent. In other words, the rules are used as a logical or. */
-
-	RWLIST_RDLOCK(&inpeers);
-	RWLIST_TRAVERSE(&inpeers, i, entry) {
-		if (inpeer_acl_matches(nntp, i)) {
-			/* Found a matching inpeer entry (most likely, there is only one, but in theory, there could be multiple) */
-			if (any_distribution_wanted(i->distribution, hdrdists)) {
-				break;
-			}
-		}
-	}
-	RWLIST_UNLOCK(&inpeers);
-	return i ? 1 : 0;
+	return nntp->inpeer && any_distribution_wanted(nntp->inpeer->distribution, hdrdists);
 }
 
 struct tls_rule {
@@ -887,38 +927,12 @@ static int add_inpeer(const char *identity, const char *groups)
 	return 0;
 }
 
-/*! \brief Whether a transit peer is authorized for any groups (not necessarily the one of interest) */
-static int authorized_inpeer_for_any_groups(struct nntp_session *nntp)
-{
-	struct inpeer *i;
-
-	RWLIST_RDLOCK(&inpeers);
-	RWLIST_TRAVERSE(&inpeers, i, entry) {
-		if (inpeer_acl_matches(nntp, i)) {
-			RWLIST_UNLOCK(&inpeers);
-			return 1;
-		}
-	}
-	RWLIST_UNLOCK(&inpeers);
-
-	return 0;
-}
-
 /*! \brief Whether a transit peer is authorized for a specific group, e.g. for IHAVE */
 int authorized_inpeer_for_group_locked(struct nntp_session *nntp, const char *group, enum nntp_acl_action action)
 {
-	struct inpeer *i;
-
 	UNUSED(action); /* Assumed to be NNTP_ACL_POST, but not currently checked. In theory, the ACL mechanism could be extended to allow IHAVE but deny reading, for example. */
 
-	RWLIST_TRAVERSE(&inpeers, i, entry) {
-		if (inpeer_acl_matches(nntp, i)) {
-			if (uwildmat(group, i->groups)) {
-				return 1;
-			}
-		}
-	}
-	return 0;
+	return nntp->inpeer && uwildmat(group, nntp->inpeer->groups);
 }
 
 static int authorized_inpeer_for_group(struct nntp_session *nntp, const char *group, enum nntp_acl_action action)
@@ -933,11 +947,7 @@ static int authorized_inpeer_for_group(struct nntp_session *nntp, const char *gr
 /* When a client connects, and after any authentication, we cache whether this client is authorized for any groups by an inpeer ACL.
  * This way, if not, we can easily deny IHAVE attempts without wasting resources going through the whole post process,
  * only to check ACLs for all groups in the post and find that none authorize posting. */
-#define RECHECK_TRANSIT_ACL(nntp) \
-	/* In case an inpeer ACL would match the user that just authenticated, recheck: */ \
-	if (!nntp->inpeer_any) { /* If an ACL already matched, it won't stop matching now, no need to recheck in that case */ \
-		SET_BITFIELD(nntp->inpeer_any, authorized_inpeer_for_any_groups(nntp)); \
-	}
+#define RECHECK_ACL(nntp) associate_acls(nntp) /* In case an inpeer ACL would match the user (or more specifically / better match the user) that just authenticated, recheck: */
 
 #define ACL_RDLOCK(nntp) \
 	if (nntp->mode == NNTP_MODE_READER) { \
@@ -3715,7 +3725,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 		nntp_send(nntp, NNTP_FAIL_PRIVACY_NEEDED, "Secure connection required"); \
 		return 0; \
 	} \
-	if (!nntp->inpeer_any) { \
+	if (!nntp->inpeer) { \
 		bbs_notice("Sender %s/%s unauthorized to send us articles\n", bbs_username(nntp->node->user), nntp->node->ip); \
 		nntp_send(nntp, NNTP_ERR_ACCESS, "Not authorized to relay articles"); \
 		return 0; \
@@ -4629,7 +4639,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 			return 0;
 		}
 		nntp_send(nntp, 290, "Password for %s accepted", user); /* XXX This is the response code in the RFC example */
-		RECHECK_TRANSIT_ACL(nntp);
+		RECHECK_ACL(nntp);
 	} else if (!strcasecmp(command, "AUTHINFO")) {
 		/* RFC 4643 AUTHINFO */
 		int res;
@@ -4677,7 +4687,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 				return 0;
 			}
 			nntp_send(nntp, NNTP_OK_AUTHINFO, "Authentication accepted");
-			RECHECK_TRANSIT_ACL(nntp);
+			RECHECK_ACL(nntp);
 		} else if (!strcasecmp(command, "SASL")) {
 			/* RFC 4643 SASL */
 			command = strsep(&s, " ");
@@ -4701,7 +4711,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 					return 0;
 				}
 				nntp_send(nntp, NNTP_OK_AUTHINFO, "Authentication accepted");
-				RECHECK_TRANSIT_ACL(nntp);
+				RECHECK_ACL(nntp);
 			} else {
 				/* RFC 4643 says we MUST implement the DIGEST-MD5 mechanism, but, well, we don't. */
 				nntp_send(nntp, NNTP_ERR_UNAVAILABLE, "Mechanism not recognized");
@@ -5082,8 +5092,10 @@ static void handle_client(struct nntp_session *nntp)
 	nntp_send(nntp, posting_allowed ? NNTP_OK_BANNER_POST : NNTP_OK_BANNER_NOPOST,
 		"%s Newsgroup Service Ready, %s", newsname, posting_allowed ? "posting allowed" : "posting prohibited");
 
-	SET_BITFIELD(nntp->inpeer_any, authorized_inpeer_for_any_groups(nntp)); /* Cache whether this client has an inpeer ACL */
 	SET_BITFIELD(nntp->inpeer_tlsrequired, tls_required_for_peer(nntp));
+
+	/* Determine if there is an inpeer that matches this connection */
+	associate_acls(nntp);
 
 	/* Default mode is transit mode (NNTP_MODE_TRANSIT) for mode-switching servers */
 	for (;;) {
@@ -5113,6 +5125,7 @@ static void handle_client(struct nntp_session *nntp)
 			break;
 		}
 	}
+	cleanup_acls(nntp);
 }
 
 /*! \brief Thread to handle a single NNTP/NNTPS client */
@@ -5175,6 +5188,8 @@ static int load_config(void)
 	struct bbs_config_section *section = NULL;
 	struct bbs_keyval *keyval = NULL;
 	unsigned int utmp;
+
+	total_acl_count = 0;
 
 	cfg = bbs_config_load("net_nntp.conf", 1);
 	if (!cfg) {
