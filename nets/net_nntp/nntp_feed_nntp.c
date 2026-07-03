@@ -686,7 +686,7 @@ static int wait_for_more_articles(struct nntp_client *nc, struct site *site)
 {
 	site->feed.nntp.waiting = 1;
 	/* XXX There is a small chance that a writing thread could signal us here, after setting flag but before sleeping */
-	bbs_tcp_client_safe_sleep(&nc->tcpclient, (int) feed_timeout); /* Wait this long for more articles, then close the connection. */
+	bbs_tcp_client_safe_sleep(&nc->tcpclient, (int) SEC_MS(feed_timeout)); /* Wait this long for more articles, then close the connection. */
 	site->feed.nntp.waiting = 0;
 
 	/* If we got interrupted, check if there are more articles to deliver */

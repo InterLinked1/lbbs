@@ -126,7 +126,7 @@ static int keepjunk = 0;
 static int xref_slave = 0;
 
 /* Global settings for feeding articles to peers */
-unsigned int feed_timeout = MIN_MS(5); /* used extern in nntp_feed_nntp.c */
+unsigned int feed_timeout = 5; /* seconds, used extern in nntp_feed_nntp.c */
 unsigned int feed_retries = 5; /* No retries by default */
 
 /* Reader settings */
@@ -580,6 +580,9 @@ struct inpeer {
 	char *distribution[MAX_ARTICLE_DISTRIBUTIONS]; /* Distributions to accept/reject */
 	enum inpeer_type type;
 	RWLIST_ENTRY(inpeer) entry;
+	size_t accepted;
+	size_t refused;
+	size_t rejected;
 	char data[];
 };
 
@@ -1569,6 +1572,35 @@ static int cli_feedstats(struct bbs_cli_args *a)
 		print_feedstats(a, "(Overall)", total_backlog, &overallstats);
 	}
 	bbs_rwlock_unlock(&statlock);
+	if (!c) {
+		if (name) {
+			/* We wanted a specific site, but didn't find it */
+			bbs_dprintf(a->fdout, "No such feed site '%s'\n", name);
+		} else {
+			bbs_dprintf(a->fdout, "No feed sites configured\n");
+		}
+		return -1;
+	}
+	return 0;
+}
+
+static int cli_inpeerstats(struct bbs_cli_args *a)
+{
+	struct inpeer *i;
+	const char *name = a->argc >= 3 ? a->argv[2] : NULL;
+	int c = 0;
+
+	RWLIST_RDLOCK(&inpeers);
+	RWLIST_TRAVERSE(&inpeers, i, entry) {
+		if (name && strcmp(name, i->identity)) {
+			continue;
+		}
+		if (!c++) {
+			bbs_dprintf(a->fdout, "%-30s %9s %9s %9s\n", "Peer", "Accepted", "Refused", "Rejected");
+		}
+		bbs_dprintf(a->fdout, "%-30s %9lu %9lu %9lu\n", i->identity, i->accepted, i->refused, i->rejected);
+	}
+	RWLIST_UNLOCK(&inpeers);
 	if (!c) {
 		if (name) {
 			/* We wanted a specific site, but didn't find it */
@@ -2706,6 +2738,21 @@ static void log_article(struct nntp_session *nntp, int streaming, size_t rxbytes
 		fprintf(newslog, "%.15s.%03d %c %c %s %d %lu %s%s%s\n", buf + 4, (int) (tvnow.tv_usec / 1000),
 			code, streaming ? 'S' : 'T', nntp->node->ip, bbs_gettid(),
 			rxbytes, messageid, text ? " " : "", S_IF(text));
+		if (nntp->inpeer) {
+			switch (code) {
+				case LOG_ACCEPT:
+					nntp->inpeer->accepted++;
+					break;
+				case LOG_DUPLICATE:
+					nntp->inpeer->refused++;
+					break;
+				case LOG_REJECT:
+					nntp->inpeer->rejected++;
+					break;
+				default:
+					break;
+			}
+		}
 	}
 }
 
@@ -3718,7 +3765,7 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 
 #define REQUIRE_TRANSIT() \
 	if (nntp->mode != NNTP_MODE_TRANSIT) { \
-		nntp_send(nntp, NNTP_FAIL_WRONG_MODE, "Readers must use POST, not IHAVE"); \
+		nntp_send(nntp, NNTP_FAIL_WRONG_MODE, "Readers must use POST"); \
 		return 0; \
 	} \
 	if (nntp->inpeer_tlsrequired && !nntp->node->secure) { \
@@ -5061,7 +5108,7 @@ static int nntp_process(struct nntp_session *nntp, struct readline_data *rldata,
 	} else if (!strcasecmp(command, "ETRN")) {
 		/* Don't use REQUIRE_TRANSIT since that includes other checks that aren't needed for this case */
 		if (nntp->mode != NNTP_MODE_TRANSIT) {
-			nntp_send(nntp, NNTP_FAIL_WRONG_MODE, "Readers must use POST, not IHAVE");
+			nntp_send(nntp, NNTP_FAIL_WRONG_MODE, "Command invalid in reader mode");
 			return 0;
 		}
 		REQUIRE_ARGS(s);
@@ -5178,6 +5225,7 @@ static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_fgexpire, "news fgexpire", 2, "Remove expired articles from the spool (optionally just for one group), in foreground", "news expire <group>"),
 	BBS_CLI_COMMAND(cli_feedflush, "news feedflush", 2, "Flush queued articles for feed(s)", "news feedflush [<site>]"),
 	BBS_CLI_COMMAND(cli_feedstats, "news feedstats", 2, "Show outgoing feed stats", "news feedstats [<site>]"),
+	BBS_CLI_COMMAND(cli_inpeerstats, "news inpeerstats", 2, "Show incoming feed stats", "news inpeerstats [<site>]"),
 	BBS_CLI_COMMAND(cli_feedflushreq, "news feedflushreq", 4, "Request a peer flush its backlog for us", "news feedflushreq <URI> <identity>"),
 	BBS_CLI_COMMAND(cli_refeed, "news refeed", 3, "Refeed articles for a site to a new backlog file", "news refeed <site> [<newerthan>]"),
 };
