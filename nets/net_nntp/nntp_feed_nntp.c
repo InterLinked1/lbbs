@@ -289,17 +289,22 @@ static int send_articles_streaming(struct nntp_client *nc, struct site *site, st
 
 		/* Now, read the responses back. They should be in the same order as we sent the commands */
 		for (c = 0, art = first; art && c < maxsend; c++, art = BBS_LIST_NEXT(art, entry)) {
-			const char *messageid;
+			char *messageid;
 			res = nntp_client_read(nc, MIN_MS(5));
 			if (res <= 0) {
 				return -1;
 			}
 			bbs_term_line(nc->buf); /* Strip LF from message ID */
-			messageid = bbs_strcnext(nc->buf, ' ');
-			if (!messageid) {
+			messageid = strchr(nc->buf, ' '); /* bbs_strcnext returns a const char* so we can't use that */
+			if (!messageid++) {
 				bbs_client_err("Unexpected CHECK response: '%s'\n", nc->buf);
 				return -1;
 			}
+			if (strlen_zero(messageid)) {
+				bbs_client_err("Unexpected CHECK response: '%s'\n", nc->buf);
+				return -1;
+			}
+			bbs_strterm(messageid, ' '); /* If there is any text following, e.g. message-id Duplicate, ignore it */
 			if (strcmp(messageid, art->messageid)) {
 				bbs_client_err("Article ID mismatch in CHECK response, expected '%s', got '%s'\n", art->messageid, messageid);
 				return -1;
@@ -689,14 +694,18 @@ static int wait_for_more_articles(struct nntp_client *nc, struct site *site)
 	bbs_tcp_client_safe_sleep(&nc->tcpclient, (int) SEC_MS(feed_timeout)); /* Wait this long for more articles, then close the connection. */
 	site->feed.nntp.waiting = 0;
 
+	/* Exit request trumps activity */
+	if (site->feed.nntp.wantexit) {
+		bbs_debug(3, "NNTP feeder thread for %s told to exit\n", site->name);
+		return -1;
+	}
+
 	/* If we got interrupted, check if there are more articles to deliver */
 	if (site->feed.nntp.processmore) {
 		return 0;
 	}
+
 	/* Anything else, we should abort */
-	if (site->feed.nntp.wantexit) {
-		bbs_debug(3, "NNTP feeder thread for %s told to exit\n", site->name);
-	}
 	return -1;
 }
 

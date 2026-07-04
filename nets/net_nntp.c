@@ -3857,7 +3857,8 @@ static int handle_list(struct nntp_session *nntp, const char *keyword, const cha
 	if (!nntp->inpeer) { \
 		bbs_notice("Sender %s/%s unauthorized to send us articles\n", bbs_username(nntp->node->user), nntp->node->ip); \
 		nntp_send(nntp, NNTP_ERR_ACCESS, "Not authorized to relay articles"); \
-		return 0; \
+		/* 502s after initial connection or besides MODE READER MUST NOT close the connection, but if we're going to receive a deluge of denied TAKETHIS, it makes sense to disconnect anyways */  \
+		return -1; \
 	}
 
 #define REQUIRE_GROUP() \
