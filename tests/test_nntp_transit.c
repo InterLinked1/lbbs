@@ -261,6 +261,12 @@ static int run(void)
 		"Organization: My Blocked Org\r\n"
 	);
 
+	/* Articles for groups that don't exist (junk) */
+	TAKETHIS(peer1, "<junk.1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "nonexistent.group1");
+	TAKETHIS(peer1, "<junk.2@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "nonexistent.group2");
+	TAKETHIS(peer1, "<junk.3@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "nonexistent.group1");
+	TAKETHIS(peer1, "<junk.4@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "nonexistent.misc,nonexistent.group1,nonexistent.foobar,nonexistent.group2");
+
 	/* Test expiration */
 	TAKETHIS(peer1, "<expires.1@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.expires");
 	TAKETHIS(peer1, "<expires.2@" TEST_HOSTNAME ">", TEST_EMAIL_EXTERNAL, "test.expires");

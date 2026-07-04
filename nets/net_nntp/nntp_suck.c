@@ -1243,6 +1243,7 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, const char
 	struct article_groups groups;
 	unsigned int grpcount = 0;
 	char *newsgroup, *newsgroups;
+	char **grps, *artgrps[MAX_ARTICLE_GROUPS + 1];
 
 	memset(&artinfo, 0, sizeof(artinfo));
 	memset(&groups, 0, sizeof(groups));
@@ -1269,6 +1270,12 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, const char
 	}
 	res = 1; /* Reject article by default */
 
+	newsgroups = artinfo.newsgroups; /* Duplicate pointer since we'll mutate it */
+	if (split_csv_list(newsgroups, artgrps, ARRAY_LEN(artgrps)) >= MAX_ARTICLE_GROUPS) { /* Array is MAX_ARTICLE_GROUPS + 1 so if it returns MAX_ARTICLE_GROUPS, it filled the array */
+		bbs_notice("Article %s:%d rejected: %s\n", groupname, artnum, "Too many newsgroups");
+		goto skip;
+	}
+
 	/* Reject invalid or unwanted articles, e.g. missing headers, too many crossposts, etc. */
 	if (check_article(NNTP_MODE_TRANSIT, NULL, &artinfo, errbuf, sizeof(errbuf))) {
 		bbs_notice("Article %s:%d rejected: %s\n", groupname, artnum, errbuf);
@@ -1276,8 +1283,8 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, const char
 	}
 
 	/* Process the Newsgroups headers to see which groups we want */
-	newsgroups = artinfo.newsgroups; /* Duplicate pointer since we'll mutate it */
-	while ((newsgroup = strsep(&newsgroups, ","))) {
+	grps = artgrps;
+	NULTERM_LIST_ITER(grps, newsgroup) {
 		ltrim(newsgroup); /* The Newsgroups header could contain spaces between groups */
 		if (strlen_zero(newsgroup)) {
 			continue;
@@ -1304,7 +1311,8 @@ static int save_article(struct nntp_client *nc, struct suck_feed *sf, const char
 	}
 
 	/* If all is still well, try to save the article */
-	delivered = article_create(&groups, &artinfo, fileno(fp), artlen);
+	grps = artgrps;
+	delivered = article_create(&groups, grps, &artinfo, fileno(fp), artlen);
 	if (delivered <= 0) {
 		bbs_notice("Failed to create article %s:%d\n", groupname, artnum);
 	} /* nntp_spool_trad.c already logs a debug message on success, no need to log it again here */

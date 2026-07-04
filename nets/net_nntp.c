@@ -145,6 +145,9 @@ static enum injection_posting_account injection_add_posting_account = INJECTION_
 static int injection_add_posting_host = 0;
 static char complaints_addr[256] = "";
 
+static int log_junk = 0;
+static FILE *junk_fp;
+
 static struct stringlist subscriptions; /* LIST SUBSCRIPTIONS */
 
 static char motd[NNTP_MAX_LINE_LENGTH + 1]; /* Note: This can be a multi-line message, so the protocol does not limit this to a certain size */
@@ -581,7 +584,7 @@ struct inpeer {
 	enum inpeer_type type;
 	RWLIST_ENTRY(inpeer) entry;
 	size_t accepted;
-	size_t refused;
+	size_t duplicates;
 	size_t rejected;
 	char data[];
 };
@@ -589,7 +592,7 @@ struct inpeer {
 static RWLIST_HEAD_STATIC(inpeers, inpeer);
 
 /*! \brief Split up a comma-separated list into an array of strings */
-static inline int split_csv_list(char *s, char **dists, int n)
+int split_csv_list(char *s, char **items, int n)
 {
 	int i = 0;
 	if (!strlen_zero(s)) {
@@ -605,14 +608,14 @@ static inline int split_csv_list(char *s, char **dists, int n)
 			if (strlen_zero(next)) {
 				continue;
 			}
-			dists[i] = next;
+			items[i] = next;
 		}
 		if (i == n - 1) { /* Filled up the list */
 			bbs_error("Truncation occured (filled up list of size %d)\n", n);
 			/* We could return -1, but wouldn't have much to gain by doing that... just return what we have for now */
 		}
 	}
-	dists[i] = NULL; /* Left enough room for the sentinel NULL */
+	items[i] = NULL; /* Left enough room for the sentinel NULL */
 	return i;
 }
 
@@ -1596,9 +1599,9 @@ static int cli_inpeerstats(struct bbs_cli_args *a)
 			continue;
 		}
 		if (!c++) {
-			bbs_dprintf(a->fdout, "%-30s %9s %9s %9s\n", "Peer", "Accepted", "Refused", "Rejected");
+			bbs_dprintf(a->fdout, "%-30s %10s %10s %10s\n", "Peer", "Accepted", "Duplicates", "Rejected");
 		}
-		bbs_dprintf(a->fdout, "%-30s %9lu %9lu %9lu\n", i->identity, i->accepted, i->refused, i->rejected);
+		bbs_dprintf(a->fdout, "%-30s %10lu %10lu %10lu\n", i->identity, i->accepted, i->duplicates, i->rejected);
 	}
 	RWLIST_UNLOCK(&inpeers);
 	if (!c) {
@@ -1764,15 +1767,14 @@ static int site_wants_article(struct article_info *artinfo, char **artgrps, char
 	return 1; /* Looks like the site wants it! */
 }
 
-static int propagate_article(struct article_info *artinfo)
+static int propagate_article(struct article_info *artinfo, char **grps)
 {
 	/* Because this is all running in a single-process environment,
 	 * we can't simply use the site structures like INN does.
 	 * Instead, we need to keep a copy of all the sites. */
 	struct site *site;
 	int total = 0, sent = 0;
-	char grpbuf[4 * NNTP_MAX_LINE_LENGTH], distbuf[4 * NNTP_MAX_LINE_LENGTH];
-	char *artgrps[MAX_ARTICLE_GROUPS];
+	char distbuf[4 * NNTP_MAX_LINE_LENGTH];
 	char *artdists[MAX_ARTICLE_DISTRIBUTIONS];
 
 	if (ALLOC_FAILURE(artinfo->xref)) {
@@ -1781,9 +1783,7 @@ static int propagate_article(struct article_info *artinfo)
 		return -1;
 	}
 
-	/* Parse the Newsgroups and Distribution header into a list of strings */
-	safe_strncpy(grpbuf, artinfo->newsgroups, sizeof(grpbuf));
-	split_csv_list(grpbuf, artgrps, ARRAY_LEN(artgrps));
+	/* Parse the Distribution header into a list of strings (the Newsgroups header already is, via grps) */
 	if (artinfo->distribution) {
 		safe_strncpy(distbuf, artinfo->distribution, sizeof(distbuf));
 		split_csv_list(distbuf, artdists, ARRAY_LEN(artdists));
@@ -1795,7 +1795,7 @@ static int propagate_article(struct article_info *artinfo)
 	RWLIST_RDLOCK(&sites);
 	RWLIST_TRAVERSE(&sites, site, entry) {
 		total++;
-		if (site_wants_article(artinfo, artgrps, artdists, site)) {
+		if (site_wants_article(artinfo, grps, artdists, site)) {
 			/* If it matches, trigger delivery of the article to this site */
 			site_send(artinfo, site);
 			sent++;
@@ -2699,6 +2699,73 @@ static int process_moderated_group(const char *name, const char *filename)
 	return res;
 }
 
+#define NULTERM_REMOVED_FLAG (NULL + 1)
+
+static inline char **list_find_item(char **items, const char *findstr)
+{
+	char *item;
+	NULTERM_LIST_ITER(items, item) {
+		if (item != NULTERM_REMOVED_FLAG && !strcmp(item, findstr)) {
+			return items;
+		}
+	}
+	return NULL;
+}
+
+static void duplicate_list_pointers(char **duplist, char **origlist)
+{
+	/* Lists should be the same size */
+	while (*origlist) {
+		*duplist++ = *origlist++;
+	}
+	*duplist = NULL;
+}
+
+static void log_junk_counts(char **artgrps)
+{
+	static bbs_mutex_t junk_count_lock = BBS_MUTEX_INITIALIZER;
+	fpos_t pos = { 0 };
+	char buf[NNTP_BUFSIZ];
+	const char *grp;
+	char *grps[MAX_ARTICLE_GROUPS + 1];
+
+	bbs_assert_exists(junk_fp); /* We should not call this function if !junk_fp */
+
+	/* Duplicate list so we can "remove" items by setting them to NULTERM_REMOVED_FLAG */
+	duplicate_list_pointers(grps, artgrps);
+	artgrps = grps;
+
+	bbs_mutex_lock(&junk_count_lock);
+	rewind(junk_fp);
+	for (; (fgets(buf, sizeof(buf), junk_fp)); fgetpos(junk_fp, &pos)) {
+		char **matchhead;
+		char *cnt = buf;
+		grp = strsep(&cnt, " ");
+		/* If the article contains this group, increment count (in place, since counts are zero-padded).
+		 * Otherwise, we'll add it at the end (file is not sorted). */
+		matchhead = list_find_item(artgrps, grp);
+		/* Since group names can't have spaces anyways, we just use space instead of TAB as the delimiter.
+		 * This also makes it easier to use the sort command later, since a custom delimiter doesn't need to be defined,
+		 * e.g. sort -rk 2 /var/log/lbbs/nntp_junk.log */
+		if (matchhead && *matchhead) {
+			long int rejcount = atol(cnt);
+			if (fsetpos(junk_fp, &pos)) { /* Need to rewind the file pointer to the position where the line started */
+				bbs_error("fsetpos failed: %s\n", strerror(errno));
+			}
+			fprintf(junk_fp, "%s %010ld\n", grp, rejcount + 1);
+			*matchhead = NULTERM_REMOVED_FLAG; /* Can't set to NULL or that will indicate end of list, but indicate this item has been "consumed" */
+		}
+	}
+
+	/* If we get to the end and there are any other groups left, log those now */
+	NULTERM_LIST_ITER(artgrps, grp) {
+		if (grp != NULTERM_REMOVED_FLAG) {
+			fprintf(junk_fp, "%s %010ld\n", grp, 1L);
+		}
+	}
+	bbs_mutex_unlock(&junk_count_lock);
+}
+
 static void log_article(struct nntp_session *nntp, int streaming, size_t rxbytes, const char *messageid, char code, const char *text)
 {
 	time_t now;
@@ -2744,7 +2811,7 @@ static void log_article(struct nntp_session *nntp, int streaming, size_t rxbytes
 					nntp->inpeer->accepted++;
 					break;
 				case LOG_DUPLICATE:
-					nntp->inpeer->refused++;
+					nntp->inpeer->duplicates++;
 					break;
 				case LOG_REJECT:
 					nntp->inpeer->rejected++;
@@ -3268,7 +3335,7 @@ int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article
 	log_article(nntp, streaming, artlen, messageid, logcode, msg); \
 	nntp_send(nntp, code, "%s", streaming ? messageid : msg)
 
-int article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t artlen)
+int article_create(struct article_groups *groups, char **grps, struct article_info *artinfo, int srcfd, size_t artlen)
 {
 	int delivered;
 
@@ -3277,7 +3344,7 @@ int article_create(struct article_groups *groups, struct article_info *artinfo, 
 	bbs_rwlock_unlock(&nntp_lock);
 
 	if (delivered > 0) {
-		propagate_article(artinfo);
+		propagate_article(artinfo, grps);
 	}
 
 	return delivered;
@@ -3298,9 +3365,18 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 	unsigned int groupcount = 0;
 	int was_junk = 0, junk_if_unfiled = 0;
 	enum nntp_control_msg cmsg = CMSG_UNKNOWN;
+	char **grps, *artgrps[MAX_ARTICLE_GROUPS + 1];
 	struct article_groups groups;
 
 	memset(&groups, 0, sizeof(groups));
+
+	/* Parse the Newsgroups header once, since we'll use it multiple times */
+	newsgroups = artinfo->newsgroups; /* Duplicate pointer since we'll mutate it */
+	if (split_csv_list(newsgroups, artgrps, ARRAY_LEN(artgrps)) >= MAX_ARTICLE_GROUPS) { /* Array is MAX_ARTICLE_GROUPS + 1 so if it returns MAX_ARTICLE_GROUPS, it filled the array */
+		res = RX_REJECT(nntp, streaming); /* Use the default error for rejecting an article depending on mode (reader/transit and streaming or not) */
+		nntp_rx_reply3(nntp, filesize, S_OR(artinfo->messageid, articleid), LOG_REJECT, res, "Too many newsgroups");
+		return 0;
+	}
 
 	/* Perform non-group specific checks for article and header validity. If any fail, the entire post is rejected. */
 	res = check_article(nntp->mode, nntp, artinfo, errorbuf, sizeof(errorbuf));
@@ -3339,8 +3415,9 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 
 	/* Determine the newsgroups to which we'll add this article. */
 	ACL_RDLOCK(nntp);
-	newsgroups = artinfo->newsgroups; /* Duplicate pointer since we'll mutate it */
-	while ((newsgroup = strsep(&newsgroups, ","))) {
+
+	grps = artgrps; /* We'll iterate over artgrps again later possibly so don't mangle that pointer */
+	NULTERM_LIST_ITER(grps, newsgroup) {
 		char status[NNTP_BUFSIZ] = "y"; /* Default to 'y' in case it's a control message */
 
 		ltrim(newsgroup); /* The Newsgroups header could contain spaces between groups */
@@ -3420,6 +3497,10 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 		}
 	}
 	ACL_UNLOCK(nntp);
+
+	if (!groupcount && nntp->mode == NNTP_MODE_TRANSIT && junk_fp) {
+		log_junk_counts(artgrps);
+	}
 
 	/* If the message didn't include any valid groups on this server thus far, but either:
 	 * - we have a 'j' status for at least one of the attempted groups
@@ -3548,7 +3629,8 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 		bbs_error("Failed to open %s: %s\n", srcfilename, strerror(errno));
 		goto cleanup;
 	}
-	delivered = article_create(&groups, artinfo, srcfd, filesize); /* Assign article numbers, add/update Xref header, and deliver to spool */
+	grps = artgrps;
+	delivered = article_create(&groups, grps, artinfo, srcfd, filesize); /* Assign article numbers, add/update Xref header, and deliver to spool */
 	close(srcfd);
 	if (delivered <= 0) {
 		temp_fail = 1; /* If we got this far and failed, for peers, this is a temporary failure, we want them to retry deliver later */
@@ -5333,6 +5415,7 @@ static int load_config(void)
 	bbs_config_val_set_str(cfg, "readers", "complaints", complaints_addr, sizeof(complaints_addr));
 
 	bbs_config_val_set_true(cfg, "peers", "keepjunk", &keepjunk);
+	bbs_config_val_set_true(cfg, "peers", "logjunk", &log_junk);
 	bbs_config_val_set_true(cfg, "peers", "xrefslave", &xref_slave);
 
 	bbs_config_val_set_uint(cfg, "feeding", "feedtimeout", &feed_timeout);
@@ -5602,10 +5685,18 @@ static void cleanup_subsystems(void)
 	history_cleanup();
 }
 
+static void cleanup_logfiles(void)
+{
+	fclose(newslog);
+	fclose(postlog);
+	if (junk_fp) {
+		fclose(junk_fp);
+	}
+}
+
 static int load_module(void)
 {
-	char newslogpath[512];
-	char postlogpath[512];
+	char logpath[512];
 	int res;
 
 	thismodule = BBS_MODULE_SELF;
@@ -5647,34 +5738,41 @@ static int load_module(void)
 
 	/* Use separately log files for reader and transit posts so the logs can be rotated/retained independently if desired
 	 * (typically with higher retention for reader logs) */
-	snprintf(newslogpath, sizeof(newslogpath), "%s/nntp_transit.log", bbs_log_dir());
-	newslog = fopen(newslogpath, "a");
+	snprintf(logpath, sizeof(logpath), "%s/nntp_transit.log", bbs_log_dir());
+	newslog = fopen(logpath, "a");
 	if (!newslog) {
-		bbs_error("Failed to open %s: %s\n", newslogpath, strerror(errno));
+		bbs_error("Failed to open %s: %s\n", logpath, strerror(errno));
 		bbs_rwlock_destroy(&nntp_lock);
 		goto cleanup;
 	}
-	snprintf(postlogpath, sizeof(postlogpath), "%s/nntp_reader.log", bbs_log_dir());
-	postlog = fopen(postlogpath, "a");
+	snprintf(logpath, sizeof(logpath), "%s/nntp_reader.log", bbs_log_dir());
+	postlog = fopen(logpath, "a");
 	if (!postlog) {
-		bbs_error("Failed to open %s: %s\n", newslogpath, strerror(errno));
+		bbs_error("Failed to open %s: %s\n", logpath, strerror(errno));
 		bbs_rwlock_destroy(&nntp_lock);
 		fclose(newslog);
+		goto cleanup;
+	}
+	snprintf(logpath, sizeof(logpath), "%s/nntp_junk.log", bbs_log_dir());
+	junk_fp = bbs_fopen_rw_notruncate(logpath); /* this one is read/write */
+	if (!junk_fp) {
+		bbs_error("Failed to open %s: %s\n", logpath, strerror(errno));
+		bbs_rwlock_destroy(&nntp_lock);
+		fclose(newslog);
+		fclose(postlog);
 		goto cleanup;
 	}
 
 	/* If we are good to go, initialize site feed types */
 	if (sites_init_feed_types()) {
 		bbs_rwlock_destroy(&nntp_lock);
-		fclose(newslog);
-		fclose(postlog);
+		cleanup_logfiles();
 		goto cleanup;
 	}
 
 	if (bbs_start_tcp_listener3(nntp_enabled ? nntp_port : 0, nntps_enabled ? nntps_port : 0, nnsp_enabled ? nnsp_port : 0, "NNTP", "NNTPS", "NNSP", __nntp_handler)) {
 		bbs_rwlock_destroy(&nntp_lock);
-		fclose(newslog);
-		fclose(postlog);
+		cleanup_logfiles();
 		goto cleanup;
 	}
 
@@ -5708,8 +5806,7 @@ static int unload_module(void)
 	cleanup_lists();
 	bbs_rwlock_destroy(&nntp_lock);
 	cleanup_subsystems();
-	fclose(newslog);
-	fclose(postlog);
+	cleanup_logfiles();
 	return 0;
 }
 

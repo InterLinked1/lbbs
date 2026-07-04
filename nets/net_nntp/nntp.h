@@ -228,8 +228,20 @@ int article_groups_add(struct article_groups *groups, const char *name);
 int group_is_poison(const char *grp);
 
 /*!
+ * \brief Split a string containing a comma-separated list of items into a NULL-terminated array of items
+ * \param s Input string (will be mutilated)
+ * \param[out] items Array in which to split the string, will be NULL-terminated (in the last index if truncation occurs)
+ * \param[in] Size of items array
+ * \returns Number of items parsed into array (n - 1 if truncation occurs, since the last index is NULL-terminated)
+ */
+int split_csv_list(char *s, char **items, int n);
+
+#define NULTERM_LIST_ITER(items, item) for (; (item = *items); items++)
+
+/*!
  * \brief Save a processed article into the spool and propagate it to peers
- * \param[in] groups NULL to autocreate from Newsgroups header
+ * \param[in] groups NULL to autocreate from Newsgroups header. XXX The NULL qualifier seems to be inaccurate, this should be non-NULL, not sure what this should be referring to instead?
+ * \param[in] A NULL-terminated array of group names from the Newsgroups header
  * \param[in] artinfo
  * \param[in] srcfd File descriptor from which to read article
  * \param[in] artlen
@@ -237,7 +249,7 @@ int group_is_poison(const char *grp);
  * \returns Number of groups that received the article
  * \note If artinfo->xref is already set, then its article numbers will be used instead of assigning them ourselves. The Xref header itself will be rewritten to reflect only groups carried locally.
  */
-int article_create(struct article_groups *groups, struct article_info *artinfo, int srcfd, size_t artlen);
+int article_create(struct article_groups *groups, char **grp, struct article_info *artinfo, int srcfd, size_t artlen);
 
 /* ACLs */
 enum nntp_acl_action {

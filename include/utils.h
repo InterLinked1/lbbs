@@ -307,6 +307,13 @@ FILE *bbs_mkftemp(char *template, mode_t mode);
 FILE *bbs_fdopen_duped(int fd, const char *mode);
 
 /*!
+ * \brief Open a file in read/write mode, creating it if it doesn't exist, and not truncating it if it already exists (this can't be done using a single fopen call alone)
+ * \param filename
+ * \returns FILE* on success or NULL on failure
+ */
+FILE *bbs_fopen_rw_notruncate(const char *filename);
+
+/*!
  * \brief Efficiently copy part (or all) of a file between two file descriptors
  * \param srcfd File descriptor from which to copy. Must be a regular file.
  * \param destfd Destination file descriptor. Must be a regular file.

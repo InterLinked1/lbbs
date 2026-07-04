@@ -992,6 +992,27 @@ FILE *bbs_fdopen_duped(int fd, const char *mode)
 	return fp;
 }
 
+FILE *bbs_fopen_rw_notruncate(const char *filename)
+{
+	/* Would you believe that fopen does not support a way to open a file for reading/writing,
+	 * creating it if it doesn't exist, WITHOUT truncating it?
+	 * Well, it doesn't!
+	 * So we do it this way, which is probably better than using open and then calling fdopen? */
+	FILE *fp = fopen(filename, "a");
+	if (!fp) {
+		bbs_error("fopen(%s,a): %s\n", filename, strerror(errno));
+		return NULL;
+	}
+	fclose(fp);
+	fp = fopen(filename, "r+");
+	if (!fp) {
+		bbs_error("fopen(%s,r+): %s\n", filename, strerror(errno));
+		return NULL;
+	}
+	/* We leave the initial read/write positions undefined here, since the application can set those explicitly */
+	return fp;
+}
+
 int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 {
 	int copied;
