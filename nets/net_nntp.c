@@ -97,6 +97,8 @@ static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
 int nntp_unloading = 0; /* Used extern by nntp_feed_nntp.c and nntp_history.c */
 void *thismodule; /* Used extern by nntp_suck.c, nntp_history.c */
 
+static int nntp_accept_enabled = 1;
+
 static bbs_rwlock_t nntp_lock;
 static FILE *newslog;
 static FILE *postlog;
@@ -606,6 +608,7 @@ int split_csv_list(char *s, char **items, int n)
 				trim(next);
 			}
 			if (strlen_zero(next)) {
+				i--; /* We didn't put anything here, so don't skip the index */
 				continue;
 			}
 			items[i] = next;
@@ -5212,7 +5215,7 @@ static void handle_client(struct nntp_session *nntp)
 	int posting_allowed = can_post_at_all();
 
 	/* If we are trying to unload, reject new connections */
-	if (bbs_module_is_shutting_down()) {
+	if (!nntp_accept_enabled || bbs_module_is_shutting_down()) {
 		nntp_send(nntp, NNTP_FAIL_TERMINATING, "Server currently unavailable");
 		return;
 	}
@@ -5299,6 +5302,16 @@ static struct bbs_unit_test tests[] =
 	{ "NNTP Distribution Matching", test_distributions },
 };
 
+static int cli_accept(struct bbs_cli_args *a)
+{
+	const char *s = a->argv[2];
+	int old, enable = S_TRUE(s);
+	old = nntp_accept_enabled;
+	nntp_accept_enabled = enable;
+	bbs_dprintf(a->fdout, "NNTP acceptance was %s and is %s %s\n", old ? "enabled" : "disabled", old == enable ? "still" : "now", enable ? "enabled" : "disabled");
+	return 0;
+}
+
 static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_newgroup, "news newgroup", 2, "Create a new newsgroup", NULL),
 	BBS_CLI_COMMAND(cli_rmgroup, "news rmgroup", 3, "Remove a newsgroup", "news rmgroup <group> [confirm]"),
@@ -5311,6 +5324,7 @@ static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_inpeerstats, "news inpeerstats", 2, "Show incoming feed stats", "news inpeerstats [<site>]"),
 	BBS_CLI_COMMAND(cli_feedflushreq, "news feedflushreq", 4, "Request a peer flush its backlog for us", "news feedflushreq <URI> <identity>"),
 	BBS_CLI_COMMAND(cli_refeed, "news refeed", 3, "Refeed articles for a site to a new backlog file", "news refeed <site> [<newerthan>]"),
+	BBS_CLI_COMMAND(cli_accept, "news accept", 3, "Temporarily disable/enable NNTP acceptance", "news accept <on|off>"),
 };
 
 static int load_config(void)
