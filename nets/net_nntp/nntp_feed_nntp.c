@@ -867,7 +867,7 @@ int feed_nntp_init_feed(struct site *site)
 	}
 	/* If there are articles in queue, launch a thread now to process them, unless 'Q' flag is set.
 	 * We already opened the file handle and can reuse that now. */
-	if (!site->feed.nntp.queue && spawn_feed_thread(site)) {
+	if (!site->feed.nntp.queue && site->feed.nntp.backlogcount && spawn_feed_thread(site)) {
 		bbs_mutex_unlock(&site->feed.nntp.lock);
 		return -1;
 	}
