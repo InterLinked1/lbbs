@@ -4170,7 +4170,7 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 						char *headername = headerbuf;
 						bbs_strterm(headername, ':');
 						snprintf(errbuf, errbuflen, "Header %s too long", headername);
-						postfail = 1;
+						permerror = postfail = 1;
 						continue;
 					}
 				} else {
@@ -4189,6 +4189,13 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 					headerpos = headerbuf; /* Reset */
 					headerleft = sizeof(headerbuf); /* Reset */
 					isxref = 0;
+					if (!strstr(s, ": ")) {
+						/* Not a valid, non-empty header */
+						bbs_client_err("Invalid first line of header '%s'\n", s);
+						snprintf(errbuf, errbuflen, "Headers are ill-formed");
+						permerror = postfail = 1;
+						continue;
+					}
 					if (STARTS_WITH(s, "Xref:")) {
 						/* If from a peer, ignore any incoming Xref article, since we create our own rather than reuse, unless xrefslave is enabled.
 						 * Readers MUST NOT send an Xref header. Therefore, we DO also process it here for readers so later we can reject proto-articles with Xref headers. */
