@@ -939,7 +939,7 @@ static int add_inpeer(const char *identity, const char *groups)
 /*! \brief Whether a transit peer is authorized for a specific group, e.g. for IHAVE */
 int authorized_inpeer_for_group_locked(struct nntp_session *nntp, const char *group, enum nntp_acl_action action)
 {
-	UNUSED(action); /* Assumed to be NNTP_ACL_POST, but not currently checked. In theory, the ACL mechanism could be extended to allow IHAVE but deny reading, for example. */
+	UNUSED(action); /* Assumed to be NNTP_ACL_POST, but not currently checked. In theory, the ACL mechanism could be extended to allow feeding articles but deny reading, for example. */
 
 	return nntp->inpeer && uwildmat(group, nntp->inpeer->groups);
 }
@@ -954,7 +954,7 @@ static int authorized_inpeer_for_group(struct nntp_session *nntp, const char *gr
 }
 
 /* When a client connects, and after any authentication, we cache whether this client is authorized for any groups by an inpeer ACL.
- * This way, if not, we can easily deny IHAVE attempts without wasting resources going through the whole post process,
+ * This way, if not, we can easily deny feeding attempts without wasting resources going through the whole post process,
  * only to check ACLs for all groups in the post and find that none authorize posting. */
 #define RECHECK_ACL(nntp) associate_acls(nntp) /* In case an inpeer ACL would match the user (or more specifically / better match the user) that just authenticated, recheck: */
 
@@ -3454,7 +3454,11 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 			continue;
 		}
 		if (!ACL_ALLOWED_LOCKED(nntp, newsgroup, NNTP_ACL_POST)) {
-			SET_POST_ERROR("You are not allowed to post to %s", newsgroup);
+			if (nntp->acl && nntp->acl->minpostpriv && (!nntp->node->user || nntp->acl->minpostpriv > nntp->node->user->priv)) {
+				SET_POST_ERROR("You are not allowed to post on this news server. Contact the sysop for posting privileges");
+			} else {
+				SET_POST_ERROR("You are not allowed to post to %s", newsgroup);
+			}
 			permission_errors++;
 			continue;
 		}
@@ -4112,6 +4116,7 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 	int inheaders = 1;
 	int permerror = 0, postfail = 0;
 	int lines = 0;
+	int non_empty_lines = 0;
 	int isxref = 0;
 	char headerbuf[4096]; /* Max header size for multi-line headers, this should be plenty - this isn't email! The main culprit is probably References... */
 	size_t headerleft = sizeof(headerbuf);
@@ -4264,6 +4269,9 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 					continue;
 				}
 			}
+			if (*s) {
+				non_empty_lines++;
+			}
 		}
 
 		/* Reject articles that significantly exceed the line length limit to avoid propagating ill-formed articles.
@@ -4314,6 +4322,12 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 	if (!postfail && mode == NNTP_MODE_TRANSIT && xrefslave && !artinfo->xref) {
 		postfail = 1;
 		snprintf(errbuf, errbuflen, "Missing Xref header");
+	}
+
+	/* Articles probably should have a non-empty body, control messages being possibly the only exception. */
+	if (!postfail && mode == NNTP_MODE_READER && !artinfo->control && !non_empty_lines) {
+		permerror = postfail = 1;
+		snprintf(errbuf, errbuflen, "Message body is empty");
 	}
 
 	if (postfail) {
