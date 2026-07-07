@@ -42,10 +42,13 @@ int bbs_pthread_cancel_kill(pthread_t thread);
  */
 int bbs_pthread_interrupt(pthread_t thread);
 
-int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const char *func, int line);
+int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const char *func, int line, int waitfirst);
 
 /*! \brief Join a non-detached thread */
-#define bbs_pthread_join(thread, retval) __bbs_pthread_join(thread, retval, __FILE__, __func__, __LINE__)
+#define bbs_pthread_join(thread, retval) __bbs_pthread_join(thread, retval, __FILE__, __func__, __LINE__, 0)
+
+/*! \brief Join a non-detached thread, that may not exit for a while */
+#define bbs_pthread_waitjoin(thread, retval) __bbs_pthread_join(thread, retval, __FILE__, __func__, __LINE__, 1)
 
 int __bbs_pthread_timedjoin(pthread_t thread, void **retval, const char *file, const char *func, int line, int waitms);
 

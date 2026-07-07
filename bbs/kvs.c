@@ -94,7 +94,9 @@ int bbs_kvs_put(const char *key, size_t keylen, const char *value, size_t valuel
 	res = BBS_SINGULAR_STRUCT_CALLBACK_EXECUTE(callbacks)->put(key, keylen, value, valuelen);
 	bbs_singular_callback_execute_post(&callbacks);
 
+#ifdef EXTRA_DEBUG
 	bbs_debug(6, "KVS PUT(%s) => %lu bytes\n", key, valuelen);
+#endif
 	return res;
 }
 
@@ -110,6 +112,8 @@ int bbs_kvs_del(const char *key, size_t keylen)
 	res = BBS_SINGULAR_STRUCT_CALLBACK_EXECUTE(callbacks)->del(key, keylen);
 	bbs_singular_callback_execute_post(&callbacks);
 
+#ifdef EXTRA_DEBUG
 	bbs_debug(6, "KVS DEL(%s)\n", key);
+#endif
 	return res;
 }

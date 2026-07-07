@@ -1,0 +1,116 @@
+# /etc/spamassassin/config.cf
+# These rules can provide a good starting point for a new mail server, though you may wish to tune these over time based on traffic observations.
+
+# Required score to be considered spam (5 is the default, and should generally be left alone, fine tune your Junk threshold using mail filtering rules instead)
+required_score 5
+
+# English is the only language that won't trigger the UNWANTED_LANGUAGE_BODY rule
+ok_languages en
+
+# Heavily penalize mail from domains with no SPF record
+score SPF_NONE 5.0
+
+# HELO does not publish an SPF record
+# Note that this flags Gmail, Amazon SES, and other legitimate senders
+score SPF_HELO_NONE 2.0
+
+# No valid author signature and from-domain does not exist
+score DKIM_ADSP_NXDOMAIN 5.0
+
+# No valid author signature, domain signs all mail and suggests discarding the rest (DISCARD)
+score DKIM_ADSP_DISCARD 5.0
+
+# No valid author signature, domain signs all mail (ALL)
+score DKIM_ADSP_ALL 5.0
+
+# Penalize missing DMARC policy
+score DMARC_MISSING 3.0
+
+# SPF fail
+score T_SPF_PERMERROR 3.0
+
+# DMARC quarantine
+score DMARC_QUAR 5.0
+
+# Email is not in English
+score UNWANTED_LANGUAGE_BODY 5.0
+
+# Unnecessary base64
+score FROM_EXCESS_BASE64 3.0
+
+# base64-obfuscated inline part
+mimeheader BASE64_MPART Content-Transfer-Encoding =~ /base64/i
+mimeheader INLINE_MPART Content-Disposition =~ /inline/i
+mimeheader HTML_MPART Content-Type =~ /html/i
+meta BASE64_INLINE_HTML_MPART BASE64_MPART && INLINE_MPART && HTML_MPART
+describe BASE64_INLINE_HTML_MPART MIME part is inline HTML and Base64 encoded
+score BASE64_MPART 0.0
+score INLINE_MPART 0.0
+score HTML_MPART 0.0
+score BASE64_INLINE_HTML_MPART 4.0
+
+# Penalize emails with emojis in subject
+body LOCAL_SUBJECT_EMOJI /^Subject:.*[\x{1F300}-\x{1F6FF}\x{1F900}-\x{1F9FF}\x{1F600}-\x{1F64F}]/u
+describe LOCAL_SUBJECT_EMOJI Subject contains emoji
+score LOCAL_SUBJECT_EMOJI 2.5
+
+# Penalize emails with UTF-8 in the subject
+header LOCAL_SUBJECT_UTF Subject:raw =~ /(utf-8|Cp1252|iso-8859|Windows-1252)/i
+score LOCAL_SUBJECT_UTF 1.5
+describe LOCAL_SUBJECT_UTF Subject line is UTF8-encoded
+
+# Penalize HTML only emails
+score MIME_HTML_ONLY 1.8
+
+# Message contains an external image
+score T_REMOTE_IMAGE 0.5
+
+# HTML has a low ratio of text to image area
+score HTML_IMAGE_RATIO_06 0.5
+
+# Penalize if HTML doesn't match plain text
+score MPART_ALT_DIFF 1.7
+
+# Hidden text in HTML
+score STY_INVIS_DIRECT 3.0
+
+# Random-looking Reply-To address
+score HK_RANDOM_REPLYTO 1.5
+
+# Penalize newly registered domains
+score FROM_FMBLA_NEWDOM 4.5
+score FROM_FMBLA_NEWDOM14 3.5
+score FROM_FMBLA_NEWDOM28 2.5
+
+# Penalize untrustworthy TLDs
+score PDS_OTHER_BAD_TLD 4.0
+
+# HTML image that is a large part of the message
+score HTML_IMAGE_ONLY_32 1.0
+
+# Invalid RFC 2822 Message-ID
+score INVALID_MSGID 5.0
+
+# text/plain claims to be ASCII but isn't
+score PP_MIME_FAKE_ASCII_TEXT_BODY 4.0
+
+# 'Content-Type' found without required MIME headers
+score MIME_HEADER_CTYPE_ONLY 3.0
+
+# Don't modify original message (apart from adding headers)
+report_safe 0
+
+# Add X-Spam-Report to all emails, including ham, not just spam
+add_header all Report _REPORT_
+
+# Add X-Spam-Score to all emails, including ham, not just spam
+add_header all Score _SCORE_
+
+# Bayes DB (specify a path and sa-learn will create the DB for you)
+bayes_path /var/lib/spamassassin/bayesdb/bayes
+
+# Skip RBL checks
+skip_rbl_checks 1
+
+# Skip URIBL checks
+skip_uribl_checks 1

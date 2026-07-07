@@ -1738,7 +1738,7 @@ static int filter_merge_files(struct smtp_session *smtp, struct smtp_filter_data
 	 * that means the source has been modified and we should use that as the new source */
 	oldsrcfd = *srcfd;
 	*srcfd = f->outputfd;
-	bbs_debug(6, "New source file descriptor: %d -> %d\n", oldsrcfd, *srcfd);
+	bbs_debug(10, "New source file descriptor: %d -> %d\n", oldsrcfd, *srcfd);
 
 	/* Since we had to make a new interim file, copy the original message and append it to the newly created file. */
 	if (bbs_copy_file(oldsrcfd, *srcfd, 0, (int) *datalen) != (int) *datalen) {
@@ -1921,7 +1921,7 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 	}
 	RWLIST_UNLOCK(&filters);
 
-	bbs_debug(6, "Ran %d/%d filter%s (skipped %d)\n", run, total, ESS(total), total - run);
+	bbs_debug(10, "Ran %d/%d filter%s (skipped %d)\n", run, total, ESS(total), total - run);
 
 	free_if(fdata->body);
 	free_if(fdata->spf);

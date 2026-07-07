@@ -28,6 +28,10 @@
 #define NNTP_BUFSIZ (NNTP_MAX_ARG_LENGTH + 1) /* For things like group names, etc. where we don't have any better official limitation to adhere to */
 #define NNTP_LARGE_WILDMAT_BUFSIZ 4096
 
+/* Command limit is 512, but articles can have up to 1,000
+ * That said, occasional articles on Usenet do have longer lines that this may reject. */
+#define NNTP_MAX_DATA_LINE_LENGTH 1024
+
 /* 2^31-1 */
 #define NNTP_MAX_ARTICLE_NUMBER 2147483647
 

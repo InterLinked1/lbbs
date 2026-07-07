@@ -312,7 +312,7 @@ int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char *value
 	v->value = dupedvalue;
 	RWLIST_INSERT_TAIL(vars, v, entry);
 	RWLIST_UNLOCK(vars);
-	bbs_debug(6, "Set variable %s to '%s'%s\n", key, value, strchr(value, 27) ? COLOR_RESET : ""); /* Zoinks, contained an escape sequence! */
+	bbs_debug(9, "Set variable %s to '%s'%s\n", key, value, strchr(value, 27) ? COLOR_RESET : ""); /* Zoinks, contained an escape sequence! */
 	return 0;
 }
 

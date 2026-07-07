@@ -41,6 +41,8 @@
 
 #include <wss.h> /* libwss */
 
+/* #define DEBUG_POLL */
+
 static int ws_port = 0, wss_port = 0;
 static char *allowed_origins = NULL;
 static char phpsessdir[PATH_MAX] = "";
@@ -923,8 +925,6 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int pro
 		pfds[1].fd = ws.pollfd;
 		pfds[0].revents = pfds[1].revents = 0;
 
-#define DEBUG_POLL
-
 		/* We need to ping the client at least every max_websocket_timeout_ms. */
 		this_poll_start = time(NULL);
 		elapsed_sec = this_poll_start - lastping;
@@ -994,7 +994,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int pro
 				struct wss_frame *frame;
 
 				frame = wss_client_frame(client);
-				bbs_debug(6, "WebSocket '%s' frame received\n", wss_frame_name(frame));
+				bbs_debug(9, "WebSocket '%s' frame received\n", wss_frame_name(frame));
 				switch (wss_frame_opcode(frame)) {
 					case WS_OPCODE_TEXT:
 						cres = route->callbacks->on_text_message && route->callbacks->on_text_message(&ws, ws.data, wss_frame_payload(frame), wss_frame_payload_length(frame));

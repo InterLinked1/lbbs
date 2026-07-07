@@ -56,9 +56,9 @@ Key features and capabilities include:
 
   * Filtering
 
+    * Intelligent sender/recipient analysis - prevent yourself from ever sending an email to the wrong people by mistake!
     * Sieve filtering scripts and ManageSieve service
     * `MailScript filtering engine <configs/.rules>`_ for flexible, custom, dynamic mail filtering rules (Sieve alternative)
-	* Intelligent sender/recipient analysis - prevent yourself from ever sending an email to the wrong people by mistake!
 
   * Webmail client backend
 
@@ -427,8 +427,7 @@ If you don't want to use mod_webmail, you can also use any other open source web
 SquirrelMail is extremely simple (no JavaScript used or required); RoundCube comes with more features and extensibility.
 In particular, RoundCube comes with a built-in graphical ManageSieve editor, which can be useful for managing your Sieve scripts.
 
-Do keep in mind that webmail offers significantly reduced functionality compared to a standard mail client (e.g. something in the Thunderbird family,
-like Interlink/MailNews).
+Do keep in mind that webmail offers significantly reduced functionality compared to a standard mail client (e.g. a Mozilla-based client like Interlink/MailNews).
 
 How do I fully set up the webmail service?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -547,71 +546,17 @@ Configuration
 
 * Load the language plugin by adding :code:`loadplugin Mail::SpamAssassin::Plugin::TextCat` to :code:`/etc/spamassassin/local.pre`
 
-* Create your custom preference file, e.g. :code:`/etc/spamassassin/config.cf`::
+* Create your custom preference file, e.g. :code:`/etc/spamassassin/config.cf`:: An example `config.cf <configs/misc/spamassassin_config.cf>`_ is available as a starting point.
 
-   # Required score to be considered spam (5 is the default, and should generally be left alone, fine tune your Junk threshold using mail filtering rules instead)
-   required_score      5
-
-   # English is the only language that won't trigger the UNWANTED_LANGUAGE_BODY rule
-   ok_languages en
-
-   # Heavily penalize mail from domains with no SPF record
-   score SPF_NONE 3.0
-
-   # No valid author signature and from-domain does not exist
-   score DKIM_ADSP_NXDOMAIN 5.0
-
-   # No valid author signature, domain signs all mail and suggests discarding the rest (DISCARD)
-   score DKIM_ADSP_DISCARD 5.0
-
-   # No valid author signature, domain signs all mail (ALL)
-   score DKIM_ADSP_ALL 5.0
-
-   # Penalize missing DMARC policy
-   score DMARC_MISSING 2.0
-
-   # Email is not in English
-   score UNWANTED_LANGUAGE_BODY 3.5
-
-   # Penalize HTML only emails
-   score MIME_HTML_ONLY 1.8
-
-   # Message contains an external image
-   score T_REMOTE_IMAGE 0.5
-
-   # HTML has a low ratio of text to image area
-   score HTML_IMAGE_RATIO_06 0.5
-
-   # Penalize if HTML doesn't match plain text
-   score MPART_ALT_DIFF 1.7
-
-   # Random-looking Reply-To address
-   score HK_RANDOM_REPLYTO 1.5
-
-   # Penalize newly registered domains
-   score FROM_FMBLA_NEWDOM 4.5
-   score FROM_FMBLA_NEWDOM14 3.5
-   score FROM_FMBLA_NEWDOM28 2.5
-
-   # Don't modify original message (apart from adding headers)
-   report_safe 0
-
-   # Add X-Spam-Report to all emails, including ham, not just spam
-   add_header all Report _REPORT_
-
-   # Add X-Spam-Score to all emails, including ham, not just spam
-   add_header all Score _SCORE_
-
-   # Bayes DB (specify a path and sa-learn will create the DB for you)
-   bayes_path /var/lib/spamassassin/bayesdb/bayes
-
-If you choose not to sign up for a DQS key as described above, SpamHaus may reject your RBL/URIBL requests, in which case you can disable RBL/URIBL checks by adding::
+If you choose not to sign up for a DQS key as described above, SpamHaus may reject your RBL/URIBL requests, in which case you can disable RBL/URIBL checks by setting::
 
    # Skip RBL checks
    skip_rbl_checks 1
 
    # Skip URIBL checks
    skip_uribl_checks 1
+
+(These values are enabled by default in the config.cf linked above, so if you do want to do RBL checks, make sure to adjust those.)
 
 * Go ahead and run :code:`sa-compile` to compile your rule set into a more efficient form for runtime (if you modify :code:`config.cf` in the future, rerun this command).
 

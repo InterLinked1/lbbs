@@ -960,6 +960,8 @@ static int cli_nodes(struct bbs_cli_args *a)
 			snprintf(termsize, sizeof(termsize), "%dx%d%s", n->cols, n->rows, n->dimensions ? "" : "?");
 			snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
 			bbs_node_format_speed(n, speed, sizeof(speed));
+			/* Note: xterm-256color is a common term type that won't fit nicely in 8 cols, pushing the menu info off alignment;
+			 * but we don't want this column to take up 14 cols on every row as these lines are too long already as it is. */
 			bbs_dprintf(a->fdout,
 				" %3d %3d %3d"
 				" %1s %1s %1s"

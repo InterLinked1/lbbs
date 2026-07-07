@@ -208,7 +208,7 @@ static int cli_fetchmail(struct bbs_cli_args *a)
 	args.domain = a->argc >= 4 ? a->argv[3] : NULL;
 
 	bbs_pthread_create(&fetch_thread, NULL, do_fetch, &args);
-	bbs_pthread_join(fetch_thread, NULL);
+	bbs_pthread_waitjoin(fetch_thread, NULL);
 	bbs_dprintf(a->fdout, "Flushed %d upstream queue%s\n", args.res, ESS(args.res));
 	return 0;
 }

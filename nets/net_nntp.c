@@ -4281,11 +4281,9 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 			}
 		}
 
-		/* Reject articles that significantly exceed the line length limit to avoid propagating ill-formed articles.
-		 * NNTP has a command line length limit of 512, we use twice that to be more consistent with SMTP length limits,
-		 * and as in practice, there are a lot of Usenet articles with lines between 512 and 1024. */
-		if (len > 2 * NNTP_MAX_LINE_LENGTH - 2) {
-			snprintf(errbuf, errbuflen, "Contains excessively long line (%lu > %d B)", len + 2, 2 * NNTP_MAX_LINE_LENGTH);
+		/* Reject articles that significantly exceed the line length limit to avoid propagating ill-formed articles. */
+		if (len > NNTP_MAX_DATA_LINE_LENGTH - 2) {
+			snprintf(errbuf, errbuflen, "Contains excessively long line (%lu > %d B)", len + 2, NNTP_MAX_DATA_LINE_LENGTH);
 			permerror = postfail = 1;
 			*artlen += (size_t) len + 2; /* Keep track of the intended length, even though this message is a goner */
 			continue;

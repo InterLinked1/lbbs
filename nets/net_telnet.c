@@ -74,7 +74,7 @@ static int telnet_send_command(int fd, unsigned char cmd, unsigned char opt)
 	} else {
 		/* telcmds[0] is EOF (236), so normalize the index to 236 */
 		/* telopts[0] is simply 0, so no modification needed */
-		bbs_debug(5, "Sent Telnet command: %s %s %s\n", telcmds[IAC - xEOF], telcmds[cmd - xEOF], telopts[opt]);
+		bbs_debug(9, "Sent Telnet command: %s %s %s\n", telcmds[IAC - xEOF], telcmds[cmd - xEOF], telopts[opt]);
 	}
 	return res <= 0 ? -1 : 0;
 }
@@ -108,14 +108,14 @@ static int telnet_read_command(int fd, unsigned char *buf, size_t len)
 	res = read(fd, buf, len - 1);
 	/* Process the command */
 	if (res <= 0) {
-		bbs_debug(4, "read returned %ld: %s\n", res, strerror(errno));
+		bbs_debug(9, "read returned %ld: %s\n", res, strerror(errno));
 		return (int) res;
 	} else if (res >= 3) {
 		int a, b, c;
 		buf[res] = '\0'; /* Don't read uninitialized memory later */
 		if (buf[0] != IAC) {
 			/* Got something that wasn't the beginning of a telnet command */
-			bbs_debug(3, "Read %d %d %d, aborting handshake\n", buf[0], buf[1], buf[2])
+			bbs_client_err("Read %d %d %d, aborting handshake\n", buf[0], buf[1], buf[2])
 			return 0;
 		}
 		/* Don't let the client make us index out of bounds */
@@ -220,7 +220,7 @@ static int telnet_option_send(struct bbs_node *node, struct telnet_settings *set
 	int res;
 
 	if (cmd == WILL || cmd == WONT || cmd == DO || cmd == DONT) {
-		bbs_debug(6, "him: %s, himq: %s, us: %s, usq: %s\n",
+		bbs_debug(9, "him: %s, himq: %s, us: %s, usq: %s\n",
 			option_state_name(settings->options[opt].him), queue_state_name(settings->options[opt].himq),
 			option_state_name(settings->options[opt].us), queue_state_name(settings->options[opt].usq));
 	}
@@ -871,7 +871,7 @@ static int telnet_handshake(struct bbs_node *node)
 		return -1;
 	}
 
-	bbs_debug(8, "Finished processing commands received at connection time\n");
+	bbs_debug(9, "Finished processing commands received at connection time\n");
 
 	/* RFC 1091 Terminal Type */
 	if (telnet_option_send(node, &settings, DO, TELOPT_TTYPE)) {
@@ -926,7 +926,7 @@ static int telnet_handshake(struct bbs_node *node)
 		 * which would otherwise be a reasonable thing to do when dealing only with actual clients.
 		 * This is purely to keep the test suite synchronized. */
 		if (!node->dimensions && settings.options[TELOPT_NAWS].him == WANTYES) {
-			bbs_debug(8, "Haven't yet received response to NAWS option inquiry, waiting for it...\n");
+			bbs_debug(9, "Haven't yet received response to NAWS option inquiry, waiting for it...\n");
 			res = read_and_process_command(node, &settings, buf, sizeof(buf));
 			if (res < 0) {
 				return res;
