@@ -4396,7 +4396,7 @@ static int receive_article(struct nntp_session *nntp, struct readline_data *rlda
 			/* Permanent error */
 			if (!s_strlen_zero(errbuf)) {
 				log_article(nntp, streaming, artlen, articleid, LOG_REJECT, errbuf);
-				nntp_send(nntp, RX_REJECT(nntp, streaming), "%s", errbuf);
+				nntp_send(nntp, RX_REJECT(nntp, streaming), "%s", streaming ? articleid : errbuf);
 			} else {
 				nntp_rx_reply(nntp, artlen, articleid, LOG_REJECT, RX_REJECT(nntp, streaming), "Transfer rejected"); /* Catch-all, but I don't think this case is possible */
 			}
