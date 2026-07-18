@@ -128,7 +128,7 @@ static int keepjunk = 0;
 static int xref_slave = 0;
 
 /* Global settings for feeding articles to peers */
-unsigned int feed_timeout = 5; /* seconds, used extern in nntp_feed_nntp.c */
+unsigned int feed_timeout = 600; /* seconds, used extern in nntp_feed_nntp.c */
 unsigned int feed_retries = 5; /* No retries by default */
 
 /* Reader settings */

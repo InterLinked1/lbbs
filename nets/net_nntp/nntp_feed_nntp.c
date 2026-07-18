@@ -799,8 +799,10 @@ static void feed_thread(struct site *site)
 		if (site->feed.nntp.processmore) {
 			continue; /* There are already more articles to process */
 		}
-		/* Sleep for a little bit, in case there are more articles to process shortly */
-		if (!feed_timeout || wait_for_more_articles(nc, site)) {
+		/* Sleep for a little bit, in case there are more articles to process shortly.
+		 * The exception is sites with the 'Q' flag set, since the queue is flushed on demand,
+		 * we disconnect immediately since the queue likely won't be flushed again for a while. */
+		if (!feed_timeout || site->feed.nntp.queue || wait_for_more_articles(nc, site)) {
 			break;
 		}
 	}
