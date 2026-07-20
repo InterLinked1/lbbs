@@ -211,6 +211,10 @@ stmtcleanup:
 
 cleanup:
 	mysql_close(mysql);
+	if (!user && userlistptr) {
+		/* If we don't have any users to add, then free the list before returning NULL to avoid a leak */
+		FREE(userlist);
+	}
 	if (!username && userlistptr) {
 		*userlistptr = userlist;
 	}
