@@ -805,26 +805,30 @@ static int process_headers(struct http_session *http)
 		safe_strncpy(tmpbuf, value, sizeof(tmpbuf));
 		dup = tmpbuf;
 		tmp = strsep(&dup, " ");
-		inlen = strlen(dup);
-		if (inlen >= sizeof(tmpbuf)) {
-			bbs_warning("Authorization header value truncated\n");
-		} else if (!strcmp(tmp, "Basic")) {
-			unsigned char *decoded = base64_decode((unsigned char*) dup, (int) inlen, &outlen);
-			if (decoded) {
-				char *username, *password = (char*) decoded;
-				username = strsep(&password, ":");
-
-				/* Always set, even if incorrect password, so we know that we attempted Basic Auth */
-				REPLACE(http->req->username, username);
-				if (bbs_authenticate(http->node, username, password)) {
-					bbs_auth("Basic Authentication attempt failed for %s\n", username);
-				}
-				/* Destroy the password before freeing it */
-				bbs_memzero(decoded, (size_t) outlen);
-				free(decoded);
-			}
+		if (strlen_zero(dup)) {
+			bbs_client_err("Invalid Authorization header\n");
 		} else {
-			bbs_warning("Unsupported Authorization method '%s'\n", tmp);
+			inlen = strlen(dup);
+			if (inlen >= sizeof(tmpbuf)) {
+				bbs_warning("Authorization header value truncated\n");
+			} else if (!strcmp(tmp, "Basic")) {
+				unsigned char *decoded = base64_decode((unsigned char*) dup, (int) inlen, &outlen);
+				if (decoded) {
+					char *username, *password = (char*) decoded;
+					username = strsep(&password, ":");
+
+					/* Always set, even if incorrect password, so we know that we attempted Basic Auth */
+					REPLACE(http->req->username, username);
+					if (bbs_authenticate(http->node, username, password)) {
+						bbs_auth("Basic Authentication attempt failed for %s\n", username);
+					}
+					/* Destroy the password before freeing it */
+					bbs_memzero(decoded, (size_t) outlen);
+					free(decoded);
+				}
+			} else {
+				bbs_warning("Unsupported Authorization method '%s'\n", tmp);
+			}
 		}
 	}
 
