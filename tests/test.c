@@ -950,7 +950,7 @@ static int analyze_valgrind(void)
 		const char *s;
 		if (!num_bytes_lost && (s = strstr(buf, "definitely lost: "))) {
 			s += STRLEN("definitely lost: ");
-			num_bytes_lost = atoi(s);
+			num_bytes_lost = atoi(s); /* XXX atoi doesn't handle commas */
 		} else if (!num_errors && (s = strstr(buf, "ERROR SUMMARY: "))) {
 			/* This includes things like conditional jump on uninitialized value, invalid writes, etc. */
 			s += STRLEN("ERROR SUMMARY: ");

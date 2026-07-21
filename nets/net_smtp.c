@@ -251,6 +251,7 @@ static void smtp_destroy(struct smtp_session *smtp)
 }
 
 static struct stringlist blacklist;
+static struct stringlist tarpits;
 static struct stringlist unlisted_ips;
 
 struct smtp_relay_host {
@@ -502,7 +503,6 @@ static int smtp_tarpit(struct smtp_session *smtp, int code, const char *message)
 	if (!smtp->failures) {
 		return 0;
 	}
-	bbs_debug(4, "%p: Current number of SMTP failures: %d\n", smtp, smtp->failures);
 	if (smtp->failures <= 4) {
 		/* Do not do this with <= 4 or we'll slow down the test suite when it's testing bad behavior (and get test failures) */
 		if (smtp->failures <= 2 || bbs_is_loopback_ipv4(smtp->node->ip)) {
@@ -541,7 +541,7 @@ static int smtp_tarpit(struct smtp_session *smtp, int code, const char *message)
 			/* If the bit shift results in a negative, fix it */
 			sleepms = SEC_MS(15);
 		}
-		bbs_debug(3, "Tarpitting node %d for %d ms\n", smtp->node->id, sleepms);
+		bbs_debug(3, "Tarpitting node %d for %d ms (%d failure%s)\n", smtp->node->id, sleepms, smtp->failures, ESS(smtp->failures));
 		if (bbs_node_safe_sleep(smtp->node, sleepms)) {
 			return -1;
 		}
@@ -705,6 +705,14 @@ static int handle_connect(struct smtp_session *smtp)
 			}
 		}
 	}
+
+	/* If we should permanently tarpit this connection, then we just mess with it */
+	if (stringlist_contains(&tarpits, smtp->node->ip)) {
+		smtp->failures += 10; /* Max tarpitting */
+		while (!bbs_module_is_shutting_down() && !smtp_tarpit(smtp, 220, "Waiting for service to initialize..."));
+		return -1;
+	}
+
 	smtp_reply_nostatus(smtp, 220, "%s ESMTP Service Ready", smtp_incoming_hostname());
 	return 0;
 }
@@ -4077,6 +4085,13 @@ static int load_config(void)
 					stringlist_push(&blacklist, key);
 				}
 			}
+		} else if (!strcmp(bbs_config_section_name(section), "tarpit")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				key = bbs_keyval_key(keyval);
+				if (!stringlist_contains(&tarpits, key)) {
+					stringlist_push(&tarpits, key);
+				}
+			}
 		} else if (!strcmp(bbs_config_section_name(section), "authorized_relays")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				key = bbs_keyval_key(keyval);
@@ -4152,6 +4167,7 @@ static int load_module(void)
 	stringlist_init(&trusted_relays);
 	stringlist_init(&starttls_exempt);
 	stringlist_init(&blacklist);
+	stringlist_init(&tarpits);
 	stringlist_init(&unlisted_ips);
 
 	if (load_config()) {
@@ -4203,6 +4219,7 @@ static int load_module(void)
 
 cleanup:
 	stringlist_empty_destroy(&blacklist);
+	stringlist_empty_destroy(&tarpits);
 	stringlist_empty_destroy(&unlisted_ips);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
 	return -1;
@@ -4218,6 +4235,7 @@ static int unload_module(void)
 	}
 	stop_core_ports();
 	stringlist_empty_destroy(&blacklist);
+	stringlist_empty_destroy(&tarpits);
 	stringlist_empty_destroy(&unlisted_ips);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_identities, entry, authorized_identity_free);
