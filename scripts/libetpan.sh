@@ -6,8 +6,12 @@ set -e
 
 cd /usr/local/src
 if [ ! -d libetpan ]; then
-	git clone --depth 1 --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git
+	# git clone --depth 1 --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git
+	# Last known good commit until addressed (see https://github.com/dinhvh/libetpan/issues/466)
+	# --revision is only supported by Git >= 2.49, so we can't use it here and need to do it in 2 steps
+	git clone --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git
 	cd libetpan
+	git checkout 9d92e3161d45d62bfde7aaa9b41f76cdd4b66735
 else
 	cd libetpan
 	git stash

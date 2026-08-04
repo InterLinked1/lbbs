@@ -60,7 +60,7 @@ mod_asterisk_queues.so : mod_asterisk_queues.o
 
 mod_discord.so : mod_discord.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -ldiscord
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lcurl -ldiscord
 
 mod_http.so : mod_http.o
 	@echo "  [LD] $^ -> $@"
