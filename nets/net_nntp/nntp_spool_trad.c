@@ -947,7 +947,7 @@ int tradspool_overview_header_list(struct nntp_session *nntp, enum list_category
 		_nntp_send(nntp, "Date:\r\n");
 		_nntp_send(nntp, "Message-ID:\r\n");
 		_nntp_send(nntp, "References:\r\n");
-		_nntp_send(nntp, ":bytes:\r\n");
+		_nntp_send(nntp, ":bytes\r\n");
 		_nntp_send(nntp, ":lines\r\n");
 		_nntp_send(nntp, "Xref:full\r\n");
 	}
