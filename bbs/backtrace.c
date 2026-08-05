@@ -23,6 +23,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <string.h>
 #include <execinfo.h>
@@ -84,7 +85,7 @@ static void process_section(bfd *bfdobj, asection *section, void *obj)
 	bfd_vma offset;
 	bfd_vma vma;
 	bfd_size_type size;
-	bfd_boolean line_found = 0;
+	bool line_found = 0;
 	int inlined = 0;
 
 	offset = data->pc - (data->dynamic ? (bfd_vma)(uintptr_t) data->dli.dli_fbase : 0);
