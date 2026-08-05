@@ -881,13 +881,16 @@ static int tradspool_group_overview_full(struct nntp_session *nntp, enum overvie
 				}
 			} else {
 				/* OVER and XOVER responses */
+
+				bbs_term_line(buf); /* msgbuf (from .overview file) only includes LF, strip LF to use CR LF instead */
+
 				if (messageid && !eff_artnum) {
 					/* Need to respond with article number 0 instead */
 					char *rest = buf;
 					strsep(&rest, "\t");
-					_nntp_send(nntp, "%d\t%s", 0, rest); /* msgbuf already includes CR LF */
+					_nntp_send(nntp, "%d\t%s\r\n", 0, rest);
 				} else {
-					_nntp_send(nntp, "%s", buf); /* msgbuf already includes CR LF */
+					_nntp_send(nntp, "%s\r\n", buf);
 				}
 			}
 		}
