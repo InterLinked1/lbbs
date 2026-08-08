@@ -70,6 +70,9 @@ struct imap_client {
 	unsigned int has_list_status:1;
 	unsigned int has_notify:1;
 	unsigned int office365:1; /* Is it a Microsoft Office 365 server? */
+	/* Client settings */
+	unsigned int calc_size:1; /* Whether to manually calculate folder sizes if we don't have LIST-STATUS / STATUS=SIZE */
+	unsigned int calc_counts:1;	/* Whether to issue STATUS for each folder if LIST-STATUS isn't supported */
 	/* Sorting */
 	char *sort;
 	char *filter;
@@ -466,6 +469,11 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 		}
 	}
 
+	/* If we don't want to do manual STATUS commands, then we only return this info if it's in the LIST-STATUS response */
+	if (!client->calc_counts && !client->calc_size) {
+		return -1;
+	}
+
 	att_list = mailimap_status_att_list_new_empty();
 	if (!att_list) {
 		return -1;
@@ -841,16 +849,21 @@ static void list_status_logger(mailstream *imap_stream, int log_type, const char
 }
 
 /*! \brief Basically mailimap_list, but sending a custom command */
-static int mailimap_list_status(mailimap *session, clist **list_result)
+static int mailimap_list_status(struct imap_client *client, mailimap *session, clist **list_result)
 {
 	struct mailimap_response *response;
 	int r;
 	int error_code;
 
-#define LIST_STATUS_CMD "LIST \"\" \"*\" RETURN (STATUS (MESSAGES RECENT UNSEEN SIZE))\r\n"
+#define LIST_STATUS_SIZE_CMD "LIST \"\" \"*\" RETURN (STATUS (MESSAGES RECENT UNSEEN SIZE))\r\n"
 /* RFC 5258 Sec 4: Technically, if the server supports LIST-EXTENDED and we don't ask for CHILDREN explicitly,
  * it's not obligated to return these attributes */
-#define LIST_STATUS_CHILDREN_CMD "LIST \"\" \"*\" RETURN (CHILDREN STATUS (MESSAGES RECENT UNSEEN SIZE))\r\n"
+#define LIST_STATUS_SIZE_CHILDREN_CMD "LIST \"\" \"*\" RETURN (CHILDREN STATUS (MESSAGES RECENT UNSEEN SIZE))\r\n"
+
+#define LIST_STATUS_CMD "LIST \"\" \"*\" RETURN (STATUS (MESSAGES RECENT UNSEEN))\r\n"
+/* RFC 5258 Sec 4: Technically, if the server supports LIST-EXTENDED and we don't ask for CHILDREN explicitly,
+ * it's not obligated to return these attributes */
+#define LIST_STATUS_CHILDREN_CMD "LIST \"\" \"*\" RETURN (CHILDREN STATUS (MESSAGES RECENT UNSEEN))\r\n"
 
 	if ((session->imap_state != MAILIMAP_STATE_AUTHENTICATED) && (session->imap_state != MAILIMAP_STATE_SELECTED)) {
 		return MAILIMAP_ERROR_BAD_STATE;
@@ -862,14 +875,28 @@ static int mailimap_list_status(mailimap *session, clist **list_result)
 
 	/* XXX mailimap_send_crlf and mailimap_send_custom_command aren't public */
 	if (mailimap_has_extension(session, "LIST-EXTENDED")) {
-		r = (int) mailstream_write(session->imap_stream, LIST_STATUS_CHILDREN_CMD, STRLEN(LIST_STATUS_CHILDREN_CMD));
-		if (r != STRLEN(LIST_STATUS_CHILDREN_CMD)) {
-			return MAILIMAP_ERROR_STREAM;
+		if (client->has_status_size) {
+			r = (int) mailstream_write(session->imap_stream, LIST_STATUS_SIZE_CHILDREN_CMD, STRLEN(LIST_STATUS_SIZE_CHILDREN_CMD));
+			if (r != STRLEN(LIST_STATUS_SIZE_CHILDREN_CMD)) {
+				return MAILIMAP_ERROR_STREAM;
+			}
+		} else {
+			r = (int) mailstream_write(session->imap_stream, LIST_STATUS_CHILDREN_CMD, STRLEN(LIST_STATUS_CHILDREN_CMD));
+			if (r != STRLEN(LIST_STATUS_CHILDREN_CMD)) {
+				return MAILIMAP_ERROR_STREAM;
+			}
 		}
 	} else {
-		r = (int) mailstream_write(session->imap_stream, LIST_STATUS_CMD, STRLEN(LIST_STATUS_CMD));
-		if (r != STRLEN(LIST_STATUS_CMD)) {
-			return MAILIMAP_ERROR_STREAM;
+		if (client->has_status_size) {
+			r = (int) mailstream_write(session->imap_stream, LIST_STATUS_SIZE_CMD, STRLEN(LIST_STATUS_SIZE_CMD));
+			if (r != STRLEN(LIST_STATUS_SIZE_CMD)) {
+				return MAILIMAP_ERROR_STREAM;
+			}
+		} else {
+			r = (int) mailstream_write(session->imap_stream, LIST_STATUS_CMD, STRLEN(LIST_STATUS_CMD));
+			if (r != STRLEN(LIST_STATUS_CMD)) {
+				return MAILIMAP_ERROR_STREAM;
+			}
 		}
 	}
 
@@ -899,7 +926,7 @@ static int mailimap_list_status(mailimap *session, clist **list_result)
 	}
 }
 
-static int client_list_command(struct imap_client *client, struct mailimap *imap, json_t *json, char *delim, int details, int calc_size)
+static int client_list_command(struct imap_client *client, struct mailimap *imap, json_t *json, char *delim, int details)
 {
 	int res;
 	char delimiter = 0;
@@ -932,7 +959,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 
 	set_command_read_timeout(client, COMMAND_READ_LARGE_TIMEOUT, &old_timeout);
 
-	if (details && client->has_list_status && client->has_status_size) {
+	if (details && client->has_list_status && (client->has_status_size || !client->calc_size)) {
 		struct list_status_cb cb;
 		struct dyn_str dynstr;
 		cb.dynstr = &dynstr;
@@ -945,7 +972,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 		 * it's easier to just send it the command we want and parse it ourselves. */
 		bbs_debug(4, "Nice, both LIST-STATUS and STATUS=SIZE are supported!\n"); /* Somebody please give the poor IMAP server a pay raise */
 		mailstream_set_logger(imap->imap_stream, list_status_logger, &cb);
-		res = mailimap_list_status(imap, &imap_list);
+		res = mailimap_list_status(client, imap, &imap_list);
 		mailstream_set_logger(imap->imap_stream, NULL, NULL);
 		listresp = dynstr.buf;
 	} else {
@@ -966,7 +993,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 		return -1;
 	}
 
-	if (!calc_size && !client->has_status_size) {
+	if (!client->calc_size && !client->has_status_size) {
 		bbs_debug(4, "STATUS=SIZE not supported and client has requested folder sizes not be calculated\n");
 	}
 
@@ -1033,9 +1060,14 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 			continue;
 		}
 
+		/* If both extensions are supported, there's no need to do a STATUS per folder */
+		if (!listresp && (client->has_list_status || !client->calc_counts) && (client->has_status_size || !client->calc_size)) {
+			continue;
+		}
+
 		/* STATUS: ideally we could get all the details we want from a single STATUS command. */
 		if (!client_status_command(client, imap, name, folder, &total, listresp)) {
-			if (calc_size && !client->has_status_size) { /* Lacks RFC 8438 support */
+			if (client->calc_size && !client->has_status_size) { /* Lacks RFC 8438 support */
 				uint32_t size = 0;
 				if (total > 0) {
 					/* Do it the manual way. */
@@ -1175,7 +1207,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	return 0;
 }
 
-static int list_response(struct ws_session *ws, struct imap_client *client, struct mailimap *imap, int calc_size)
+static int list_response(struct ws_session *ws, struct imap_client *client, struct mailimap *imap)
 {
 	char delim[2];
 	json_t *root, *arr;
@@ -1201,7 +1233,7 @@ static int list_response(struct ws_session *ws, struct imap_client *client, stru
 		json_object_set_new(root, "response", json_string("LIST"));
 		json_object_set_new(root, "data", arr);
 
-		if (client_list_command(client, imap, arr, delim, 0, calc_size)) {
+		if (client_list_command(client, imap, arr, delim, 0)) {
 			return -1;
 		}
 
@@ -1211,6 +1243,12 @@ static int list_response(struct ws_session *ws, struct imap_client *client, stru
 		/* We just sent a list of folder names.
 		 * Now, send the full details, in a second response since this will take a second.
 		 * This allows the UI to be more responsive for the user. */
+
+		if (!client->calc_counts && !client->calc_size) {
+			/* If LIST-STATUS isn't supported, we normally do a second pass to get folder counts/size.
+			 * If we want to skip those to speed up the load time, then we're done now. */
+			return 0;
+		}
 	}
 
 	root = json_object();
@@ -1222,7 +1260,7 @@ static int list_response(struct ws_session *ws, struct imap_client *client, stru
 	json_object_set_new(root, "response", json_string("LIST"));
 	json_object_set_new(root, "data", arr);
 
-	if (client_list_command(client, imap, arr, delim, 1, calc_size)) {
+	if (client_list_command(client, imap, arr, delim, 1)) {
 		goto cleanup;
 	}
 	json_object_set_new(root, "delimiter", json_string(delim));
@@ -4022,7 +4060,8 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 
 	if (!client->authenticated) {
 		if (!strcmp(command, "LOGIN")) {
-			int calc_size = json_object_bool_value(root, "skip_size_calculations") ? 0 : 1;
+			client->calc_size = json_object_bool_value(root, "skip_size_calculations") ? 0 : 1;
+			client->calc_counts = json_object_bool_value(root, "skip_folder_counts") ? 0 : 1;
 			res = client_imap_login(ws, client, client->imap, json_object_string_value(root, "password"));
 			if (!res) {
 				json_t *root2;
@@ -4037,7 +4076,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 				json_send(ws, root2);
 
 				/* Send unsolicited LIST response once authenticated */
-				res = list_response(ws, client, client->imap, calc_size);
+				res = list_response(ws, client, client->imap);
 			}
 		} else {
 			bbs_warning("Command unknown: %s\n", command);
@@ -4046,7 +4085,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 	}
 
 	if (!strcmp(command, "LIST")) {
-		res = list_response(ws, client, client->imap, 0); /* Not currently used by the frontend, but sure, allow it to ask for an updated LIST later. */
+		res = list_response(ws, client, client->imap); /* Not currently used by the frontend, but sure, allow it to ask for an updated LIST later. */
 	} else if (!strcmp(command, "SELECT")) {
 		if (client_imap_select(ws, client, client->imap, json_object_string_value(root, "folder"))) {
 			goto cleanup;
