@@ -948,7 +948,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 	}
 
 	while (fno < files && (entry = entries[fno++])) {
-		char response[8192];
+		char response[32768]; /* XXX This probably should be dynamically allocated or allocated as large as is needed. Have seen as large as 18k+ in the wild */
 		char *buf = response;
 		int len = sizeof(response);
 		unsigned int msguid;
