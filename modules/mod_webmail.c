@@ -62,6 +62,7 @@ struct imap_client {
 	/* Flags */
 	unsigned int authenticated:1;	/* Logged in yet? */
 	unsigned int canidle:1;
+	unsigned int allow_idling:1;
 	unsigned int idling:1;
 	unsigned int has_move:1;
 	unsigned int has_sort:1;
@@ -3620,9 +3621,11 @@ static int handle_append(struct imap_client *client, const char *message, size_t
 
 static int idle_stop(struct ws_session *ws, struct imap_client *client)
 {
+	int res;
+
 	UNUSED(ws); /* Formerly used to adjust net_ws timeout, not currently used */
+
 	if (client->idling) {
-		int res;
 		bbs_debug(5, "Stopping IDLE\n");
 		webmail_log(7, client, "=> IDLE STOP\n");
 		res = mailimap_idle_done(client->imap);
@@ -3631,6 +3634,13 @@ static int idle_stop(struct ws_session *ws, struct imap_client *client)
 			return -1;
 		}
 		client->idling = 0;
+	} else if (!client->allow_idling) {
+		/* Send a NOOP to flush any unsolicited untagged responses that we would have gotten immediately if we were idling */
+		res = mailimap_noop(client->imap);
+		if (res != MAILIMAP_NO_ERROR) {
+			log_mailimap_warning(client->imap, res, "Failed to send NOOP");
+			return -1;
+		}
 	}
 	return 0;
 }
@@ -3658,7 +3668,7 @@ static int client_flush_pending_output(struct imap_client *client)
 static int idle_start(struct ws_session *ws, struct imap_client *client)
 {
 	UNUSED(ws); /* Formerly used to adjust net_ws timeout, not currently used */
-	if (client->canidle && !client->idling) { /* Don't IDLE again if already idling... */
+	if (client->canidle && client->allow_idling && !client->idling) { /* Don't IDLE again if already idling... */
 		int res;
 		bbs_debug(5, "Starting IDLE...\n");
 		webmail_log(7, client, "=> IDLE START\n");
@@ -4062,6 +4072,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 		if (!strcmp(command, "LOGIN")) {
 			client->calc_size = json_object_bool_value(root, "skip_size_calculations") ? 0 : 1;
 			client->calc_counts = json_object_bool_value(root, "skip_folder_counts") ? 0 : 1;
+			client->allow_idling = json_object_bool_value(root, "skip_idling") ? 0 : 1;
 			res = client_imap_login(ws, client, client->imap, json_object_string_value(root, "password"));
 			if (!res) {
 				json_t *root2;
