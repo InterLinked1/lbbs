@@ -656,8 +656,9 @@ static int client_imap_login(struct ws_session *ws, struct imap_client *client, 
 {
 	int res;
 	int outlen;
+	int idlesec;
 	char *decoded_password;
-	const char *username;
+	const char *hostname, *username;
 
 	username = websocket_query_param(ws, "username"); /* Without Remember Me, passed directly over WebSocket during connection setup */
 	if (!username) {
@@ -695,7 +696,14 @@ static int client_imap_login(struct ws_session *ws, struct imap_client *client, 
 	/* Regardless of whether a mailbox is selected and is idling, we
 	 * need to do something at least every 30 minutes, or the IMAP server will disconnect us. */
 	client->imapfd = mailimap_idle_get_fd(imap);
-	websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(1740)); /* Just under 30 minutes */
+
+	idlesec = 1740;
+	hostname = websocket_query_param(ws, "server");
+	if (!strcmp(hostname, "imap.mail.yahoo.com")) {
+		idlesec = 280;
+	}
+
+	websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(idlesec)); /* Just under 30 minutes */
 	/* Don't start IDLING yet. No mailbox is yet selected. */
 	return 0;
 }
