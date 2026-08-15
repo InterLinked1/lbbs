@@ -278,6 +278,27 @@ const char *bbs_sysop(void)
 	return bbs_sysop_buf;
 }
 
+int bbs_node_traverse(const char *protfilter, int (*cb)(struct bbs_node *node, int count, void *cbdata), void *cbdata)
+{
+	struct bbs_node *node;
+	int count = 0;
+	size_t protlen = protfilter ? strlen(protfilter) : 0;
+
+	RWLIST_RDLOCK(&nodes);
+	RWLIST_TRAVERSE(&nodes, node, entry) {
+		if (protfilter && strncmp(node->protname, protfilter, protlen)) {
+			continue;
+		}
+		if (cb(node, count, cbdata)) {
+			break;
+		}
+		count++;
+	}
+	RWLIST_UNLOCK(&nodes);
+
+	return count;
+}
+
 static unsigned int lifetime_nodes = 0;
 
 struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockaddr_in *restrict sinaddr, int sfd, void *mod)

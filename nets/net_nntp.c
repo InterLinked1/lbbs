@@ -5292,11 +5292,39 @@ static void nntp_handler(struct bbs_node *node, int secure, int reader)
 
 	memset(&nntp, 0, sizeof(nntp));
 	nntp.node = node;
+	node->pvt = &nntp;
 	SET_BITFIELD(nntp.mode, reader);
 
 	handle_client(&nntp);
 
 	nntp_destroy(&nntp);
+}
+
+static int clients_cb(struct bbs_node *node, int count, void *varg)
+{
+	char elapsed[24];
+	struct nntp_session *nntp = node->pvt;
+	struct bbs_cli_args *a = varg;
+	struct inpeer *inpeer;
+	if (!count) {
+		bbs_dprintf(a->fdout, "%4s %4s %9s %-15s %s\n", "Node", "Mode", "Elapsed", "IP", "Inpeer");
+	}
+	if (bbs_assertion_failed(nntp != NULL)) {
+		return 0;
+	}
+	inpeer = nntp->inpeer;
+	print_time_elapsed(node->created, time(NULL), elapsed, sizeof(elapsed));
+	bbs_dprintf(a->fdout, "%4u %4s %9s %15s %s\n", node->id, nntp->mode == NNTP_MODE_READER ? "R" : "T", elapsed, node->ip, inpeer ? S_IF(inpeer->identity) : "");
+	return 0;
+}
+
+static int cli_clients(struct bbs_cli_args *a)
+{
+	int count = bbs_node_traverse("NNTP", clients_cb, a);
+	if (!count) {
+		bbs_dprintf(a->fdout, "No active clients\n");
+	}
+	return 0;
 }
 
 static void *__nntp_handler(void *varg)
@@ -5344,6 +5372,7 @@ static struct bbs_cli_entry cli_commands_nntp[] = {
 	BBS_CLI_COMMAND(cli_feedflushreq, "news feedflushreq", 4, "Request a peer flush its backlog for us", "news feedflushreq <URI> <identity>"),
 	BBS_CLI_COMMAND(cli_refeed, "news refeed", 3, "Refeed articles for a site to a new backlog file", "news refeed <site> [<newerthan>]"),
 	BBS_CLI_COMMAND(cli_accept, "news accept", 3, "Temporarily disable/enable NNTP acceptance", "news accept <on|off>"),
+	BBS_CLI_COMMAND(cli_clients, "news clients", 2, "List connected NNTP clients", NULL),
 };
 
 static int load_config(void)

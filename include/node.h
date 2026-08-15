@@ -51,7 +51,8 @@ struct bbs_node {
 	pthread_t ptythread;		/*!< Thread handling PTY master */
 	struct bbs_module *module;	/*!< Module reference for socket/network driver module */
 	struct bbs_module *doormod;	/*!< Module reference for current door being executed */
-	const char *protname;		/*!< Socket driver protocol name */
+	const char *protname;		/*!< Network protocol name */
+	void *pvt;					/*!< Node protocol private structure */
 	struct bbs_user *user;		/*!< Active user of a BBS node */
 	struct bbs_vars *vars;		/*!< Variables */
 	const char *menu;			/*!< Current menu */
@@ -196,6 +197,16 @@ const char *bbs_tagline(void);
 
 /*! \brief Get configured BBS sysop */
 const char *bbs_sysop(void);
+
+/*!
+ * \brief Iterate over nodes and execute a callback for nodes of certain protocol(s)
+ * \param protfilter String which node->prot must begin with (or equal). If NULL, every node will match.
+ * \param cb A callback function executed if protfilter matches. The count argument is the number of nodes passed to the callback thus far (0 the first time)
+ *           Callback should return nonzero to cease iterating.
+ * \param cbdata Callback data
+ * \returns Number of nodes passed to callback
+ */
+int bbs_node_traverse(const char *protfilter, int (*cb)(struct bbs_node *node, int count, void *cbdata), void *cbdata);
 
 /*!
  * \brief Used by network comm drivers to request a BBS node
