@@ -62,7 +62,7 @@ static void show_copyright(int fd, int footer)
 	BBS_TAGLINE ", " BBS_COPYRIGHT "\n"
 	BBS_SHORTNAME " comes with ABSOLUTELY NO WARRANTY; for details type '/warranty'\n"
 	"This is free software, and you are welcome to redistribute it\n"
-	"under certain conditions; type '/copyright' for details.\n");
+	"under certain conditions; type '/license' for details.\n");
 	if (footer) {
 		bbs_dprintf(fd, "====================================================================\n");
 	}
