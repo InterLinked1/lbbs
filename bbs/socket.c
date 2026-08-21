@@ -2752,21 +2752,58 @@ ssize_t bbs_sendfile(int out_fd, int in_fd, off_t *offset, size_t count)
 	off_t localoffset = 0;
 	struct pollfd pfd;
 
+	/* Make the socket nonblocking temporarily for the duration of this function.
+	 * Otherwise, poll() with POLLOUT will return immediately, but sendfile() can still block. */
+	bbs_unblock_fd(out_fd);
+
 	memset(&pfd, 0, sizeof(pfd));
 	pfd.fd = out_fd;
 	pfd.events = POLLOUT | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
 	for (;;) {
+		ssize_t res;
+
+		/* Since the file descriptor is nonblocking here, there's no need to poll first */
 #ifdef __linux__
-		ssize_t res = sendfile(out_fd, in_fd, offset ? offset : &localoffset, count);
+		res = sendfile(out_fd, in_fd, offset ? offset : &localoffset, count);
 #elif defined(__FreeBSD__)
-		ssize_t res = sendfile(out_fd, in_fd, offset ? *offset : localoffset, count, NULL, NULL, 0);
+		res = sendfile(out_fd, in_fd, offset ? *offset : localoffset, count, NULL, NULL, 0);
 #else
 #error "Missing sendfile"
 #endif
 		if (res < 0) {
+			if (errno == EWOULDBLOCK) {
+				/* If we can't call sendfile without blocking, wait until it's writable again.
+				 * This way, if a node is blocked, it doesn't hang here forever, potentially blocking
+				 * other nodes if any locks are held. */
+				int pres;
+#define POLLOUT_TIMEOUT 60
+				pfd.revents = 0;
+				pres = poll(&pfd, 1, SEC_MS(POLLOUT_TIMEOUT));
+				if (pres < 0) {
+					if (errno != EINTR) {
+						bbs_error("poll failed: %s\n", strerror(errno));
+						written = -1;
+						goto done;
+					}
+				} else if (!pres) {
+					/* Can't wait forever... */
+					bbs_warning("File descriptor %d did not become writable after %d seconds\n", out_fd, POLLOUT_TIMEOUT);
+#ifdef EXTRA_DEBUG
+					bbs_log_backtrace();
+#endif
+					written = -1;
+					goto done;
+				} else if (!(pfd.revents & POLLOUT)) {
+					bbs_warning("Exceptional activity on file descriptor %d while waiting for it to become writable\n", out_fd);
+					written = -1;
+					goto done;
+				}
+				continue;
+			}
 			bbs_error("Failed to write %lu bytes, sendfile %d -> %d failed: %s\n", count, in_fd, out_fd, strerror(errno));
-			return res;
+			written = res;
+			goto done;
 		}
 		written += res;
 		if (res == (ssize_t) count) {
@@ -2787,7 +2824,6 @@ ssize_t bbs_sendfile(int out_fd, int in_fd, off_t *offset, size_t count)
 		}
 #endif
 		if (!res) {
-			int pres;
 			/* Wasn't able to write any bytes this round.
 			 * This means that either the file descriptor isn't writable right now,
 			 * or the specified offset/byte count is not valid. */
@@ -2797,27 +2833,15 @@ ssize_t bbs_sendfile(int out_fd, int in_fd, off_t *offset, size_t count)
 				/* Offset is at the end of the file or past it.
 				 * This will never work. */
 				bbs_error("Specified file offset (%ld) exceeds file size (%ld)\n", eff_offset, size);
-				return -1;
+				written = -1;
+				goto done;
 			}
 			bbs_debug(8, "Waiting for file descriptor %d to become writable\n", out_fd);
-			pfd.revents = 0;
-			pres = poll(&pfd, 1, SEC_MS(30));
-			if (pres < 0) {
-				if (errno != EINTR) {
-					bbs_error("poll failed: %s\n", strerror(errno));
-					return -1;
-				}
-			} else if (!pres) {
-				/* Can't wait forever... */
-				bbs_warning("File descriptor %d did not become writable after 30 seconds\n", out_fd);
-				return -1;
-			} else if (!(pfd.revents & POLLOUT)) {
-				bbs_warning("Exceptional activity on file descriptor %d while waiting for it to become writable\n", out_fd);
-				return -1;
-			}
 		}
 	}
 
+done:
+	bbs_block_fd(out_fd);
 	return written;
 }
 
@@ -2950,7 +2974,7 @@ ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, si
 				break;
 			}
 			if (!--tries) {
-				bbs_warning("Failed to lock node %d, write failed\n", node->id);
+				bbs_warning("Failed to lock node %d, write to fd %d failed\n", node->id, fd);
 				return 0; /* I/O did not fail, we just did not get a chance to do any, so this is an accurate return value */
 			}
 			if (bbs_node_safe_sleep(node, 10)) { /* Avoid tight loop. Wait 10 ms, then try again */

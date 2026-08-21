@@ -260,7 +260,7 @@ static void adjust_send_offset(struct fetch_body_request *fbr, off_t *restrict o
 
 #define send_headers(imap, fbr, itemname, fp, fullname) send_filtered_headers(imap, fbr, itemname, fp, fullname, NULL, 0)
 
-static int send_filtered_headers(struct imap_session *imap, struct fetch_body_request *fbr, const char *itemname, FILE **restrict fp, const char *fullname, const char *headerlist, int filter)
+static ssize_t send_filtered_headers(struct imap_session *imap, struct fetch_body_request *fbr, const char *itemname, FILE **restrict fp, const char *fullname, const char *headerlist, int filter)
 {
 	/* XXX FIXME This should probably be dynamically allocated/resized as needed.
 	 * No matter how large of a static buffer we use, it's always possible that the headers will be longer.
@@ -731,6 +731,7 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 {
 	struct fetch_body_request *fbr;
 	FILE *fp = NULL;
+	ssize_t wres;
 	size_t size = 0;
 	int res = 0;
 	struct bbs_mime_message *mime = NULL; /* For BODYSTRUCTURE/BODY[]/BODY.PEEK[] operations that need the MIME message */
@@ -790,24 +791,36 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 	/* Now, send anything that could be a large, variable amount of data.
 	 * All of these will use a format literal / multiline response */
 	if (fetchreq->rfc822) { /* Same as BODY[] */
-		send_message(imap, NULL, "RFC822", &fp, &size, fullname, BOTH);
+		wres = send_message(imap, NULL, "RFC822", &fp, &size, fullname, BOTH);
+		if (wres < 0) {
+			res = -1;
+			goto cleanup;
+		}
 	}
 	if (fetchreq->rfc822header) {
 		/* XXX In theory, these should behave identically, not sure which one to use? */
 #if 1
-		send_message(imap, NULL, "RFC822.HEADER", &fp, &size, fullname, HEADERS_ONLY);
+		wres = send_message(imap, NULL, "RFC822.HEADER", &fp, &size, fullname, HEADERS_ONLY);
 #else
-		send_headers(imap, NULL, "RFC822.HEADER", &fp, fullname);
+		wres = send_headers(imap, NULL, "RFC822.HEADER", &fp, fullname);
 #endif
+		if (wres < 0) {
+			res = -1;
+			goto cleanup;
+		}
 	}
 	if (fetchreq->rfc822text) { /* Same as BODY[TEXT] */
-		send_message(imap, NULL, "RFC822.TEXT", &fp, &size, fullname, BODY_ONLY);
+		wres = send_message(imap, NULL, "RFC822.TEXT", &fp, &size, fullname, BODY_ONLY);
+		if (wres < 0) {
+			res = -1;
+			goto cleanup;
+		}
 	}
 	RWLIST_TRAVERSE(&fetchreq->bodyfetches, fbr, entry) {
 		if (strlen_zero(fbr->bodyarg)) { /* Empty (e.g. BODY.PEEK[] or BODY[] */
-			send_message(imap, fbr, "BODY[]", &fp, &size, fullname, BOTH);
+			wres = send_message(imap, fbr, "BODY[]", &fp, &size, fullname, BOTH);
 		} else if (!strcasecmp(fbr->bodyarg, "TEXT")) {
-			send_message(imap, fbr, "BODY[TEXT]", &fp, &size, fullname, BODY_ONLY);
+			wres = send_message(imap, fbr, "BODY[TEXT]", &fp, &size, fullname, BODY_ONLY);
 		} else if (isdigit(*fbr->bodyarg)) {
 			int part_number = atoi(fbr->bodyarg);
 			if (part_number == 0) {
@@ -828,29 +841,31 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 				 * (after all, it isn't in the IMAPrev1 spec). Most of them treat it as a bad command.
 				 */
 				bbs_warning("Requesting headers using part number 0 was obsoleted in IMAP4rev1\n");
-				send_message(imap, fbr, "BODY[0]", &fp, &size, fullname, HEADERS_ONLY);
+				wres = send_message(imap, fbr, "BODY[0]", &fp, &size, fullname, HEADERS_ONLY);
 			} else {
-				if (send_part(imap, fbr, &mime, fullname)) {
-					res = -1;
-					goto cleanup;
-				}
+				wres = send_part(imap, fbr, &mime, fullname);
 			}
 		/* If sending all headers, we don't need to combine multiline headers onto a single line,
 		 * pure passthrough works correctly.
 		 * Surprisingly, this seems to be true for HEADER.FIELDS and HEADER.FIELDS.NOT too (at this level).
 		 * For subparts (within send_part), it's different. */
 		} else if (!strcasecmp(fbr->bodyarg, "HEADER")) { /* e.g. BODY.PEEK[HEADER] */
-			send_headers(imap, fbr, "BODY[HEADER]", &fp, fullname);
+			wres = send_headers(imap, fbr, "BODY[HEADER]", &fp, fullname);
 		} else if (STARTS_WITH(fbr->bodyarg, "HEADER.FIELDS")) {
 			char itemname[1024];
 			snprintf(itemname, sizeof(itemname), "%s[%s]", "BODY", fbr->bodyarg);
-			send_filtered_headers(imap, fbr, itemname, &fp, fullname, fbr->bodyarg, 1);
+			wres = send_filtered_headers(imap, fbr, itemname, &fp, fullname, fbr->bodyarg, 1);
 		} else if (STARTS_WITH(fbr->bodyarg, "HEADER.FIELDS.NOT")) {
 			char itemname[1024];
 			snprintf(itemname, sizeof(itemname), "%s[%s]", "BODY", fbr->bodyarg);
-			send_filtered_headers(imap, fbr, itemname, &fp, fullname, fbr->bodyarg, -1);
+			wres = send_filtered_headers(imap, fbr, itemname, &fp, fullname, fbr->bodyarg, -1);
 		} else {
 			bbs_client_err("Unknown FETCH BODY item: %s\n", fbr->bodyarg);
+			continue;
+		}
+		if (wres < 0) {
+			res = -1;
+			goto cleanup;
 		}
 	}
 
