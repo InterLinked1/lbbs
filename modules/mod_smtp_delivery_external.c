@@ -126,6 +126,37 @@ static void free_static_relay(struct static_relay *s)
 	free(s);
 }
 
+struct envelope_rewrite {
+	const char *orig_envelope_domain;
+	struct stringlist domains;
+	RWLIST_ENTRY(envelope_rewrite) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(envelope_rewrites, envelope_rewrite);
+
+static int add_envelope_rewrite(const char *orig_envelope_domain, const char *domains)
+{
+	struct envelope_rewrite *r;
+
+	r = calloc(1, sizeof(*r) + strlen(orig_envelope_domain) + 1);
+	if (ALLOC_FAILURE(r)) {
+		return -1;
+	}
+	strcpy(r->data, orig_envelope_domain); /* Safe */
+	r->orig_envelope_domain = r->data;
+	stringlist_init(&r->domains);
+	stringlist_push_list(&r->domains, domains);
+	RWLIST_INSERT_TAIL(&envelope_rewrites, r, entry);
+	return 0;
+}
+
+static void free_envelope_rewrite(struct envelope_rewrite *r)
+{
+	stringlist_empty_destroy(&r->domains);
+	free(r);
+}
+
 /*!
  * \brief Check whether a domain has a defined static route
  * \internal
@@ -2229,6 +2260,65 @@ static int queue_message(struct smtp_session *smtp, const char *from, const char
 	return 1; /* Even if queuing fails for some reason, it's in the queue, so the message will be delivered eventually */
 }
 
+static const char *strclast(const char *s, char c)
+{
+	const char *rest = strrchr(s, c);
+	if (!rest) {
+		return NULL;
+	}
+	rest++;
+	if (strlen_zero(rest)) {
+		return NULL;
+	}
+	return rest;
+}
+
+static int should_rewrite_envelope_sender(struct smtp_session *smtp, const char *orig_envelope_sender, const char *fromaddr)
+{
+	const char *orig_envelope_domain, *from_domain;
+	struct envelope_rewrite *r;
+
+	/* If we're supposed to rewrite the envelope sender, do it now */
+	if (!smtp_is_message_submission(smtp)) {
+		return 0;
+	}
+
+	orig_envelope_domain = strclast(orig_envelope_sender, '@');
+	if (!orig_envelope_domain) {
+		return 0;
+	}
+
+	from_domain = strclast(fromaddr, '@');
+	if (!from_domain) {
+		return 0;
+	}
+
+	/* Mozilla mail clients will normally use the From header address of a message for the envelope sender in submissions.
+	 * This includes if an account has multiple identities and the identity is preconfigured.
+	 * However, if an identity is modified "ad hoc" to a different email address,
+	 * then the client will use either the primary identity or the last precreated identity for the envelope sender,
+	 * rather than the new From header address.
+	 *
+	 * This may be undesirable for several reasons:
+	 * 1) It leaks information, since the primary account email address will be used for the return path, rather than the From header address.
+	 * 2) If the primary identity is not a valid public return address, bounces for this email cannot be delivered.
+	 *
+	 * Since we can't change the client's behavior, compensate here by allowing messages to have their envelope sender rewritten
+	 * as if the intended address were used by the client to begin with.
+	 * We do this here, rather than in net_smtp, since it doesn't make sense to rewrite for intra-server mail. */
+	RWLIST_RDLOCK(&envelope_rewrites);
+	RWLIST_TRAVERSE(&envelope_rewrites, r, entry) {
+		if (!strcasecmp(r->orig_envelope_domain, orig_envelope_domain)) {
+			if (stringlist_case_contains(&r->domains, from_domain)) {
+				break;
+			}
+		}
+	}
+	RWLIST_UNLOCK(&envelope_rewrites);
+
+	return r ? 1 : 0;
+}
+
 /*! \brief Accept delivery of a message to an external recipient, sending it now if possible and queuing it otherwise */
 static int external_delivery(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int srcfd, size_t datalen, void **freedata)
 {
@@ -2307,6 +2397,10 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 		return -1;
 	}
 	close(fd);
+
+	if (should_rewrite_envelope_sender(smtp, from, smtp_from_address(smtp))) {
+		from = smtp_from_address(smtp);
+	}
 
 	return queue_message(smtp, from, recipient, newfile);
 }
@@ -2423,16 +2517,23 @@ static int load_config(void)
 
 	bbs_config_val_set_true(cfg, "privs", "relayout", &minpriv_relay_out);
 
+	RWLIST_WRLOCK(&static_relays);
+	RWLIST_WRLOCK(&envelope_rewrites);
 	while ((section = bbs_config_walk(cfg, section))) {
+		struct bbs_keyval *keyval = NULL;
 		if (!strcmp(bbs_config_section_name(section), "static_relays")) {
-			struct bbs_keyval *keyval = NULL;
-			RWLIST_WRLOCK(&static_relays);
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				add_static_relay(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}
-			RWLIST_UNLOCK(&static_relays);
-		} /* else, ignore. net_smtp will warn about any invalid section names in net_smtp.conf. */
+		} else if (!strcmp(bbs_config_section_name(section), "envelope_rewrites")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_envelope_rewrite(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
+			}
+		}
+		/* else, ignore. net_smtp will warn about any invalid section names in net_smtp.conf. */
 	}
+	RWLIST_UNLOCK(&static_relays);
+	RWLIST_UNLOCK(&envelope_rewrites);
 	bbs_config_unlock(cfg);
 
 	if (queue_interval != 0 && queue_interval < 60) {
@@ -2482,6 +2583,7 @@ static int unload_module(void)
 	bbs_rwlock_unlock(&queue_lock);
 	bbs_rwlock_destroy(&queue_lock);
 	RWLIST_WRLOCK_REMOVE_ALL(&static_relays, entry, free_static_relay);
+	RWLIST_WRLOCK_REMOVE_ALL(&envelope_rewrites, entry, free_envelope_rewrite);
 	return res;
 }
 

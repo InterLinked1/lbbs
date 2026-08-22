@@ -4072,7 +4072,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "msa", "requirestarttls", &require_starttls);
 
 /*! \brief Section names that are valid but not parsed in the loop */
-#define VALID_SECT_NAME(s) (!strcmp(s, "general") || !strcmp(s, "logging") || !strcmp(s, "privs") || !strcmp(s, "smtp") || !strcmp(s, "smarthost") || !strcmp(s, "smtps") || !strcmp(s, "msa") || !strcmp(s, "static_relays"))
+#define VALID_SECT_NAME(s) (!strcmp(s, "general") || !strcmp(s, "logging") || !strcmp(s, "privs") || !strcmp(s, "smtp") || !strcmp(s, "smarthost") || !strcmp(s, "smtps") || !strcmp(s, "msa") || !strcmp(s, "static_relays") || !strcmp(s, "envelope_rewrites"))
 
 	while ((section = bbs_config_walk(cfg, section))) {
 		struct bbs_keyval *keyval = NULL;
