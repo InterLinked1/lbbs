@@ -182,6 +182,15 @@ struct moderator {
 
 static RWLIST_HEAD_STATIC(moderators, moderator);
 
+struct crossposting_rule {
+	const char *grp;
+	const char *rule;
+	RWLIST_ENTRY(crossposting_rule) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(crossposting_rules, crossposting_rule);
+
 static int add_distrib_pat(const char *key)
 {
 	char buf[NNTP_BUFSIZ];
@@ -318,6 +327,26 @@ static int add_moderator(const char *wildmat, const char *template)
 	strcpy(m->data + patlen + 1, template); /* Safe */
 	m->template = m->data + patlen + 1;
 	RWLIST_INSERT_TAIL(&moderators, m, entry); /* Tail insert is especially critical here as the order of the moderators list is significant */
+	return 0;
+}
+
+static int add_crossposting_rule(const char *grp, const char *rule)
+{
+	struct crossposting_rule *c;
+	size_t grplen, rulelen;
+
+	grplen = strlen(grp);
+	rulelen = strlen(rule);
+
+	c = calloc(1, sizeof(*c) + grplen + rulelen + 2);
+	if (ALLOC_FAILURE(c)) {
+		return -1;
+	}
+	strcpy(c->data, grp); /* Safe */
+	c->grp = c->data;
+	strcpy(c->data + grplen + 1, rule); /* Safe */
+	c->rule = c->data + grplen + 1;
+	RWLIST_INSERT_TAIL(&crossposting_rules, c, entry);
 	return 0;
 }
 
@@ -3166,6 +3195,28 @@ static int check_newsgroups(const char *newsgroups, char *errbuf, size_t errbufl
 	return 0;
 }
 
+static int crossposting_prohibited(const char *newsgroup, char **grps)
+{
+	struct crossposting_rule *c;
+	const char *ngrp;
+	RWLIST_RDLOCK(&crossposting_rules);
+	RWLIST_TRAVERSE(&crossposting_rules, c, entry) {
+		if (uwildmat_simple(c->grp, newsgroup)) {
+			/* The rule matches this group. Check if all the article's groups satisfy the rule's wildmat */
+			NULTERM_LIST_ITER(grps, ngrp) {
+				if (!uwildmat(c->rule, ngrp)) {
+					/* The rule didn't match at least one group in the Newsgroups header,
+					 * so this is an unwanted crosspost, reject it. */
+					RWLIST_UNLOCK(&crossposting_rules);
+					return 1;
+				}
+			}
+		}
+	}
+	RWLIST_UNLOCK(&crossposting_rules);
+	return 0;
+}
+
 /*! \retval 0 on success, or 1 on duplicate or -1 for the default error code depending on mode */
 int check_article(enum nntp_mode mode, struct nntp_session *nntp, struct article_info *artinfo, char *errbuf, size_t errbuflen)
 {
@@ -3433,6 +3484,14 @@ static int process_article(struct nntp_session *nntp, const char *srcfilename, s
 			/* If poison, this is fatal to the entire article, not just the poisoning group. Drop everything and clean up. */
 			SET_POST_ERROR("Group '%s' is poison", newsgroup);
 			total_errors = 1; /* This will be the error that matters, so ensure it gets used in the log message */
+			ACL_UNLOCK(nntp);
+			goto cleanup;
+		}
+
+		/* Check if a group for this article has crossposting restrictions */
+		if (crossposting_prohibited(newsgroup, grps)) {
+			SET_POST_ERROR("Crossposting restricted for '%s'", newsgroup);
+			total_errors = 1;
 			ACL_UNLOCK(nntp);
 			goto cleanup;
 		}
@@ -5494,6 +5553,7 @@ static int load_config(void)
 	RWLIST_WRLOCK(&distributions);
 	RWLIST_WRLOCK(&distrib_pats);
 	RWLIST_WRLOCK(&moderators);
+	RWLIST_WRLOCK(&crossposting_rules);
 	RWLIST_WRLOCK(&kill_patterns);
 	RWLIST_WRLOCK(&subscriptions);
 
@@ -5558,6 +5618,10 @@ static int load_config(void)
 		} else if (!strcasecmp(bbs_config_section_name(section), "moderators")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				add_moderator(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
+			}
+		} else if (!strcasecmp(bbs_config_section_name(section), "crossposting")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_crossposting_rule(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
 			}
 		} else if (!strcasecmp(bbs_config_section_name(section), "incoming")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
@@ -5711,6 +5775,7 @@ static int load_config(void)
 	RWLIST_UNLOCK(&distributions);
 	RWLIST_UNLOCK(&distrib_pats);
 	RWLIST_UNLOCK(&moderators);
+	RWLIST_UNLOCK(&crossposting_rules);
 	RWLIST_UNLOCK(&kill_patterns);
 	RWLIST_UNLOCK(&subscriptions);
 
@@ -5734,6 +5799,7 @@ static void cleanup_lists(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&distributions, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&distrib_pats, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&moderators, entry, free);
+	RWLIST_WRLOCK_REMOVE_ALL(&crossposting_rules, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&kill_patterns, entry, free);
 	stringlist_empty_destroy(&subscriptions);
 }
@@ -5772,6 +5838,7 @@ static int load_module(void)
 	RWLIST_HEAD_INIT(&distributions);
 	RWLIST_HEAD_INIT(&distrib_pats);
 	RWLIST_HEAD_INIT(&moderators);
+	RWLIST_HEAD_INIT(&crossposting_rules);
 	RWLIST_HEAD_INIT(&kill_patterns);
 	stringlist_init(&subscriptions);
 

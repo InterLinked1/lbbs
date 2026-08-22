@@ -612,6 +612,9 @@ static int run(void)
 	write(client1, s, strlen(s));
 	CLIENT_EXPECT_CODE(client1, NNTP_OK_POST);
 
+	/* Test message which should be rejected by crossposting policy */
+	POST_ARTICLE_TO_GROUP_RESPONSE(client1, TEST_EMAIL, "misc.crossposting,misc.empty", NNTP_FAIL_POST_REJECT);
+
 	GROUP_EXPECT(client1, "misc.test", 8, 19, 10);
 	SWRITE(client1, "HEAD 19\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, ENDL "Date: ");

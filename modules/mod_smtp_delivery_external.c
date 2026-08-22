@@ -2305,7 +2305,11 @@ static int should_rewrite_envelope_sender(struct smtp_session *smtp, const char 
 	 *
 	 * Since we can't change the client's behavior, compensate here by allowing messages to have their envelope sender rewritten
 	 * as if the intended address were used by the client to begin with.
-	 * We do this here, rather than in net_smtp, since it doesn't make sense to rewrite for intra-server mail. */
+	 * We do this here, rather than in net_smtp, since it doesn't make sense to rewrite for intra-server mail.
+	 *
+	 * Note that the original domain may still leak via the message's Message-ID header.
+	 * We don't touch that here, nor should we try to, since that could result in the sent copy uploaded via IMAP
+	 * and the message actually sent via SMTP having two different Message-IDs, which could cause deduplication issues downstream. */
 	RWLIST_RDLOCK(&envelope_rewrites);
 	RWLIST_TRAVERSE(&envelope_rewrites, r, entry) {
 		if (!strcasecmp(r->orig_envelope_domain, orig_envelope_domain)) {
