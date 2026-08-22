@@ -592,7 +592,7 @@ static int starttls(struct bbs_ami_session *ami)
 	if (res) {
 		return res;
 	}
-	bbs_io_session_register(&ami->trans, TRANSFORM_SESSION_TCPCLIENT, ami); /* last arg is typically a bbs_tcp_client, but it's void*, so we can pass whatever we like */
+	bbs_io_session_register(&ami->trans, TRANSFORM_SESSION_TCPCLIENT, ami, ami->hostname); /* last arg is typically a bbs_tcp_client, but it's void*, so we can pass whatever we like */
 	return 0;
 }
 

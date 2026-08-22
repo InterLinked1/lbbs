@@ -59,6 +59,7 @@ struct bbs_io_transformation {
 
 struct bbs_io_transformations {
 	struct bbs_io_transformation transformations[MAX_IO_TRANSFORMS];
+	enum bbs_io_transform_dir direction; /* Direction of session (client or server?) */
 };
 
 struct bbs_io_transformer_functions {
@@ -108,9 +109,10 @@ int bbs_io_transformer_available(enum bbs_io_transform_type transform_type);
  * \param s
  * \param type Session type
  * \param owner Data structure for associated session type's owner
+ * \param hostname For client sessions, the hostname of the server
  * \note Must call int bbs_io_session_unregister when done with session
  */
-int bbs_io_session_register(struct bbs_io_transformations *s, enum bbs_io_session_type type, void *owner);
+int bbs_io_session_register(struct bbs_io_transformations *s, enum bbs_io_session_type type, void *owner, const char *hostname);
 
 /*! \brief Unregister an I/O session */
 int bbs_io_session_unregister(struct bbs_io_transformations *s);

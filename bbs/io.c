@@ -69,7 +69,9 @@ struct io_session {
 	time_t start;
 	enum bbs_io_session_type type;
 	void *owner;
+	const char *hostname;
 	RWLIST_ENTRY(io_session) entry;
+	char data[];
 };
 
 static const char *session_type_name(enum bbs_io_session_type type)
@@ -84,7 +86,7 @@ static const char *session_type_name(enum bbs_io_session_type type)
 static RWLIST_HEAD_STATIC(sessions, io_session);
 static unsigned int io_session_io = 0;
 
-int bbs_io_session_register(struct bbs_io_transformations *s, enum bbs_io_session_type type, void *owner)
+int bbs_io_session_register(struct bbs_io_transformations *s, enum bbs_io_session_type type, void *owner, const char *hostname)
 {
 	struct io_session *i;
 
@@ -98,13 +100,17 @@ int bbs_io_session_register(struct bbs_io_transformations *s, enum bbs_io_sessio
 		}
 	}
 	/* Need to add to list */
-	i = calloc(1, sizeof(*i));
+	i = calloc(1, sizeof(*i) + (hostname ? strlen(hostname ) + 1 : 0));
 	if (ALLOC_SUCCESS(i)) {
 		i->s = s;
 		i->id = ++io_session_io; /* This is an abitrary unique ID assigned so we can identify it from the CLI */
 		i->start = time(NULL);
 		i->type = type;
 		i->owner = owner;
+		if (hostname) {
+			strcpy(i->data, hostname); /* Safe */
+			i->hostname = i->data;
+		}
 		RWLIST_INSERT_TAIL(&sessions, i, entry);
 	}
 	RWLIST_UNLOCK(&sessions);
@@ -429,6 +435,10 @@ int bbs_io_transform_setup(struct bbs_io_transformations *trans, enum bbs_io_tra
 	orig_wfd = *wfd;
 	res = t->funcs->setup(rfd, wfd, direction, &data, arg);
 
+	/* Since we don't have access to the io_session here (it may not even be created yet),
+	 * store the direction (client or server) so we can access it later for "io sessions" */
+	trans->direction = direction;
+
 	/* Store transform private data on node */
 	if (!res) {
 		struct bbs_io_transformation *tran = io_transform_store(trans, t, data);
@@ -677,12 +687,15 @@ static int cli_io_sessions(struct bbs_cli_args *a)
 	 * even speak to how many bytes have been sent/received
 	 * (though an I/O transformation module can).
 	 * Thus, we print the address of the owner/session to hopefully add some context. */
-	bbs_dprintf(a->fdout, "%9s %-10s %12s %-16s %s\n", "ID", "Type", "Elapsed", "Owner", "Trans I/O");
+	bbs_dprintf(a->fdout, "%9s %-10s %3s %12s %-25s %-16s %s\n", "ID", "Type", "Dir", "Elapsed", "Hostname", "Owner", "Trans I/O");
 	RWLIST_RDLOCK(&sessions);
 	RWLIST_TRAVERSE(&sessions, i, entry) {
 		char elapsed[24];
+		enum bbs_io_transform_dir direction = i->s->direction;
 		print_time_elapsed(i->start, now, elapsed, sizeof(elapsed));
-		bbs_dprintf(a->fdout, "%9u %-10s %12s %-16p %p\n", i->id, session_type_name(i->type), elapsed, i->owner, i->s);
+		bbs_dprintf(a->fdout, "%9u %-10s %-3s %12s %-25s %-16p %p\n", i->id, session_type_name(i->type),
+			direction & TRANSFORM_SERVER ? direction & TRANSFORM_CLIENT ? "B" : "S" : "C",
+			elapsed, S_IF(i->hostname), i->owner, i->s);
 		c++;
 	}
 	RWLIST_UNLOCK(&sessions);

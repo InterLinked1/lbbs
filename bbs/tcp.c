@@ -59,7 +59,7 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 		bbs_debug(5, "Implicit TLS completed\n");
 	}
 	bbs_readline_init(&client->rldata, client->buf, client->len);
-	bbs_io_session_register(&client->trans, TRANSFORM_SESSION_TCPCLIENT, client);
+	bbs_io_session_register(&client->trans, TRANSFORM_SESSION_TCPCLIENT, client, url->host);
 	return 0;
 }
 
