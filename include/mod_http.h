@@ -358,6 +358,7 @@ int http_get_default_https_port(void);
 #define http_register_insecure_route(hostname, port, prefix, methods, handler) http_register_route(hostname, port, 0, prefix, methods, handler)
 #define http_register_secure_route(hostname, port, prefix, methods, handler) http_register_route(hostname, port, 1, prefix, methods, handler)
 #define http_register_route(hostname, port, secure, prefix, methods, handler) __http_register_route(hostname, port, secure, prefix, methods, handler, BBS_MODULE_SELF)
+#define http_register_virtualhost(hostname, port, secure, prefix, methods, handler, cbdata) __http_register_virtualhost(hostname, port, secure, prefix, methods, handler, cbdata, BBS_MODULE_SELF)
 
 /*!
  * \brief Register an HTTP route
@@ -367,11 +368,19 @@ int http_get_default_https_port(void);
  * \param prefix The URI prefix that must match. If NULL, this will be used as the default route (e.g. serve static files)
  * \param methods Mask of matching HTTP methods
  * \param handler Callback function to handle the route
+ * \param cbdata Callback data for handler function
  * \param mod Handle to registering module */
-int __http_register_route(const char *hostname, unsigned short int port, unsigned int secure, const char *prefix, enum http_method methods, enum http_response_code (*handler)(struct http_session *http), void *mod);
+int __http_register_route(const char *hostname, unsigned short int port, unsigned int secure, const char *prefix, enum http_method methods,
+	enum http_response_code (*handler)(struct http_session *http), void *mod);
 
-/*! \brief Unregister a route previously registered using __http_register_route */
+int __http_register_virtualhost(const char *hostname, unsigned short int port, unsigned int secure, const char *prefix, enum http_method methods,
+	enum http_response_code (*handler)(struct http_session *http, void *cbdata), void *cbdata, void *mod);
+
+/*! \brief Unregister a route previously registered using __http_register_route, by handler function */
 int http_unregister_route(enum http_response_code (*handler)(struct http_session *http));
+
+/*! \brief Unregister a route previously registered using __http_register_route, by handler callback data */
+int http_unregister_virtualhost(void *cbdata);
 
 #define http_register_proxy_handler(port, methods, handler) __http_register_proxy_handler(port, methods, handler, BBS_MODULE_SELF)
 

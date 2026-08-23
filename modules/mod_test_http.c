@@ -40,6 +40,9 @@
  * So definitely not 8000, 8080, or anything like that. */
 #define DEFAULT_TEST_HTTP_PORT 58280
 
+/* No need to bother checking the return value of write (and SWRITE). If it failed, the tests will also fail anyways. */
+#pragma GCC diagnostic ignored "-Wunused-result"
+
 struct http_route_uri {
 	const char *host;
 	unsigned short int port;
@@ -92,6 +95,19 @@ static enum http_response_code get_code_404_content(struct http_session *http)
 	return http->res->code;
 }
 
+#define TEST_MAGIC_NUMBER 1337
+
+static enum http_response_code virtualhost_handler(struct http_session *http, void *varg)
+{
+	int *virtualhost_magic_number = varg;
+	*virtualhost_magic_number = TEST_MAGIC_NUMBER;
+	/* We send CR LF at the end of the line so that bbs_readline will return the last line,
+	 * otherwise it doesn't know we're done yet.
+	 * This is a slight bug/limitation with the way bbs_readline works. */
+	http_writef(http, "<h1>Virtualhost sub.example.com</h1>\r\n");
+	return HTTP_OK;
+}
+
 static int test_http_get_basic(void)
 {
 	int mres, res = -1;
@@ -100,6 +116,10 @@ static int test_http_get_basic(void)
 		.url = url,
 		.forcefail = 0,
 	};
+	int virtualhost_magic_number = 0;
+	struct bbs_tcp_client tcpclient;
+	struct bbs_url uri;
+	char buf[256];
 
 	struct http_route_uri tests[] = {
 		{ NULL, DEFAULT_TEST_HTTP_PORT, "/test", HTTP_METHOD_GET, get_basic },
@@ -107,6 +127,7 @@ static int test_http_get_basic(void)
 		{ NULL, DEFAULT_TEST_HTTP_PORT, "/notfound2", HTTP_METHOD_GET, get_code_404_content },
 	};
 	mres = register_uris(tests, ARRAY_LEN(tests));
+	mres |= http_register_virtualhost("sub.example.com", DEFAULT_TEST_HTTP_PORT, 0, NULL, HTTP_METHOD_GET, virtualhost_handler, &virtualhost_magic_number);
 	bbs_test_assert_equals(mres, 0);
 
 	snprintf(url, sizeof(url), "http://127.0.0.1:%u/test", DEFAULT_TEST_HTTP_PORT);
@@ -135,11 +156,34 @@ static int test_http_get_basic(void)
 	bbs_test_assert_equals(404, c.http_code);
 	bbs_test_assert_str_exists_contains(c.response, "<p>Unfortunately, we could not find that page.</p>"); /* Default 404 body */
 
+	/* Test virtualhost */
+	memset(&tcpclient, 0, sizeof(struct bbs_tcp_client));
+	memset(&uri, 0, sizeof(uri));
+	uri.port = DEFAULT_TEST_HTTP_PORT;
+	uri.host = "127.0.0.1";
+	mres = bbs_tcp_client_connect(&tcpclient, &uri, 0, buf, sizeof(buf));
+	if (mres) {
+		bbs_tcp_client_cleanup(&tcpclient);
+		goto cleanup;
+	}
+	SWRITE(tcpclient.wfd,
+		"GET / HTTP/1.1\r\n"
+		"Host: sub.example.com:58280\r\n"
+		"\r\n");
+	mres = bbs_tcp_client_expect(&tcpclient, "\r\n", 15, SEC_MS(1), "<h1>Virtualhost sub.example.com</h1>");
+	bbs_tcp_client_cleanup(&tcpclient);
+	if (mres) {
+		bbs_warning("Didn't receive expected HTTP response (got '%s')\n", buf);
+		goto cleanup;
+	}
+	bbs_test_assert_equals(TEST_MAGIC_NUMBER, virtualhost_magic_number);
+
 	res = 0;
 
 cleanup:
 	bbs_curl_free(&c);
 	unregister_uris(tests, ARRAY_LEN(tests));
+	http_unregister_virtualhost(&virtualhost_magic_number);
 	return res;
 }
 
@@ -298,9 +342,6 @@ cleanup:
 	}
 	return HTTP_INTERNAL_SERVER_ERROR;
 }
-
-/* No need to bother checking the return value of write. If it failed, the tests will also fail anyways. */
-#pragma GCC diagnostic ignored "-Wunused-result"
 
 static int test_http_post_multipart_basic(void)
 {

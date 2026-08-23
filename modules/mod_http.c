@@ -102,6 +102,8 @@ struct http_route {
 	unsigned short int port;
 	enum http_method methods;
 	enum http_response_code (*handler)(struct http_session *http);
+	enum http_response_code (*handler_cbdata)(struct http_session *http, void *cbdata);
+	void *cbdata; /*!< Optional callback data for handler */
 	void *mod;	/*!< Registering module */
 	size_t prefixlen; /*!< Length of prefix */
 	unsigned int usecount;
@@ -1668,7 +1670,13 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 		}
 		if (!r->prefix) {
 			if (port == r->port) {
-				defaultroute = r;
+				if (!defaultroute) {
+					defaultroute = r; /* No default yet, use the first possible match */
+				} else if (r->hostname && !defaultroute->hostname) {
+					/* If there is a route specific to this hostname, it takes precedence over
+					 * a generic catch-all route. */
+					defaultroute = r;
+				}
 			}
 #ifdef DEBUG_ROUTING
 			bbs_debug(5, "Skipping default route for now\n");
@@ -1691,7 +1699,7 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 #ifdef DEBUG_ROUTING
 		bbs_debug(5, "Found candidate route for %s\n", r->prefix);
 #endif
-		/* The route sufficiently matches */
+		/* The route sufficiently matches to be a candidate route */
 		if (secureport && r->secure) {
 			secureroute = r;
 		}
@@ -1964,7 +1972,11 @@ static int http_handle_request(struct http_session *http, char *buf)
 	}
 
 	/* Run route handler, to abstractly serve the actual static or dynamic content. */
-	code = route->handler(http);
+	if (route->handler_cbdata) {
+		code = route->handler_cbdata(http, route->cbdata);
+	} else {
+		code = route->handler(http);
+	}
 	if (code > 0) {
 		if (http->res->code > 0 && http->res->code != (unsigned int) code) {
 			/* Possible programming error: set code and returned something else? */
@@ -2864,7 +2876,8 @@ int http_get_default_https_port(void)
 	return https_default_port;
 }
 
-int __http_register_route(const char *hostname, unsigned short int port, unsigned int secure, const char *prefix, enum http_method methods, enum http_response_code (*handler)(struct http_session *http), void *mod)
+static int __http_register_route_internal(const char *hostname, unsigned short int port, unsigned int secure, const char *prefix, enum http_method methods,
+	enum http_response_code (*handler)(struct http_session *http), enum http_response_code (*handler_cbdata)(struct http_session *http, void *cbdata), void *cbdata, void *mod)
 {
 	size_t hostlen, prefixlen;
 	struct http_route *route;
@@ -2875,7 +2888,7 @@ int __http_register_route(const char *hostname, unsigned short int port, unsigne
 	RWLIST_TRAVERSE(&routes, route, entry) {
 		if (route->port == port && route->methods == methods) {
 			/* XXX This is far from comprehensive */
-			if ((hostname && route->hostname && !strcmp(hostname, route->hostname)) || (!hostname && !route->hostname)) {
+			if ((cbdata == route->cbdata) && ((hostname && route->hostname && !strcmp(hostname, route->hostname)) || (!hostname && !route->hostname))) {
 				if ((prefix && route->prefix && (!strncmp(prefix, route->prefix, prefixlen) || !strncmp(route->prefix, prefix, prefixlen))) || (!prefix && !route->prefix)) {
 					bbs_error("Route already registered for host %s, prefix %s\n", route->hostname, route->prefix);
 					RWLIST_UNLOCK(&routes);
@@ -2913,12 +2926,26 @@ int __http_register_route(const char *hostname, unsigned short int port, unsigne
 	route->port = port;
 	route->methods = methods;
 	route->handler = handler;
+	route->handler_cbdata = handler_cbdata;
+	route->cbdata = cbdata;
 	route->mod = mod;
 	bbs_mutex_init(&route->lock, NULL);
 	SET_BITFIELD(route->secure, secure);
 	RWLIST_INSERT_HEAD(&routes, route, entry);
 	RWLIST_UNLOCK(&routes);
 	return 0;
+}
+
+int __http_register_route(const char *hostname, unsigned short int port, unsigned int secure, const char *prefix, enum http_method methods,
+	enum http_response_code (*handler)(struct http_session *http), void *mod)
+{
+	return __http_register_route_internal(hostname, port, secure, prefix, methods, handler, NULL, NULL, mod);
+}
+
+int __http_register_virtualhost(const char *hostname, unsigned short int port, unsigned int secure, const char *prefix, enum http_method methods,
+	enum http_response_code (*handler)(struct http_session *http, void *cbdata), void *cbdata, void *mod)
+{
+	return __http_register_route_internal(hostname, port, secure, prefix, methods, NULL, handler, cbdata, mod);
 }
 
 int http_unregister_route(enum http_response_code (*handler)(struct http_session *http))
@@ -2953,6 +2980,33 @@ int http_unregister_route(enum http_response_code (*handler)(struct http_session
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&routes);
 	return removed ? 0 : -1;
+}
+
+int http_unregister_virtualhost(void *cbdata)
+{
+	struct http_route *route;
+
+	RWLIST_WRLOCK(&routes);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&routes, route, entry) {
+		if (route->cbdata == cbdata) {
+			bbs_mutex_lock(&route->lock);
+			while (route->usecount > 0) {
+				bbs_mutex_unlock(&route->lock);
+				usleep(10000);
+				bbs_mutex_lock(&route->lock);
+			}
+			unref_listener(route->port);
+			RWLIST_REMOVE_CURRENT(entry);
+			bbs_mutex_unlock(&route->lock);
+			bbs_mutex_destroy(&route->lock);
+			free(route);
+			/* A virtualhost should exist only once, since each separate instance (e.g. HTTP vs HTTPS) is a separate virtualhost) */
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&routes);
+	return route ? 0 : -1;
 }
 
 int __http_register_proxy_handler(unsigned short int port, enum http_method methods, enum http_response_code (*handler)(struct http_session *http), void *mod)
