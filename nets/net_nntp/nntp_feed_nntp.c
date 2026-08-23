@@ -750,10 +750,8 @@ static void feed_thread(struct site *site)
 		goto done;
 	}
 
+	/* Some servers may not support CAPABILITIES, in which case just continue as best we can */
 	res = nntp_client_capabilities(nc);
-	if (res) {
-		goto done;
-	}
 
 	/* Use encryption and compression if configured */
 	if (site->feed.nntp.starttls) {
@@ -763,9 +761,8 @@ static void feed_thread(struct site *site)
 		/* Following STARTTLS, the capabilities may change, so check again. Particularly important as AUTHINFO may require encryption.
 		 * If further actions would depend on these capabilities, ask for them again. */
 		if ((site->feed.nntp.username && (!nc->caps.authinfo_user || !nc->caps.sasl_plain)) || (site->feed.nntp.compress && !nc->caps.compress)) {
-			res = nntp_client_capabilities(nc);
-			if (res) {
-				goto done;
+			if (!res) {
+				nntp_client_capabilities(nc);
 			}
 		}
 	}
