@@ -466,6 +466,9 @@ static int cli_ami_loglevel(struct bbs_cli_args *a)
 
 	AMI_SESSION_CALL_START_SESSIONLESS();
 	oldlevel = ami_set_debug_level(ami->session, newlevel);
+	if (oldlevel != -1) {
+		ami->loglevel = (unsigned int) newlevel; /* Preserve new log level if a reconnect occurs */
+	}
 	AMI_SESSION_CALL_END();
 
 	if (oldlevel == -1) {
@@ -611,7 +614,11 @@ static int start_ami_client(struct bbs_ami_session *ami, int reconnect)
 		ami->dead = 0;
 	}
 
-	bbs_debug(4, "Attempting to start AMI client %s://%s:%d\n", ami->tls ? "tls" : "tcp", ami->hostname, ami->port);
+	/* Set global debug to catch pre-login errors */
+	ami_set_debug(NULL, ami->logfd);
+	ami_set_debug_level(NULL, (int) ami->loglevel);
+
+	bbs_debug(4, "Attempting to start AMI client %s://%s:%d\n", ami->tls ? "tls" : "tcp", ami->hostname, ami->port ? ami->port : ami->tls ? 5039 : 5038);
 
 	if (ami->tls) {
 		/* If it's an encrypted connection, we set up encryption ourselves and pass
@@ -655,6 +662,7 @@ static int start_ami_client(struct bbs_ami_session *ami, int reconnect)
 		return -1;
 	}
 	ami->loggedin = 1;
+	set_ami_status(ami, 1); /* In case we don't get a FullyBooted event */
 	return 0;
 }
 
