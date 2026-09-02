@@ -30,14 +30,16 @@ BBS_LOG_DIR=/var/log/lbbs # not backed up by default, due to large size, but cou
 
 # Determine the BBS runuser
 
-# $1 = file, $2 = section (currently ignored), $3 = key
+# $1 = file, $2 = section, $3 = key
 get_config_value() {
 	if [ -f "$BBS_CONFIG_DIR/$1" ]; then
+		# Find the correct section first, since the same named setting could exist in multiple sections.
+		# Get everything after the start of the section (excluding the start), and find the first match, which should hopefully be the setting we want.
 		# We filter semicolon (comment begin) early in this process,
 		# because we need to handle semicolon at the beginning of the line (in which case we should ignore the line entirely)
 		# as well as commenting out a description for an active setting (in which case we just strip the comment).
 		# This has to be done before the = filter, since if we take what's on the right of that, we could miss the leading semicolon.
-		val=$( grep -e "$3=" -e "$3 =" $BBS_CONFIG_DIR/$1 | cut -d';' -f1 | cut -d'=' -f2 | xargs | tr -d '\n' )
+		val=$( grep -A 9999 "\[$2\]" $BBS_CONFIG_DIR/$1 | grep -m 1 -e "$3=" -e "$3 =" | cut -d';' -f1 | cut -d'=' -f2 | xargs | tr -d '\n' )
 		printf "%s" "$val"
 	fi
 }
