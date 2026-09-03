@@ -102,6 +102,7 @@ struct imap_session {
 	unsigned int command_inprogress:1;	/* Whether a command is currently in progress */
 	struct imap_notify *notify;	/* NOTIFY events */
 	bbs_mutex_t lock;		/* Lock for IMAP session */
+	bbs_mutex_t updatelock;	/* Lock for updates sent to a session (potentially by a different thread) */
 	RWLIST_ENTRY(imap_session) entry;	/* Next active session */
 };
 

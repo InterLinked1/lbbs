@@ -182,6 +182,9 @@ static int send_messages(void)
 
 	while (num_messages--) {
 		res |= send_message(clientfd);
+		if (res) {
+			break;
+		}
 	}
 
 	close(clientfd);

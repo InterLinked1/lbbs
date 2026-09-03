@@ -358,7 +358,7 @@ static void save_traversal(struct imap_session *imap, struct imap_traversal *tra
 #undef TRAVERSAL_PERSIST
 }
 
-#define imap_send_update(imap, s, len) __imap_send_update(imap, s, len, 0, 0, 0)
+#define imap_send_update(imap, s, len) bbs_mutex_lock(&imap->updatelock); __imap_send_update(imap, s, len, 0, 0, 0); bbs_mutex_unlock(&imap->updatelock);
 #define __imap_send_update(imap, s, len, forcenow, is_expunge, invalidate) __imap_send_update_log(imap, s, len, forcenow, invalidate, is_expunge, __LINE__)
 
 /*! \note Must be called with imap locked */
@@ -370,20 +370,44 @@ static void __imap_send_update_log(struct imap_session *imap, const char *s, siz
 	 * EXPUNGE is a special case - RFC 3501 5.3 dictates EXPUNGE responses are not allowed if no command is in progress. */
 	delay = (!imap_sequence_numbers_prohibited(imap) && !imap->idle) || (is_expunge && !imap->command_inprogress);
 
-	/* Since we're locked in this function, we CANNOT use imap_send */
-	if (delay && !forcenow) {
-		imap_debug(4, "%d: %p (delayed) <= %s", line, imap, s); /* Already ends in CR LF */
-		bbs_node_any_fd_write(imap->node, imap->pfd[1], s, len);
-		imap->pending = 1;
-		if (is_expunge) {
-			imap->expungepending = 1;
+	/* Do not use imap_send here!
+	 *
+	 * Initially, this was because we held imap->lock here, and thus calling imap_send would result in a recursive lock attempt.
+	 *
+	 * We now use a separate lock on this path (imap->updatelock), since imap->lock could be held for long periods of
+	 * time if a slow client issues a FETCH command and it takes a long time to complete the response
+	 * (e.g. sendfile via send_message in imap_server_fetch.c)
+	 * That would result in blocking here until the response completes and that lock is released;
+	 * however, if the session is blocked, we are going to delay our write anyways, so we don't really need that lock.
+	 * We only use it below in the non-delayed case.
+	 *
+	 * This change is exercised by test_imap_fetch_slow, which would result in a backtrace
+	 * if imap->lock were unconditionally locked on this path. */
+
+	if (!delay || forcenow) {
+		bbs_mutex_lock(&imap->lock);
+		/* Since imap->idle is guarded by imap->lock, not imap->updatelock,
+		 * after obtaining the lock, double-check that we're really good to write, just to be sure. */
+		delay = (!imap_sequence_numbers_prohibited(imap) && !imap->idle) || (is_expunge && !imap->command_inprogress);
+		if (!delay || forcenow) {
+			imap_debug(4, "%d: %p <= %s", line, imap, s); /* Already ends in CR LF */
+			bbs_node_any_fd_write(imap->node, imap->node->wfd, s, (unsigned int) len);
+			bbs_mutex_unlock(&imap->lock);
+			return;
 		}
-		if (invalidate) {
-			reset_saved_search(imap); /* Since messages were expunged, invalidate any saved search */
-		}
-	} else {
-		imap_debug(4, "%d: %p <= %s", line, imap, s); /* Already ends in CR LF */
-		bbs_node_any_fd_write(imap->node, imap->node->wfd, s, (unsigned int) len);
+		/* If delay was initially false but became true before we checked again,
+		 * then fall through to the delayed case. */
+		bbs_mutex_unlock(&imap->lock);
+	}
+
+	imap_debug(4, "%d: %p (delayed) <= %s", line, imap, s); /* Already ends in CR LF */
+	bbs_node_any_fd_write(imap->node, imap->pfd[1], s, len);
+	imap->pending = 1;
+	if (is_expunge) {
+		imap->expungepending = 1;
+	}
+	if (invalidate) {
+		reset_saved_search(imap); /* Since messages were expunged, invalidate any saved search */
 	}
 }
 
@@ -530,7 +554,6 @@ void send_untagged_fetch(struct imap_session *imap, const char *maildir, int seq
 			generate_status(imap, mboxname, status_items, sizeof(status_items), "UNSEEN MESSAGES UIDVALIDITY HIGHESTMODSEQ");
 			didstatus = 1;
 		}
-		bbs_mutex_lock(&s->lock);
 		if (res == -1) { /* Not currently selected */
 			char statusmsgfull[256];
 			/* The same STATUS response can be used for all clients, but the mailbox name might be different */
@@ -539,7 +562,6 @@ void send_untagged_fetch(struct imap_session *imap, const char *maildir, int seq
 		} else { /* Currently selected */
 			imap_send_update(s, s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
 		}
-		bbs_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
 }
@@ -587,11 +609,12 @@ static void send_untagged_expunge(struct bbs_node *node, struct mailbox *mbox, c
 			generate_status(s, mboxname, status_items, sizeof(status_items), "UIDNEXT MESSAGES HIGHESTMODSEQ");
 			didstatus = 1;
 		}
-		bbs_mutex_lock(&s->lock);
 		if (res == -1) {
 			char statusmsgfull[256];
 			size_t statuslenfull = (size_t) snprintf(statusmsgfull, sizeof(statusmsgfull), "* STATUS \"%s\" (%s)\r\n", mboxname, status_items);
+			bbs_mutex_lock(&s->updatelock);
 			__imap_send_update(s, statusmsgfull, statuslenfull, forcenow, 1, 0);
+			bbs_mutex_unlock(&s->updatelock);
 		} else {
 			if (s->qresync) { /* VANISHED */
 				if (!str) {
@@ -615,14 +638,15 @@ static void send_untagged_expunge(struct bbs_node *node, struct mailbox *mbox, c
 				__imap_send_update(s, str, slen, forcenow, 1, 0);
 			} else { /* EXPUNGE */
 				int i;
+				bbs_mutex_lock(&s->updatelock);
 				for (i = 0; i < length; i++) {
 					char normalmsg[64];
 					size_t normallen = (size_t) snprintf(normalmsg, sizeof(normalmsg), "* %u EXPUNGE\r\n", seqno[i]);
 					__imap_send_update(s, normalmsg, normallen, forcenow, 1, 1);
 				}
+				bbs_mutex_unlock(&s->updatelock);
 			}
 		}
-		bbs_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
 	free_if(str);
@@ -692,16 +716,13 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 		 * but we'd need to send a FETCH per matching message.
 		 * Again for \Recent messages this is going to be tricky/impossible. */
 
-		bbs_mutex_lock(&s->lock);
 		/* RFC 3501 Section 7: unilateral response */
 		if (res == -1) {
 			char statusmsgfull[256];
 			size_t statuslenfull = (size_t) snprintf(statusmsgfull, sizeof(statusmsgfull), "* STATUS \"%s\" (%s)\r\n", mboxname, status_items);
 			imap_send_update(s, statusmsgfull, statuslenfull);
-			bbs_mutex_unlock(&s->lock);
 		} else {
 			imap_send_update(s, buf, len);
-			bbs_mutex_unlock(&s->lock);
 			/* Unlock because send_fetch_response assumes an unlocked session.
 			 * XXX Since sessions, the session technically can't disappear on us,
 			 * but this does leave open the possibility of interleaved writes. */
@@ -767,9 +788,7 @@ static void send_untagged_list(struct bbs_node *node, enum mailbox_event_type ty
 				break;
 		}
 
-		bbs_mutex_lock(&s->lock);
 		imap_send_update(s, buf, len);
-		bbs_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
 }
@@ -5273,6 +5292,7 @@ static void imap_handler(struct bbs_node *node, int secure)
 	}
 
 	bbs_mutex_init(&imap.lock, NULL);
+	bbs_mutex_init(&imap.updatelock, NULL);
 	RWLIST_HEAD_INIT(&imap.clients);
 
 	/* Add to session list (for IDLE) */
@@ -5296,6 +5316,7 @@ static void imap_handler(struct bbs_node *node, int secure)
 
 cleanup:
 	imap_destroy(&imap);
+	bbs_mutex_destroy(&imap.updatelock);
 	bbs_mutex_destroy(&imap.lock);
 }
 

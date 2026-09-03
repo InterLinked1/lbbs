@@ -1053,6 +1053,12 @@ cleanup:
 		free(entry);
 		break;
 	}
+
+	/* In case we broke the loop early, free the remaining entries: */
+	while (fno < files && (entry = entries[fno++])) {
+		free(entry);
+	}
+
 	free(entries);
 	if (!fetched) {
 		bbs_debug(6, "FETCH command did not return any matching results\n");

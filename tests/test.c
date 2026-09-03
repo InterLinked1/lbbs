@@ -428,7 +428,7 @@ int test_client_expect_eventually_buf(int fd, int ms, const char *restrict s, in
 	return -1;
 }
 
-static void get_live_backtrace(void)
+void test_get_live_backtrace(void)
 {
 	/* Don't try to use gdb if we're already stracing.
 	 * Can't do multiple ptraces. */
@@ -532,7 +532,7 @@ static void *io_relay(void *varg)
 				/* At this point, something is likely "stuck".
 				 * The BBS won't trigger this itself, but we should get a backtrace of the
 				 * running process to see what's up. */
-				get_live_backtrace();
+				test_get_live_backtrace();
 			}
 		}
 		if (rand_alloc_fails && strstr(expectbuf, "Simulated allocation failure")) {
@@ -1089,7 +1089,7 @@ static void *stop_stuck_bbs(void *unused)
 		return NULL; /* Maybe it just exited */
 	}
 
-	get_live_backtrace();
+	test_get_live_backtrace();
 
 	if (current_child) {
 		send_signal(bbs_pid(current_child), SIGTERM);
