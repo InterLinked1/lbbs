@@ -273,6 +273,13 @@ jobs:
       - uses: actions/checkout@v6
       - name: Install prereqs
         run: |
+          sed -i 's|deb.debian.org/debian bullseye main|archive.debian.org/debian bullseye main|g' /etc/apt/sources.list
+          sed -i 's|deb.debian.org/debian bullseye-updates main|archive.debian.org/debian bullseye-updates main|g' /etc/apt/sources.list
+          sed -i 's|deb.debian.org/debian bullseye-backports main|archive.debian.org/debian bullseye-backports main|g' /etc/apt/sources.list
+          sed -i 's|# deb http://snapshot.debian.org/archive/debian-security|deb http://snapshot.debian.org/archive/debian-security|g' /etc/apt/sources.list
+          sed -i 's|deb http://deb.debian.org/debian-security bullseye-security main|#deb http://deb.debian.org/debian-security bullseye-security main|g' /etc/apt/sources.list
+          cat /etc/apt/sources.list
+          echo 'Acquire::Check-Valid-Until "0";' > /etc/apt/apt.conf.d/nocheckvalid
           ./scripts/install_prereq.sh
       - name: Build LBBS
         run: |
