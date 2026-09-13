@@ -148,7 +148,7 @@ static int readline_post_read(struct readline_data *restrict rldata, const char 
 ssize_t __bbs_node_readline(const char *file, int line, const char *func, struct bbs_node *node, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
 {
 	if (bbs_node_dead(node)) {
-		return -1;
+		return -2;
 	}
 	return __bbs_readline(file, line, func, node->rfd, rldata, delim, timeout);
 }
