@@ -1512,6 +1512,63 @@ static char *mime_header_decode(const char *s)
 #define MIME_DEBUG(level, fmt, ...)
 #endif
 
+static void append_recipients(json_t *recipients, struct mailimf_address_list *addr_list)
+{
+	clistiter *cur;
+	struct mailimf_mailbox *mb;
+	char addrbuf[256];
+
+	for (cur = clist_begin(addr_list->ad_list); cur; cur = clist_next(cur)) {
+		char *decoded;
+		const char *name;
+		struct mailimf_address *addr = clist_content(cur);
+		switch (addr->ad_type) {
+			case MAILIMF_ADDRESS_GROUP:
+				MIME_DEBUG(5, "Group address?\n");
+				break;
+			case MAILIMF_ADDRESS_MAILBOX:
+				mb = addr->ad_data.ad_mailbox;
+				decoded = mb->mb_display_name ? mime_header_decode(mb->mb_display_name) : NULL;
+				name = decoded ? decoded : mb->mb_display_name;
+				snprintf(addrbuf, sizeof(addrbuf), "%s%s<%s>", S_IF(name), !strlen_zero(name) ? " " : "", mb->mb_addr_spec);
+				json_array_append_new(recipients, json_string(addrbuf));
+				free_if(decoded);
+				break;
+		}
+	}
+}
+
+/*!
+ * \internal
+ * \brief Parse a comma-separated list of address identities and add each recipient to the list
+ */
+static void append_comma_separated_recipients(json_t *restrict json, char *restrict hdrval)
+{
+	/* Multiple recipients can be specified in (or split across) header lines,
+	 * and the frontend assumes that each recipient is in its own line,
+	 * so add separate recipients one at a time to the array. */
+	size_t len, index;
+	struct mailimf_address_list *addr_list;
+	int res;
+
+	if (!strchr(hdrval, ',')) {
+		json_array_append_new(json, json_string(hdrval));
+		return;
+	}
+
+	len = strlen(hdrval);
+	index = 0;
+	res = mailimf_address_list_parse(hdrval, len, &index, &addr_list);
+	if (res != MAILIMF_NO_ERROR) {
+		bbs_warning("Error parsing address list '%s': %d\n", hdrval, res);
+		json_array_append_new(json, json_string(hdrval));
+		return;
+	}
+
+	append_recipients(json, addr_list);
+	mailimf_address_list_free(addr_list);
+}
+
 static void append_header_single(json_t *restrict json, int *importance, int fetchlist, json_t *to, json_t *cc, const char *hdrname, char *restrict hdrval)
 {
 	/* This is one of the headers we wanted.
@@ -1548,12 +1605,9 @@ static void append_header_single(json_t *restrict json, int *importance, int fet
 			if (!strcasecmp(hdrname, "From")) {
 				json_object_set_new(json, "from", json_string(hdrval));
 			} else if (!strcasecmp(hdrname, "To")) {
-				/* XXX Multiple recipients can be specified in (or split across) header lines,
-				 * and the frontend assumes that each recipient is in its own line, currently,
-				 * so recipients can be truncated for FETCHLIST (but won't be for regular FETCH) */
-				json_array_append_new(to, json_string(hdrval));
+				append_comma_separated_recipients(to, hdrval);
 			} else if (!strcasecmp(hdrname, "Cc")) {
-				json_array_append_new(cc, json_string(hdrval));
+				append_comma_separated_recipients(cc, hdrval);
 			} else if (!strcasecmp(hdrname, "Subject")) {
 				json_object_set_new(json, "subject", json_string(hdrval));
 			} else if (!strcasecmp(hdrname, "Date")) {
@@ -2599,32 +2653,6 @@ static void fetch_mime_recurse_single(const char **body, size_t *len, struct mai
 		case MAILMIME_DATA_FILE:
 			MIME_DEBUG(7, "data (file) : %s\n", data->dt_data.dt_filename);
 			break;
-	}
-}
-
-static void append_recipients(json_t *recipients, struct mailimf_address_list *addr_list)
-{
-	clistiter *cur;
-	struct mailimf_mailbox *mb;
-	char addrbuf[256];
-
-	for (cur = clist_begin(addr_list->ad_list); cur; cur = clist_next(cur)) {
-		char *decoded;
-		const char *name;
-		struct mailimf_address *addr = clist_content(cur);
-		switch (addr->ad_type) {
-			case MAILIMF_ADDRESS_GROUP:
-				MIME_DEBUG(5, "Group address?\n");
-				break;
-			case MAILIMF_ADDRESS_MAILBOX:
-				mb = addr->ad_data.ad_mailbox;
-				decoded = mb->mb_display_name ? mime_header_decode(mb->mb_display_name) : NULL;
-				name = decoded ? decoded : mb->mb_display_name;
-				snprintf(addrbuf, sizeof(addrbuf), "%s%s<%s>", S_IF(name), !strlen_zero(name) ? " " : "", mb->mb_addr_spec);
-				json_array_append_new(recipients, json_string(addrbuf));
-				free_if(decoded);
-				break;
-		}
 	}
 }
 
