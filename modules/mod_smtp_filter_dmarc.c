@@ -465,6 +465,10 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 						bbs_debug(2, "Aborting DMARC failure report addressed to no recipients\n");
 						fclose(fp);
 						unlink(tmpfilename);
+					} else if (strlen_zero(smtp_from(f->smtp))) {
+						/* If we receive a message that fails DMARC and it has no sender,
+						 * we're not supposed to reply to it; doing so could trigger a mail loop. */
+						bbs_debug(2, "Aborting DMARC failure report since message originated from empty sender\n");
 					} else {
 						fprintf(fp, "\r\n"); /* Finish To (or Bcc) header */
 						fprintf(fp, "Subject: DMARC failure report for job %s\r\n", mctx_jobid);
