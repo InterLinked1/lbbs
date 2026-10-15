@@ -228,12 +228,7 @@ static int compress_article(const char *path, size_t bytes, char *newpath, size_
 
 static int uncompress_article(char *path)
 {
-	char template[TMPNAME_BUFSIZ];
-	struct bbs_exec_params x;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
-	char *const argv[] = { "zstd", "-d", path, "-o", template, NULL };
-#pragma GCC diagnostic pop
+	char *tmpfile;
 
 	/* In theory, there may be efficiency gains of uncompressing a file to the normal uncompressed filename,
 	 * so that multiple readers could reuse the same file.
@@ -242,16 +237,42 @@ static int uncompress_article(char *path)
 	 * Rather than renaming file.zst to just file, we use a unique tempname,
 	 * so that concurrent article accesses + deletions don't step on each other.
 	 * Since it's unique to use, after we're done using this file, it's then immediately deleted. */
-	bbs_tempname("nntpart_decomp", template, sizeof(template));
 
-	EXEC_PARAMS_INIT_HEADLESS(x);
-	if (bbs_execvp(NULL, &x, "zstd", argv)) {
-		bbs_error("Failed to compress %s: %s\n", path, strerror(errno));
+	/* Here, we manually create a temp file name directly using tempnam.
+	 * bbs_tempname is awkward because it doesn't fill in the XXXXXX, since a function like mkftemp would do the replacement.
+	 * tempnam() just creates a filename, which is what we need, since zstd is what will write to it as the output file.
+	 * The main advantage of bbs_tempname is that it will create a file that can be renamed without crossing file systems,
+	 * but since in this particular case, we're not planning to move the file anywhere, we don't care what directory
+	 * the temp file is created in. */
+
+	/* tempnam technically leaves room for race conditions, as the file could exist after the function returns.
+	 * gcc's linker will emit this warning:
+	 *   warning: the use of `tempnam' is dangerous, better use `mkstemp'
+	 * (and suppressing -Wdeprecated-declarations doesn't supress that)
+	 *
+	 * However, since we're not the ones creating the file, there's not much we can do about that...
+	 * zstd will not silently overwrite files that already exist, so there's no actual risk anyways. */
+	tmpfile = tempnam(NULL, NULL); /* Unlike tmpnam, tempnam is thread-safe */
+	if (!tmpfile) {
+		bbs_error("tempnam failed: %s\n", strerror(errno));
 		return -1;
-	}
+	} else {
+		struct bbs_exec_params x;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+		char *const argv[] = { "zstd", "-d", path, "-o", tmpfile, NULL };
+#pragma GCC diagnostic pop
+		EXEC_PARAMS_INIT_HEADLESS(x);
+		if (bbs_execvp(NULL, &x, "zstd", argv)) {
+			bbs_error("Failed to decompress %s: %s\n", path, strerror(errno));
+			free(tmpfile);
+			return -1;
+		}
 
-	safe_strncpy(path, template, NNTP_MAX_PATH_LENGTH);
-	return 0;
+		safe_strncpy(path, tmpfile, NNTP_MAX_PATH_LENGTH);
+		free(tmpfile);
+		return 0;
+	}
 }
 
 static int remove_uncompressed_article(const char *path)
