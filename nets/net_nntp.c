@@ -1574,9 +1574,15 @@ void nntp_feed_add_stats(struct site *site, struct site_feed_stats *s)
 	bbs_rwlock_unlock(&statlock);
 }
 
-static inline void print_feedstats(struct bbs_cli_args *a, const char *name, int backlog, struct site_feed_stats *s)
+static inline void print_feedstats(struct bbs_cli_args *a, const char *name, int backlog, struct site_feed_stats *s, pthread_t thread, const char *feedstr)
 {
-	bbs_dprintf(a->fdout, "%-25s %8d %8d %8d %8d %8d %15lu\n", name, backlog, s->offered, s->accepted, s->refused, s->rejected, s->accsize);
+	char threadbuf[32];
+	if (thread) {
+		snprintf(threadbuf, sizeof(threadbuf), "%d", bbs_pthread_tid(thread));
+	} else {
+		threadbuf[0] = '\0';
+	}
+	bbs_dprintf(a->fdout, "%-25s %8d %8d %8d %8d %8d %15lu %10s %s\n", name, backlog, s->offered, s->accepted, s->refused, s->rejected, s->accsize, feedstr, threadbuf);
 }
 
 static int cli_feedstats(struct bbs_cli_args *a)
@@ -1596,15 +1602,17 @@ static int cli_feedstats(struct bbs_cli_args *a)
 		}
 		if (!c++) {
 			/* Print the header */
-			bbs_dprintf(a->fdout, "%-25s %8s %8s %8s %8s %8s %15s\n", "Site", "Backlog", "Offered", "Accepted", "Refused", "Rejected", "AcceptedSize");
+			bbs_dprintf(a->fdout, "%-25s %8s %8s %8s %8s %8s %15s %10s %s\n", "Site", "Backlog", "Offered", "Accepted", "Refused", "Rejected", "AcceptedSize", "Status", "LWP");
 		}
-		print_feedstats(a, site->name, site->feed.nntp.backlogcount, &site->feed.nntp.stats);
+		print_feedstats(a, site->name, site->feed.nntp.backlogcount, &site->feed.nntp.stats, site->feed.nntp.thread,
+			!site->feed.nntp.thread ? "" : site->feed.nntp.thread_done ? "Done" :
+				site->feed.nntp.wantexit ? (site->feed.nntp.thread_done ? "Exiting" : "WantExit") : site->feed.nntp.connecting ? "Connecting" : site->feed.nntp.waiting ? "Waiting" : "Feeding");
 		total_backlog += site->feed.nntp.backlogcount;
 	}
 	RWLIST_UNLOCK(&sites);
 	if (c) {
 		/* End with the global stats */
-		print_feedstats(a, "(Overall)", total_backlog, &overallstats);
+		print_feedstats(a, "(Overall)", total_backlog, &overallstats, 0, "");
 	}
 	bbs_rwlock_unlock(&statlock);
 	if (!c) {

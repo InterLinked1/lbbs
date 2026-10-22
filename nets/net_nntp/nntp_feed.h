@@ -70,6 +70,7 @@ struct site {
 			unsigned int secure:1; /*!< Implicit TLS */
 			/* Internal */
 			unsigned int processmore:1; /*!< More articles to process */
+			unsigned int connecting:1; /* Connecting to NNTP server */
 			unsigned int waiting:1; /*!< Waiting for articles */
 			unsigned int wantexit:1; /*!< Want thread to exit */
 			unsigned int thread_done:1; /*!< Thread done running */

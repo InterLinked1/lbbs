@@ -738,8 +738,10 @@ static void feed_thread(struct site *site)
 	/* We're not really "waiting" here, but connect() can take some time,
 	 * so allow ourselves to be interrupted here if we want to shut down feeding.
 	 * This scenario actually occurs in test_nntp_transit, speeding the test up so we don't need to wait 30 seconds. */
+	site->feed.nntp.connecting = 1;
 	site->feed.nntp.waiting = 1;
 	res = nntp_client_connect_retry(nc, &url, site->feed.nntp.secure, (int) feed_retries + 1);
+	site->feed.nntp.connecting = 0;
 	site->feed.nntp.waiting = 0;
 	if (res || site->feed.nntp.wantexit) {
 		goto done;
