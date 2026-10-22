@@ -725,6 +725,9 @@ static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time
 				return 0;
 			}
 		}
+		if (mproc->newdir) {
+			bbs_debug(5, "Replacing MOVETO dir: %s -> %s\n", mproc->newdir, s);
+		}
 		REPLACE(mproc->newdir, s);
 	} else if (!strcasecmp(next, "BOUNCE") || !strcasecmp(next, "REJECT")) { /* REJECT keyword based off like-named Sieve action */
 		mproc->bounce = 1;

@@ -1705,6 +1705,15 @@ static int filter_create_temp_file(struct smtp_filter_data *f)
 	return 0;
 }
 
+static void filter_cleanup_temp_file(struct smtp_filter_data *f)
+{
+	if (unlink(f->outputfile)) {
+		bbs_error("unlink(%s) failed: %s\n", f->outputfile, strerror(errno));
+	} else {
+		f->outputfile[0] = '\0';
+	}
+}
+
 static int filter_append(struct smtp_filter_data *f, char *buf)
 {
 	/* Instead of immediately writing to f->outputfd, we instead push to the front of the string list.
@@ -1736,6 +1745,7 @@ static int filter_merge_files(struct smtp_session *smtp, struct smtp_filter_data
 		return 0; /* Nothing to merge, never created a temp file */
 	} else if (stringlist_is_empty(&f->headers)) {
 		CLOSE(f->outputfd);
+		filter_cleanup_temp_file(f);
 		return 0;
 	}
 
@@ -1751,15 +1761,22 @@ static int filter_merge_files(struct smtp_session *smtp, struct smtp_filter_data
 	/* Since we had to make a new interim file, copy the original message and append it to the newly created file. */
 	if (bbs_copy_file(oldsrcfd, *srcfd, 0, (int) *datalen) != (int) *datalen) {
 		CLOSE(f->outputfd);
+		*srcfd = -1; /* No longer pointing to a valid file descriptor */
+
+		close(oldsrcfd);
+		filter_cleanup_temp_file(f);
 		return -1;
 	}
 	close(oldsrcfd);
 	*datalen = (size_t) lseek(*srcfd, 0, SEEK_CUR); /* Get new size of data */
+
 	close(*srcfd);
 	f->outputfd = -1; /* No longer pointing to a valid file descriptor */
+
 	*srcfd = open(f->outputfile, O_RDONLY);
 	if (*srcfd < 0) {
 		bbs_error("open(%s) failed: %s\n", f->outputfile, strerror(errno));
+		filter_cleanup_temp_file(f);
 		return -1;
 	}
 	/* smtp->datafile originally pointed to the original message received,
@@ -2699,6 +2716,8 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		RWLIST_UNLOCK(&bounce_redirects);
 
 		close(srcfd);
+		CLOSE(filterdata.outputfd);
+		filter_cleanup_temp_file(&filterdata);
 		return 0; /* Return 0 to inhibit normal failure message, since we already responded */
 	} else if (filterdata.quarantine) {
 		/* This is kind of a clunky hack.
@@ -2715,16 +2734,20 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		smtp->tflags.quarantine = 1;
 	}
 
-	if (filter_merge_files(smtp, &filterdata, &datalen, &srcfd)) {
-		smtp_filter_data_cleanup(&filterdata);
+	res = filter_merge_files(smtp, &filterdata, &datalen, &srcfd);
+	bbs_assert(filterdata.outputfd == -1); /* outputfd should be -1 here, but srcfd may now contain the value it used to have */
+	smtp_filter_data_cleanup(&filterdata);
+	if (res) {
+		bbs_assert(srcfd == -1); /* If filter_merge_files fails, then srcfd is cleaned up */
+		filter_cleanup_temp_file(&filterdata);
 		return -1;
 	}
-	smtp_filter_data_cleanup(&filterdata);
 
 	total = stringlist_size(&smtp->recipients);
 	if (total < 1) {
 		bbs_warning("Message has no recipients?\n");
 		close(srcfd);
+		filter_cleanup_temp_file(&filterdata);
 		return -1;
 	}
 
