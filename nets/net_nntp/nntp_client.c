@@ -103,7 +103,7 @@ int nntp_client_connect(struct nntp_client *nc, struct bbs_url *url, int secure)
 
 int nntp_client_read(struct nntp_client *nc, int timeout)
 {
-	return (int) bbs_readline(nc->tcpclient.rfd, &nc->tcpclient.rldata, "\r\n", SEC_MS(timeout));
+	return (int) bbs_readline(nc->tcpclient.rfd, &nc->tcpclient.rldata, "\r\n", timeout);
 }
 
 int nntp_client_read_code(struct nntp_client *nc, int timeout)
@@ -135,7 +135,7 @@ int nntp_client_capabilities(struct nntp_client *nc)
 		return -1;
 	}
 	for (;;) {
-		ssize_t rres = nntp_client_read(nc, 30);
+		ssize_t rres = nntp_client_read(nc, SEC_MS(30));
 		if (rres < 0) {
 			return -1;
 		}
