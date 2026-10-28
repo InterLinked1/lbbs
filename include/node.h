@@ -87,6 +87,7 @@ struct bbs_node {
 	unsigned int dimensions:1;	/*!< Aware of actual terminal dimensions */
 	unsigned int ansi:1;		/*!< Terminal supports ANSI escape sequences */
 	unsigned int secure:1;		/*!< Connection encrypted using TLS */
+	unsigned int legitimate:1;	/*!< Connection verified to be a legitimate client and should not be blocked for short sessions */
 	int ans;					/*!< Detailed ANSI support flags */
 	/* TDD stuff */
 	char ioreplace[10][2];		/*!< Character replacement for TDDs and other keyboard input-limited endpoints. 2D list with 10 slots. */

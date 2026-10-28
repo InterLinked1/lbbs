@@ -256,10 +256,14 @@ static int event_cb(struct bbs_event *event)
 			if (!bbs_assertion_failed(node != NULL) && now >= node->created + 5) {
 				break; /* Node was created more than 5 seconds ago, not a short session */
 			}
+			if (node->legitimate) {
+				break; /* Connection belongs to a legitimate client, even if it looks spammy */
+			}
 			if (!strcmp(event->protname, "HTTP") || !strcmp(event->protname, "HTTPS") || !strcmp(event->protname, "Gopher")) {
 				/* These protocols typically involve short sessions by their nature. Don't penalize them. */
 				break;
 			}
+			bbs_debug(3, "Penalizing short node session\n");
 			/* Fall through */
 		case EVENT_NODE_LOGIN_FAILED:
 		case EVENT_NODE_BAD_REQUEST:

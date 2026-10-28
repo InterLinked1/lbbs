@@ -836,6 +836,9 @@ static void associate_acls(struct nntp_session *nntp)
 	RWLIST_TRAVERSE(&inpeers, i, entry) {
 		if (inpeer_acl_matches(nntp, i)) {
 			nntp->inpeer = i;
+			/* If the client has an ACL authorizing it to send us articles, then deem it legitimate no matter what.
+			 * This ensures even if the session is very short, the client's IP address won't get blocked. */
+			nntp->node->legitimate = 1;
 			break;
 		}
 	}
@@ -4204,6 +4207,10 @@ int nntp_read_article(struct article_info *artinfo, enum nntp_mode mode, struct 
 			s = rldata->buf;
 		}
 		if (len < 0) {
+			if (articleid) {
+				/* Log the article ID to allow for easier debugging of rejected articles using another news server */
+				bbs_debug(2, "Aborted reception of news article %s\n", articleid);
+			}
 			return -1;
 		}
 		if (!strcmp(s, ".")) {
